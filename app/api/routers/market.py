@@ -1,0 +1,1 @@
+"""Market-wide aggregate endpoints."""

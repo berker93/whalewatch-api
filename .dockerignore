@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__/
+*.py[oc]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+build/
+dist/
+wheels/
+.env
+docker-compose.yml

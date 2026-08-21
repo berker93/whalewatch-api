@@ -1,0 +1,69 @@
+# Pinning the project name keeps every container, volume and network prefixed
+# with `whalewatch-`, independent of what this directory happens to be called.
+# That is what keeps this stack from colliding with the predictor-api stack:
+# its volumes are `predictor-api_*`, ours are `whalewatch_*`, and `down -v`
+# here can never reach across and delete theirs.
+name: whalewatch
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: whalewatch
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: whalewatch
+    ports:
+      # Container side is always 5432; only the host side is negotiable, because
+      # predictor-api already publishes its Postgres on host 5432. Set DB_PORT in
+      # .env to move ours out of the way. Nothing inside the compose network is
+      # affected by this — the api talks to `db:5432` either way.
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      # -h 127.0.0.1 matters. During initdb the entrypoint runs a temporary
+      # server that listens on the unix socket only, so a socket-based
+      # pg_isready reports healthy while 10-init.sql is still running and
+      # whalewatch_test does not exist yet. Forcing TCP means "healthy" cannot
+      # be true until the real server is up and the init scripts have finished.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U whalewatch -d whalewatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: dev
+    restart: unless-stopped
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      # Source is bind-mounted over the copy baked into the image so --reload
+      # sees your edits. /opt/venv lives outside /src precisely so this mount
+      # cannot bury the installed dependencies.
+      - .:/src
+    ports:
+      - "${API_PORT:-8000}:8000"
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
