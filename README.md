@@ -65,6 +65,91 @@ Three things worth knowing:
 uv run pytest tests/test_config.py   # the rules above, as tests
 ```
 
+### Health and readiness
+
+Two endpoints, because an orchestrator asks two different questions and does two
+different things with the answer.
+
+```bash
+curl localhost:8000/health   # is the process alive?
+curl localhost:8000/ready    # should traffic go to it?
+```
+
+`/health` does **no I/O** and always returns 200 while the process is running:
+
+```json
+{ "status": "ok", "version": "0.1.0", "git_sha": "9f2c1a0" }
+```
+
+A failing liveness probe gets the container killed and restarted, so it must not
+depend on anything a restart cannot fix. If Postgres is down, restarting the API
+does not bring it back — it just adds a crash-loop to the incident, and takes
+away the endpoint that could have told you which dependency was broken.
+
+`/ready` checks Postgres (`SELECT 1` on a pooled connection) and Redis (`PING`),
+concurrently, each under a hard 2s deadline, and reports **all** of them:
+
+```json
+{ "status": "degraded", "checks": { "postgres": "ok", "redis": "error: timeout" } }
+```
+
+Same shape either way; the status code is what differs — 200 when everything is
+`ok`, 503 otherwise, which takes the instance out of the load balancer and puts
+it back by itself when the dependency returns. Checks do not short-circuit, so
+one probe tells you about both outages instead of revealing the second only
+after you have fixed the first. Failure detail is the exception *type*, never
+its message: `/ready` is unauthenticated and asyncpg puts the whole DSN in its
+connection errors. The full traceback goes to the logs.
+
+The 2s deadline is the point of the whole endpoint. A readiness probe that hangs
+leaves the instance neither in nor out of rotation until the orchestrator's own
+timeout fires; one that fails is a decision.
+
+`version` comes from `pyproject.toml`, and `git_sha` from `GIT_SHA`, stamped into
+the image at build time so "which commit is actually serving?" is answerable from
+outside the container:
+
+```bash
+docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) .
+```
+
+Unstamped, it reports `unknown` — a local uvicorn has no build, and a liveness
+endpoint should not refuse to boot over a cosmetic field.
+
+Interactive docs live at [/docs](http://localhost:8000/docs) and the schema at
+`/openapi.json` — in every environment except `production`, where all three
+(`/docs`, `/redoc`, `/openapi.json`) return 404. Hiding the HTML page while still
+serving the schema would publish the same map of the API in a less convenient
+format.
+
+### The app factory
+
+`app.main:app` — what uvicorn and Celery import — is just `create_app(get_settings())`.
+The app itself is built by a factory that takes its settings as an argument:
+
+```python
+from app.main import create_app
+from app.api.deps import get_engine
+
+app = create_app(make_settings(environment="production"))
+app.dependency_overrides[get_engine] = lambda: stub_engine
+```
+
+A module-level app is configured by whatever the environment held at import, so
+a test that wants a different one has to mutate global state and remember to put
+it back. Connection pools are created in the `lifespan`, not at import — an
+engine built at import binds its pool to whichever event loop imported the
+module, and nothing ever closes it. The lifespan disposes both pools in a
+`finally`, so a crash on the way down still returns the connections.
+
+Neither pool connects at startup. The app boots with Postgres unreachable and
+says so through `/ready`, rather than dying before it can serve the probe that
+would explain why.
+
+```bash
+uv run pytest tests/test_health.py
+```
+
 ### Databases
 
 First creation of the `pgdata` volume runs [scripts/init-db.sql](scripts/init-db.sql),

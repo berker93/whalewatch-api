@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
+    # Stamped into the image at build time (``--build-arg GIT_SHA=$(git rev-parse
+    # HEAD)``) and echoed by /health, so "which commit is actually serving?" is
+    # answerable from outside the container. Defaults to "unknown" rather than
+    # failing: a developer running uvicorn by hand has no build to stamp, and a
+    # liveness endpoint that refuses to boot over a cosmetic field is a bad
+    # trade.
+    git_sha: str = "unknown"
+
     # --- Postgres ------------------------------------------------------------
     # Stored as parts, never as a pasted URL. A whole URL in the environment is
     # one string that four different consumers (app, alembic, psql, tests) each

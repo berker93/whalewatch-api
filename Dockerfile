@@ -23,3 +23,9 @@ RUN uv sync --frozen
 
 # Baked in so the image runs standalone; the compose bind mount shadows it in dev.
 COPY . .
+
+# Last, so changing commit does not invalidate the dependency or source layers.
+# Build with `--build-arg GIT_SHA=$(git rev-parse HEAD)`; /health reports it, so
+# "which commit is this container running?" is answerable without exec'ing in.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
