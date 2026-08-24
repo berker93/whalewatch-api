@@ -6,6 +6,8 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Dedicated database for pytest, so a test run truncating tables can never
 -- touch the data you have been ingesting into `whalewatch` all afternoon.
+-- The name is hardcoded because the postgres entrypoint runs .sql files without
+-- variable substitution; it must match POSTGRES_TEST_DB in .env.
 CREATE DATABASE whalewatch_test;
 
 -- psql meta-command: extensions are per-database, so the test DB needs its own.

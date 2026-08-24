@@ -2,7 +2,15 @@
 
 from fastapi import FastAPI
 
-app = FastAPI(title="WhaleWatch API")
+from app.core.config import get_settings
+
+# At import, not inside a request handler. Building Settings validates the whole
+# environment, so a missing SEC_CONTACT_EMAIL or an out-of-range rate limit stops
+# uvicorn here with a ValidationError naming the field — rather than surfacing
+# hours later inside the first Celery task that happened to need it.
+settings = get_settings()
+
+app = FastAPI(title=f"{settings.app_name} API", debug=settings.debug)
 
 
 @app.get("/health")

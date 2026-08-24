@@ -7,6 +7,7 @@ itself, so what you run locally is what ships.
 
 ```bash
 cp .env.example .env
+# Set SEC_CONTACT_EMAIL in .env — the app will not start without it.
 docker compose up -d
 curl localhost:8000/health
 ```
@@ -18,6 +19,50 @@ second — no rebuild. Rebuild only when `pyproject.toml` or `uv.lock` change:
 
 ```bash
 docker compose up -d --build
+```
+
+### Configuration
+
+All configuration lives in one validated object,
+[`Settings`](app/core/config.py), reached through `get_settings()`:
+
+```python
+from app.core.config import get_settings
+
+settings = get_settings()  # cached; one instance per process
+```
+
+Nothing else in this codebase reads `os.environ`. A scattered `getenv` has no
+type, no discoverable default and no failure until the line that needs it runs —
+which for a Celery task is 2am. `Settings` is built at import of
+[`app/main.py`](app/main.py), so a missing or malformed variable stops uvicorn
+immediately with a `ValidationError` naming the field.
+
+Every variable is documented in [.env.example](.env.example), which is tracked;
+`.env` is gitignored. Real environment variables take precedence over `.env`, so
+compose injects config in dev and a secret manager can inject it in production
+without a code change.
+
+Three things worth knowing:
+
+- **`SEC_CONTACT_EMAIL` is required and has no default.** SEC's fair-access
+  policy wants a real contact address in the User-Agent of every EDGAR request
+  and throttles traffic that omits or fakes one. A default would be a
+  plausible-looking value that gets us blocked in production, so the app refuses
+  to boot instead. `settings.sec_user_agent` derives the header from it.
+- **Secrets are `SecretStr`.** `postgres_password` does not appear in `repr()`,
+  `str()` or `model_dump()`, so it cannot ride along in a traceback or a
+  structured log line. Read it deliberately with `.get_secret_value()`.
+- **The database URL is assembled, not pasted.** `POSTGRES_HOST/PORT/USER/
+  PASSWORD/DB` are the source of truth; `settings.database_url` and
+  `settings.test_database_url` build the DSN from them, percent-encoding the
+  credentials so a rotated password containing `@` or `/` cannot corrupt the
+  host portion. The same variables configure the `db` container in
+  [docker-compose.yml](docker-compose.yml), so the credentials Postgres is
+  created with and the ones the app connects with cannot drift apart.
+
+```bash
+uv run pytest tests/test_config.py   # the rules above, as tests
 ```
 
 ### Databases
@@ -53,7 +98,8 @@ via `.env`:
 `DB_PORT` ships as **5433** because the `predictor-api` stack publishes its
 Postgres on host 5432. If that stack is stopped, `DB_PORT=5432` works fine. Note
 this only affects tools connecting from your Mac (psql, TablePlus, DBeaver);
-`DATABASE_URL` points at `db:5432` on the compose network regardless.
+`POSTGRES_HOST`/`POSTGRES_PORT` stay `db`/`5432` on the compose network
+regardless, and that is what `settings.database_url` is built from.
 
 The compose project is pinned to `name: whalewatch`, so containers, the network
 and the volume are all `whalewatch*` and can never collide with another

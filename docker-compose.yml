@@ -10,9 +10,12 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: whalewatch
-      POSTGRES_PASSWORD: localdev
-      POSTGRES_DB: whalewatch
+      # Same three variables the app reads out of .env, so the credentials the
+      # server is initialised with cannot drift from the ones Settings uses to
+      # build its DSN. Defaults here only cover a missing .env.
+      POSTGRES_USER: "${POSTGRES_USER:-whalewatch}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-localdev}"
+      POSTGRES_DB: "${POSTGRES_DB:-whalewatch}"
     ports:
       # Container side is always 5432; only the host side is negotiable, because
       # predictor-api already publishes its Postgres on host 5432. Set DB_PORT in
@@ -28,7 +31,9 @@ services:
       # pg_isready reports healthy while 10-init.sql is still running and
       # whalewatch_test does not exist yet. Forcing TCP means "healthy" cannot
       # be true until the real server is up and the init scripts have finished.
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U whalewatch -d whalewatch"]
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
       interval: 5s
       timeout: 5s
       retries: 10
