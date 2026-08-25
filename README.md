@@ -168,6 +168,98 @@ docker compose exec db psql -U whalewatch -d whalewatch       # dev data
 docker compose exec db psql -U whalewatch -d whalewatch_test  # test data
 ```
 
+### Migrations
+
+Alembic, async template, run through `uv run` so it uses the project venv:
+
+```bash
+docker compose exec api alembic upgrade head          # apply
+docker compose exec api alembic downgrade -1          # undo the last one
+docker compose exec api alembic current               # what is applied
+docker compose exec api alembic history --verbose     # the chain
+```
+
+Run it inside the `api` container, not on your Mac. `POSTGRES_HOST` is `db`, a
+name that only resolves on the compose network; from the host you would have to
+override it *and* `POSTGRES_PORT` (5433, per the table above) to reach the same
+database, and getting that wrong migrates something else.
+
+There is no `sqlalchemy.url` in [alembic.ini](alembic.ini). `env.py` builds it
+from the same [`Settings`](app/core/config.py) the app connects with, so "which
+database" has one definition, rotating the password touches one place, and no
+credential is committed. `target_metadata` is `Base.metadata`, and `env.py`
+imports `app.db.models` for the side effect of populating it — a model that is
+not imported there is invisible to autogenerate, and autogenerate will propose
+*dropping* its table.
+
+Migration filenames lead with the date
+(`20260825_0001_baseline.py`), so `ls alembic/versions` reads chronologically
+and a reviewer can see how old a pending migration is. The revision id is still
+in the name, because that is what `down_revision` and `alembic history` refer
+to: the date orders them for humans, the id chains them for Alembic.
+
+#### Autogenerate is a draft
+
+```bash
+docker compose exec api alembic revision --autogenerate -m "add filings"
+```
+
+Then open the file and rewrite it. Autogenerate diffs SQLAlchemy metadata
+against the live schema, and most of what this project needs is outside what
+that diff can see:
+
+- **Generated columns, partitions, materialised views** — not modelled, so not
+  detected. They are `op.execute()` and you write them by hand.
+- **Native enums** — it emits `CREATE TYPE` on first use but will not notice a
+  new label, and `ALTER TYPE ... ADD VALUE` cannot run inside a transaction
+  block, which Alembic gives you by default.
+- **Renames** — a renamed column is rendered as a drop plus an add. That is
+  data loss, and the test suite stays green through it.
+
+`compare_type` and `compare_server_default` are switched on in `env.py`. They
+are off by default, and off is how a `varchar(20)` widened to `varchar(40)`, or
+a `server_default` added to an existing column, becomes "no changes detected"
+and a schema that has quietly diverged from the models. They make autogenerate
+noisier — Postgres normalises defaults, so it occasionally proposes a no-op —
+which is the right trade when every migration is read before it is committed.
+
+To review one as DDL, or hand it to someone applying it in a window, render it
+offline. No connection is opened:
+
+```bash
+docker compose exec api alembic upgrade head --sql
+```
+
+#### Downgrades are implemented, not `pass`
+
+A migration you cannot reverse is a deploy you cannot roll back, and the moment
+you need one is the moment you cannot test writing it. Where the reverse
+genuinely loses data — a dropped column — say so in the docstring and restore
+the structure anyway: an empty column beats a failed downgrade that strands the
+database between two revisions.
+
+`0001_baseline` is empty and is the one exception, because downgrading past the
+root means "no schema at all", which an empty upgrade already leaves you at.
+
+The rules are tests, not conventions:
+
+```bash
+uv run pytest tests/test_migrations.py
+```
+
+It asserts there is exactly one head (two means someone branched, and `upgrade
+head` fails mid-deploy with "Multiple head revisions are present"), that every
+file on disk is on the path from base to head, that filenames carry a real date
+and sort in chain order, that both directions are defined, and that no revision
+with a parent has a bare `pass` for a downgrade. It also runs `env.py` for real
+in offline mode, so a broken import or an unset variable there fails in CI
+rather than in a deploy. None of it needs a database.
+
+New migrations are formatted and linted on the way out —
+[alembic.ini](alembic.ini) runs `ruff check --fix` and `ruff format` as
+post-write hooks, so a generated file does not land with unsorted imports and
+100-column violations for you to fix by hand.
+
 ### Ports, and coexisting with other stacks
 
 Ports *inside* the compose network are fixed and are what the app uses:

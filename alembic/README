@@ -1,0 +1,18 @@
+Async single-database configuration.
+
+The connection URL is not in alembic.ini. env.py builds it from
+app.core.config.Settings, the same object the application connects with, so
+there is one definition of "which database" and no password in a tracked file.
+
+    uv run alembic revision --autogenerate -m "add filings"   # writes a draft
+    uv run alembic upgrade head
+    uv run alembic downgrade -1
+
+Autogenerate is a draft, not an answer. It does not see generated columns,
+native enum changes, partitions or materialised views, it renders a renamed
+column as a drop plus an add, and it will propose dropping anything it does not
+understand. Read every generated file, and write the downgrade yourself.
+
+The rules this directory has to keep (one head, dated filenames in chain order,
+a real downgrade on every revision after the baseline) are asserted in
+tests/test_migrations.py.
