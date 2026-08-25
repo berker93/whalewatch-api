@@ -20,7 +20,7 @@ from app.api.routers import health
 from app.core.config import Settings, get_settings
 from app.core.redis import create_redis
 from app.core.version import VERSION
-from app.db.session import create_engine
+from app.db.session import create_engine, create_session_factory
 
 
 @asynccontextmanager
@@ -39,6 +39,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     settings: Settings = app.state.settings
     app.state.engine = create_engine(settings)
+    # Built once here rather than per request: the factory is where
+    # expire_on_commit and autoflush are decided, and one instance means no
+    # handler can construct a session configured differently.
+    app.state.session_factory = create_session_factory(app.state.engine)
     app.state.redis = create_redis(settings)
     try:
         yield
