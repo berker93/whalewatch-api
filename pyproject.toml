@@ -12,6 +12,7 @@ dependencies = [
     "pydantic[email]>=2.9",
     "redis>=5.2",
     "sqlalchemy[asyncio]>=2.0",
+    "structlog>=25.1",
     "uvicorn[standard]>=0.32",
 ]
 
@@ -35,7 +36,15 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Spelled out rather than left to the default, which pytest-asyncio warns about
+# and intends to change. One loop per test is what tests/integration relies on
+# being *allowed* to assume: its session-scoped engine is NullPool precisely so
+# that a per-test loop never inherits a connection opened on another one.
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = [
+    "integration: needs a Docker daemon; starts a throwaway Postgres container.",
+]
 
 [dependency-groups]
 dev = [
@@ -44,4 +53,5 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.4",
+    "testcontainers[postgres]>=4.15",
 ]

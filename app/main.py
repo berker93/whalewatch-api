@@ -16,8 +16,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.middleware import RequestContextMiddleware, request_id_on_server_error
 from app.api.routers import health
 from app.core.config import Settings, get_settings
+from app.core.logging import configure_logging
 from app.core.redis import create_redis
 from app.core.version import VERSION
 from app.db.session import create_engine, create_session_factory
@@ -55,6 +57,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(settings: Settings) -> FastAPI:
     """Build an app bound to ``settings``."""
+    # Before anything else in the factory, so that whatever the lines below log
+    # is already rendered by the configuration this app asked for. Logging is
+    # process-global rather than per-app, so this is the one thing create_app
+    # does that outlives the app it returns — see app.core.logging.
+    configure_logging(settings)
+
     # Interactive docs render every route, model and example this service has —
     # a free map of the API for anyone who finds the URL. Useful everywhere we
     # control the audience, off in production. openapi_url goes too: leaving the
@@ -74,6 +82,15 @@ def create_app(settings: Settings) -> FastAPI:
     # Read back by the dependencies in app.api.deps, and by the lifespan above —
     # which is why this has to happen before the app is started, not inside it.
     app.state.settings = settings
+
+    # Outermost middleware this app installs, so the request_id is bound before
+    # any other middleware runs and the duration covers all of them rather than
+    # just the handler. (Starlette applies add_middleware in reverse, so the
+    # first one added ends up nearest the network.)
+    app.add_middleware(RequestContextMiddleware)
+    # Not a middleware, because the layer that renders unhandled exceptions sits
+    # outside every middleware this app can add. See the handler's docstring.
+    app.add_exception_handler(Exception, request_id_on_server_error)
 
     app.include_router(health.router)
 

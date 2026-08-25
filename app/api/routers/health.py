@@ -14,7 +14,6 @@ unreachable, and reverses itself the moment the dependency returns.
 """
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
@@ -24,9 +23,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.deps import EngineDep, RedisDep, SettingsDep
+from app.core.logging import get_logger
 from app.core.version import VERSION
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["health"])
 
@@ -58,13 +58,15 @@ async def _run_check(name: str, probe: Callable[[], Awaitable[Any]]) -> str:
         async with asyncio.timeout(CHECK_TIMEOUT_SECONDS):
             await probe()
     except TimeoutError:
-        logger.warning("readiness check %r timed out after %ss", name, CHECK_TIMEOUT_SECONDS)
+        logger.warning(
+            "readiness.check_timeout", dependency=name, timeout_s=CHECK_TIMEOUT_SECONDS
+        )
         return "error: timeout"
     except Exception as exc:
         # The exception type, not str(exc): a connection error from asyncpg
         # carries the DSN, and /ready is unauthenticated. The full traceback goes
         # to the logs, where it is already inside the trust boundary.
-        logger.warning("readiness check %r failed", name, exc_info=exc)
+        logger.warning("readiness.check_failed", dependency=name, exc_info=exc)
         return f"error: {type(exc).__name__}"
     return "ok"
 

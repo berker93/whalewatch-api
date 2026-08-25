@@ -5,6 +5,12 @@ The URL is not in alembic.ini. It is assembled here from the same
 exactly one definition of "which database" and rotating a password touches one
 place. A DSN in the ini file would also mean a committed password.
 
+The one caller that does not want that URL is the integration test suite, whose
+database is a container that did not exist when Settings was built. It hands
+this module an open connection through ``config.attributes["connection"]`` and
+everything below defers to it — so the schema those tests run against is built
+by these migrations, in this order, rather than by ``create_all``.
+
 Autogenerate is configured to compare types and server defaults, which the
 defaults do not. Without them a column changed from ``varchar(20)`` to
 ``varchar(40)``, or a ``server_default`` added to an existing column, produces
@@ -40,15 +46,33 @@ import app.db.models  # noqa: F401  # isort: skip
 
 config = context.config
 
-if config.config_file_name is not None:
+# A caller running migrations in-process — the integration test suite against
+# its throwaway container — puts a live, already-open Connection here and calls
+# ``command.upgrade``. This is Alembic's documented way to share a connection
+# with programmatic callers, and it is what makes "the test database is built by
+# the same migrations production runs" true rather than aspirational.
+#
+# Two things follow from it, both handled below: the URL must not be rebuilt
+# from Settings (the caller's connection already decides which database), and
+# nothing here may open a second one.
+injected_connection: Connection | None = config.attributes.get("connection")
+
+# fileConfig() calls logging.config.fileConfig, which disables every logger it
+# does not name — including this application's. Harmless for the CLI, where
+# alembic owns the process, and destructive in-process, where it would silently
+# switch off the app's logging for the rest of the test session. So the caller
+# that supplies its own connection also owns its own logging.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
-# `database_url` percent-encodes the credentials, so a password containing "@"
-# arrives here as "%40" — and configparser reads "%4" as an interpolation and
-# raises. set_main_option passes the value straight to ConfigParser.set without
-# escaping, so doubling the percent signs is required, not defensive. The value
-# is un-escaped again on the way back out through get_section() below.
-config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
+if injected_connection is None:
+    # `database_url` percent-encodes the credentials, so a password containing
+    # "@" arrives here as "%40" — and configparser reads "%4" as an
+    # interpolation and raises. set_main_option passes the value straight to
+    # ConfigParser.set without escaping, so doubling the percent signs is
+    # required, not defensive. The value is un-escaped again on the way back out
+    # through get_section() below.
+    config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 
@@ -112,7 +136,20 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+    """Apply migrations against a live database.
+
+    Two routes in, and the difference is who owns the connection. From the CLI
+    there is no loop running, so this one is created and disposed here. From an
+    in-process caller the connection was opened on a loop that is *already*
+    running, and ``asyncio.run`` inside a running loop raises — so the injected
+    connection is used directly and synchronously. It arrives as a sync-facade
+    ``Connection`` (via ``AsyncConnection.run_sync``), which is exactly what
+    ``context.configure`` wants either way.
+    """
+    if injected_connection is not None:
+        do_run_migrations(injected_connection)
+    else:
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

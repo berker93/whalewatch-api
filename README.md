@@ -1,16 +1,190 @@
 # whalewatch-api
 
+**A read-only API over two SEC disclosure streams: quarterly institutional
+holdings (Form 13F) and insider transactions (Forms 3/4/5).** It crawls EDGAR,
+archives and parses the XML, resolves CUSIPs to tickers, and serves the part
+nobody gets for free — what a filer holds, what changed since last quarter, who
+is accumulating a given stock, and which insiders bought with their own money.
+
+Both feeds are public and both are close to unusable in their native form. A 13F
+is a CUSIP list with dollar values and no tickers and no deltas. A Form 4 is
+transaction-code soup where a routine tax withholding looks exactly like a
+director dumping stock. The product is the normalisation, the joins, and the
+diffs.
+
+FastAPI, Postgres 16, Redis, Celery. Async throughout, and everything runs in
+Docker.
+
+## Where the docs live
+
+| Document | What is in it |
+| --- | --- |
+| [Product spec](docs/product-spec.md) | What the API answers, the endpoint surface, non-goals, the epic roadmap, the domain glossary |
+| [Data model](docs/data-model.md) | Tables, natural keys, the raw → normalised → derived split, and the invariants worth a constraint |
+| [Ingestion spec](docs/ingestion-spec.md) | EDGAR sources, rate limits, the 13F and Form 4 parsers, enrichment, and every way the numbers can be quietly wrong |
+
+The rest of this file is how to run it; the specs are what it is.
+
+## Prerequisites
+
+- **Docker**, with Compose v2 — `docker compose version` should print 2.x.
+  Postgres, Redis and the API all run in containers, so nothing has to be
+  installed on your Mac to serve a request.
+- **[uv](https://docs.astral.sh/uv/)** — `brew install uv`. Runs the tests, the
+  linter and the formatter on the host, and owns `uv.lock`. It fetches Python
+  3.12 itself per [.python-version](.python-version); no system Python needed.
+- **make** — ships with the Xcode command line tools.
+- **A real email address**, for `SEC_CONTACT_EMAIL`. Step 2 below explains why it
+  cannot be a placeholder.
+
+About 2GB of disk for the images and the Postgres volume.
+
+## Setup
+
+Five commands from a fresh clone:
+
+```bash
+cp .env.example .env              # 1. working defaults for everything but one field
+$EDITOR .env                      # 2. set SEC_CONTACT_EMAIL=you@example.com
+make up                           # 3. build the image, start db + redis + api
+make migrate                      # 4. alembic upgrade head
+curl localhost:8000/health        # 5. {"status":"ok","version":"0.1.0",...}
+```
+
+**Step 2 is not optional and a placeholder will not do.** SEC's fair-access
+policy requires a real, monitored contact address in the User-Agent of every
+EDGAR request, and throttles or blocks traffic that omits or fakes one. Rather
+than ship a default that would get us blocked in production, the app refuses to
+start: if `make up` leaves the `api` container restarting, `make logs s=api`
+shows a pydantic `ValidationError` naming `sec_contact_email`, and this is why.
+
+Then `make test`, and read the specs above.
+
+## Everyday commands
+
+`make` on its own prints this list.
+
+| Command | |
+| --- | --- |
+| `make up` / `make down` | start / stop the stack |
+| `make build` | rebuild the api image — only needed when `pyproject.toml` or `uv.lock` change |
+| `make ps` | container status and health |
+| `make logs` | follow every service; `make logs s=db` for one |
+| `make shell` | a shell inside the api container |
+| `make psql` | psql on the dev database |
+| `make test` | the whole pytest suite |
+| `make lint` / `make fmt` | ruff check + mypy --strict / ruff format + safe fixes |
+| `make check` | lint, then test — what CI runs |
+| `make migrate` | `alembic upgrade head` |
+| `make revision m="add filings"` | autogenerate a draft migration |
+| `make reset-db` | **destructive** — drop the volume, recreate the stack, migrate |
+
+Anything touching the database runs inside compose, because `POSTGRES_HOST` is
+`db` — a name that only resolves on the compose network. `test`, `lint` and `fmt`
+open no socket to it, so they run on the host under `uv`.
+
+`make reset-db` deletes the `whalewatch_pgdata` volume and everything in it. It
+will earn its keep during Epic 3, when a backfill bug means you want a clean
+slate rather than an archaeology project — and it is the only way to pick up an
+edit to [scripts/init-db.sql](scripts/init-db.sql), which Postgres runs once per
+volume and never again. Nothing outside this project is in reach; see
+[Databases](#databases).
+
+## Data sources and limitations
+
+Write these down once so you are not re-deriving them from a 13F XML at midnight.
+
+### Where the data comes from
+
+| Source | Auth | What we take |
+| --- | --- | --- |
+| `data.sec.gov/submissions/CIK##########.json` | none | every filing a known CIK has made — how we find 13Fs |
+| EDGAR daily index | none | everything filed on one day — how we find Form 4s, whose filers we cannot know in advance |
+| EDGAR archives | none | the documents themselves |
+| OpenFIGI | free API key | CUSIP → ticker, because 13F reports neither ticker nor name we can trust |
+
+All public, all free, hard-capped at **10 requests/second across all of sec.gov**
+by SEC's fair-access policy. `SEC_RATE_LIMIT_PER_SECOND` defaults to 8 and
+`Settings` refuses anything above 10. There is no vendor to fall back on when a
+filing is ambiguous: the filing is the only authority.
+
+### Two things that will bite you
+
+**1. 13F holdings are between 45 and 135 days old. Always.**
+
+Managers file within 45 days of quarter end:
+
+| Period ends | Due |
+| --- | --- |
+| Mar 31 | May 15 |
+| Jun 30 | Aug 14 |
+| Sep 30 | Nov 14 |
+| Dec 31 | Feb 14 |
+
+So on May 14 the newest holdings anyone has are December 31's. **Nothing in this
+API is ever labelled "current"**: every 13F-derived payload states its `period`,
+and no endpoint quietly defaults "latest" in a way that hides which period the
+caller actually received.
+
+The lag has a second edge. A period is not final once you have built it —
+amendments (`13F-HR/A`) restate or extend it years later, and positions filed
+under confidential treatment appear afterwards dated to the original quarter.
+Ingestion is therefore an upsert on natural keys, and everything derived from
+holdings is recomputable rather than incrementally patched.
+
+**2. 13F dollar values changed units on 2023-01-03.**
+
+The information table's `value` field was reported in **thousands of dollars**
+for filings submitted before 2023-01-03, and in **whole dollars** from then on. A
+$1.2B position reads `1200000` on one side of that line and `1200000000` on the
+other.
+
+Getting it wrong is a **1000× error that does not announce itself**. Every filer
+in a mis-parsed quarter is wrong by the same factor, so rankings, percentages and
+quarter-over-quarter shapes all look perfectly normal; it surfaces months later
+as "why does this fund have $40 million in it".
+
+Three rules, and the middle one is the one people get backwards:
+
+- **Normalise at parse time.** `holding.value_usd` is whole dollars for every row,
+  always. Storing the filing's own units and converting on read means every
+  consumer has to know about the cutover, and one of them will not.
+- **Key off the filing date, not the period.** The convention follows the
+  submission. An amendment filed in 2024 for a 2019 period is in **whole
+  dollars**, even though the original filing for that same period was in
+  thousands — so a `period < 2023` test gets amendments exactly inverted.
+- **Verify, do not assume.** Check the parsed sum against the cover page's own
+  `tableValueTotal`, and check `value` against `shares × period-end price`. A
+  ratio clustering near 1000 or 1/1000 means the units were misread. Keep
+  fixtures from both sides of the boundary *and* a post-cutover amendment of a
+  pre-cutover period; that third case is the one that regresses.
+
+### Also true, and also enough to make a number wrong
+
+- **13F is long-only US equity.** No shorts, no cash, no bonds beyond convertibles,
+  no foreign listings, no commodities or FX. A fund that looks "100% tech" may
+  have an invisible book many times the size of the one it discloses.
+- **Options are notional.** A `putCall` line's value is the value of the
+  underlying, not the premium; summing it with common stock inflates a portfolio
+  by the whole underlying exposure.
+- **`PRN` is not `SH`.** Convertibles report a principal amount, not a share
+  count. Adding the two adds dollars to shares.
+- **Combination reports double-count.** Affiliated managers can each file the same
+  position; aggregating without honouring the cover page's report type counts it
+  twice.
+- **Splits.** Share counts are as reported at the time. Comparing across Apple's
+  4-for-1 split unadjusted shows every holder quadrupling their stake.
+- **Form 4 codes are not sentiment.** `P` and `S` are open-market purchases and
+  sales; `M` is an option exercise, `F` is tax withholding, `A` a grant, `G` a
+  gift. And a sale under a 10b5-1 plan was decided months before its date.
+
+Each of these is worked through in the
+[ingestion spec](docs/ingestion-spec.md#the-two-traps).
+
 ## Local development
 
 Everything runs in Docker — Postgres 16 (with `pg_trgm`), Redis 7, and the API
 itself, so what you run locally is what ships.
-
-```bash
-cp .env.example .env
-# Set SEC_CONTACT_EMAIL in .env — the app will not start without it.
-docker compose up -d
-curl localhost:8000/health
-```
 
 `docker compose up` builds the `dev` stage of the [Dockerfile](Dockerfile), waits
 for `db` and `redis` to report healthy, then starts uvicorn with `--reload`. The
@@ -18,7 +192,7 @@ repo is bind-mounted at `/src`, so saving a file restarts the app in about a
 second — no rebuild. Rebuild only when `pyproject.toml` or `uv.lock` change:
 
 ```bash
-docker compose up -d --build
+make build
 ```
 
 ### Configuration
@@ -122,6 +296,79 @@ Interactive docs live at [/docs](http://localhost:8000/docs) and the schema at
 serving the schema would publish the same map of the API in a less convenient
 format.
 
+### Logging
+
+Every log line is a structured event, rendered as one JSON object per line in
+`staging` and `production` and as a coloured console line everywhere else. The
+renderer is the only thing that changes between the two — the fields are
+identical, so what you read locally is what the aggregator will index.
+
+```python
+from app.core.logging import get_logger
+
+log = get_logger(__name__)
+log.info("filing.parsed", accession_no=accession_no, cik=cik, rows=len(holdings))
+```
+
+Do not format values into the message. A backfill of 2,000 filings that dies on
+number 1,347 is only debuggable if `grep 0001234567-24-000123` returns *every*
+line that touched that filing, and free text cannot promise that because the
+number lands in a different sentence in each message that mentions it.
+
+**Correlation.** [`RequestContextMiddleware`](app/api/middleware.py) gives every
+request a `request_id`, taken from an inbound `X-Request-ID` when there is one so
+a trace started at the edge proxy keeps a single id across every hop, and echoes
+it in the response header. It is bound to the logging context, so anything logged
+anywhere inside that request carries it without being passed one:
+
+```
+{"event": "request_completed", "method": "GET", "path": "/ready", "status": 200,
+ "duration_ms": 3.21, "request_id": "d5ba98bedf344d1c93b534184024906d", ...}
+```
+
+Give a customer the id from the header and their whole request is one grep. Bind
+the same way in batch work, and one run is one grep:
+
+```python
+import structlog
+
+structlog.contextvars.bind_contextvars(job_name="backfill_13f", run_id=run_id)
+```
+
+`contextvars` rather than thread-locals, deliberately: a thread-local is shared
+by every coroutine the event loop interleaves on that thread, so two concurrent
+requests would overwrite each other's `request_id`. A `ContextVar` is copied into
+each task and survives `await`.
+
+**Vocabulary.** Queryability comes from consistent keys, not from any one call
+site being clever. Use these names, add to them, but never spell one of them a
+second way — no `accession`, no `accessionNumber`:
+
+| Key | Meaning |
+| --- | --- |
+| `accession_no` | EDGAR accession number, dashed: `0001234567-24-000123` |
+| `cik` | Central Index Key, zero-padded 10-char string, never an int |
+| `filer_slug` | Our stable slug for a filer, e.g. `berkshire-hathaway` |
+| `period` | Reporting period the data belongs to, `YYYY-MM-DD` |
+| `job_name` | Name of the batch job, e.g. `backfill_13f` |
+| `run_id` | One execution of a job; every line from that run shares it |
+| `request_id` | One HTTP request; bound by the middleware |
+
+**One stream.** uvicorn, SQLAlchemy and Alembic log through the standard library
+and know nothing about structlog. Their records are routed through the same
+processors and the same handler, so they arrive with the same `timestamp`,
+`level` and bound `request_id` as ours instead of forming a second, differently
+shaped stream that whatever ships these logs has to parse twice. uvicorn's own
+access log is switched off, because the middleware already emits one access line
+per request and uvicorn's is a strictly worse duplicate.
+
+`LOG_LEVEL` sets the threshold for all of it. Note that `DEBUG` is enough to make
+SQLAlchemy log every statement it emits.
+
+```bash
+uv run pytest tests/test_logging.py tests/test_request_context.py
+```
+
 ### The app factory
 
 `app.main:app` — what uvicorn and Celery import — is just `create_app(get_settings())`.
@@ -154,29 +401,85 @@ uv run pytest tests/test_health.py
 
 First creation of the `pgdata` volume runs [scripts/init-db.sql](scripts/init-db.sql),
 which installs `pg_trgm` and creates a second database, `whalewatch_test`, for
-pytest. That script runs **once**; to pick up edits to it, wipe and recreate:
+poking at by hand. (Pytest does *not* use it — the integration suite starts its
+own container; see below.) That script runs **once**, on volume creation; to pick up edits to it, wipe and
+recreate:
 
 ```bash
-docker compose down -v && docker compose up -d
+make reset-db
 ```
 
 `down -v` deletes the `whalewatch_pgdata` volume and nothing else — no other
-Docker project's data is in reach.
+Docker project's data is in reach, because the compose project is pinned to
+`name: whalewatch`.
 
 ```bash
-docker compose exec db psql -U whalewatch -d whalewatch       # dev data
+make psql                                                     # dev data
 docker compose exec db psql -U whalewatch -d whalewatch_test  # test data
 ```
+
+### Tests
+
+```bash
+make test                            # everything, quietly — this is the one to run
+uv run pytest                        # everything, verbosely
+uv run pytest -m "not integration"   # everything that does not need Docker
+uv run pytest -m integration         # only the tests that talk to Postgres
+```
+
+These run on the host, not in the container: nothing in the suite connects to
+the compose Postgres, so `uv` and the local venv are all they need.
+
+Two suites, in one command. `tests/` is the unit suite: it builds throwaway apps
+from `create_app`, stubs its dependencies, and opens no sockets.
+`tests/integration/` runs against a real **PostgreSQL 16** in a container that
+[testcontainers](https://testcontainers-python.readthedocs.io) starts once per
+run and throws away at the end — so a Docker daemon has to be up, which is what
+the `integration` marker exists to let you opt out of.
+
+There is no SQLite mode and there will not be one. The queries in this project
+are Postgres — aggregate `FILTER`, window functions, `gin_trgm_ops` indexes,
+generated columns, partitions, materialised views — and none of it parses in
+SQLite. A suite on SQLite would test a different program than the one that
+ships, and would go green on exactly the query that fails in production.
+
+The container's schema is built by **`alembic upgrade head`**, not by
+`create_all`. `Base.metadata` is the schema we think we have; the migration
+chain is the one production will actually have, so running it is what turns a
+broken or drifted migration into a red test rather than a bad deploy.
+[alembic/env.py](alembic/env.py) takes the connection to run it on through
+`config.attributes["connection"]` — the same hook is why the test database can
+be a container that did not exist when `Settings` was built.
+
+Each test is wrapped in a transaction that is rolled back:
+
+```python
+async def test_something(db_session: AsyncSession, client: AsyncClient) -> None:
+    ...
+```
+
+`db_session` opens a connection, begins a transaction on it, and binds the
+session to that connection — so a `commit()` in the code under test releases a
+savepoint *inside* that transaction and disappears when the fixture rolls back.
+No TRUNCATE between tests, no database per test, and no test that can be made to
+pass or fail by what ran before it;
+[tests/integration/test_rollback_isolation.py](tests/integration/test_rollback_isolation.py)
+asserts exactly that. `client` is an `httpx.AsyncClient` against the app with
+`get_session` overridden to hand every request that same session, so you can POST
+through the API and read the result back through the session.
+
+The whole suite is a few seconds on a warm image; the container start is the only
+slow part of it, and it happens once.
 
 ### Migrations
 
 Alembic, async template, run through `uv run` so it uses the project venv:
 
 ```bash
-docker compose exec api alembic upgrade head          # apply
-docker compose exec api alembic downgrade -1          # undo the last one
-docker compose exec api alembic current               # what is applied
-docker compose exec api alembic history --verbose     # the chain
+make migrate                                           # apply everything pending
+docker compose exec api uv run alembic downgrade -1    # undo the last one
+docker compose exec api uv run alembic current         # what is applied
+docker compose exec api uv run alembic history --verbose   # the chain
 ```
 
 Run it inside the `api` container, not on your Mac. `POSTGRES_HOST` is `db`, a
@@ -201,7 +504,7 @@ to: the date orders them for humans, the id chains them for Alembic.
 #### Autogenerate is a draft
 
 ```bash
-docker compose exec api alembic revision --autogenerate -m "add filings"
+make revision m="add filings"
 ```
 
 Then open the file and rewrite it. Autogenerate diffs SQLAlchemy metadata
@@ -227,7 +530,7 @@ To review one as DDL, or hand it to someone applying it in a window, render it
 offline. No connection is opened:
 
 ```bash
-docker compose exec api alembic upgrade head --sql
+docker compose exec api uv run alembic upgrade head --sql
 ```
 
 #### Downgrades are implemented, not `pass`
