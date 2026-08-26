@@ -16,6 +16,9 @@ dependencies = [
     "redis>=5.2",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=25.1",
+    # 9.0+ for AsyncRetrying.wraps copying per call, which is what makes one
+    # shared policy object safe for concurrent EDGAR requests.
+    "tenacity>=9.0",
     "uvicorn[standard]>=0.32",
 ]
 
@@ -55,6 +58,9 @@ dev = [
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    # Scripts a different reply per attempt against one URL, which httpx's own
+    # MockTransport cannot do and every retry test needs.
+    "respx>=0.22",
     "ruff>=0.16.4",
     "testcontainers[postgres]>=4.15",
 ]

@@ -7,8 +7,15 @@ what was passed to the constructor, and the pacing test measures the clock
 rather than counting calls to a mock's ``sleep``.
 
 Nothing here opens a socket. ``httpx.MockTransport`` sits where the network
-would, which is also what makes it possible to assert on a 403 without
-provoking a real ten-minute ban.
+would — and ``respx`` where the retry tests need to script a *sequence* of
+replies to one URL — which is also what makes it possible to assert on a 403
+without provoking a real ten-minute ban.
+
+The retry tests assert on call counts, not on elapsed time. What matters about
+this policy is which failures are repeated and how often, and a test that slept
+the real backoff would take four minutes to prove it. The sleeps themselves are
+neutralized by :func:`_instant_retries` and the wait *arithmetic* is asserted
+separately, against the pure functions that compute it.
 """
 
 import asyncio
@@ -20,16 +27,31 @@ from typing import Any
 
 import httpx
 import pytest
+import respx
 import structlog
+from tenacity import RetryCallState, wait_none
 
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.core.rate_limit import AsyncTokenBucket, get_edgar_limiter, reset_edgar_limiter
-from app.ingestion.edgar.client import EdgarClient, EdgarRateLimited
+from app.ingestion.edgar.client import (
+    _BACKOFF,
+    _BACKOFF_MAX_SECONDS,
+    _EDGAR_RETRY,
+    _MAX_ATTEMPTS,
+    _RATE_LIMIT_ATTEMPTS,
+    EdgarClient,
+    EdgarRateLimited,
+    EdgarServerError,
+    _rate_limit_wait,
+)
 from tests.conftest import make_settings
 
 #: Enough of a real submissions document to be parsed as JSON.
 _BODY = b'{"cik": "0000320193"}'
+
+#: Any absolute URL will do; respx matches on it exactly.
+_URL = "https://data.sec.gov/submissions/CIK0000320193.json"
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +66,23 @@ def _fresh_limiter() -> Iterator[None]:
     reset_edgar_limiter()
     yield
     reset_edgar_limiter()
+
+
+@pytest.fixture(autouse=True)
+def _instant_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the retry policy's decisions and drop only its sleeps.
+
+    Five attempts at the real backoff is about two minutes, and a single 403 is
+    ten; a suite that waited those out would be a suite nobody runs. Swapping the
+    wait leaves ``retry``, ``stop`` and ``before_sleep`` — everything these tests
+    are actually about — untouched. The durations are covered by the arithmetic
+    tests at the bottom of this file.
+
+    Patching the policy object rather than the wrapped method matters: tenacity
+    copies the object on every call, so the copy that runs during the test reads
+    this wait, and monkeypatch puts the real one back afterwards.
+    """
+    monkeypatch.setattr(_EDGAR_RETRY, "wait", wait_none())
 
 
 def _transport(
@@ -65,6 +104,16 @@ def _client(settings: Settings, **kwargs: Any) -> EdgarClient:
     """An EdgarClient whose requests never leave the process."""
     kwargs.setdefault("transport", _transport())
     return EdgarClient(settings, **kwargs)
+
+
+def _respx_client(settings: Settings) -> EdgarClient:
+    """A client with httpx's *real* transport, for respx to intercept.
+
+    Deliberately not ``_client``: that one injects a ``MockTransport``, which
+    respx never sees and which cannot script a different reply per attempt —
+    exactly what the retry tests need.
+    """
+    return EdgarClient(settings)
 
 
 # --- identification ---------------------------------------------------------
@@ -208,6 +257,194 @@ async def test_404_is_an_ordinary_http_error_not_a_rate_limit(settings: Settings
             await edgar.get_bytes("https://data.sec.gov/missing")
 
 
+# --- retrying ---------------------------------------------------------------
+# The whole point of the policy is that these three groups behave differently,
+# so each test asserts on the call count as well as on the outcome. A test that
+# only checked "it eventually raised" would pass against a policy that retried
+# 404s forever.
+
+
+@respx.mock
+async def test_a_503_is_retried_and_the_next_attempt_succeeds(settings: Settings) -> None:
+    """The acceptance criterion: a transient 5xx costs an extra request, not a
+    failed filing."""
+    route = respx.get(_URL).mock(
+        side_effect=[httpx.Response(503), httpx.Response(200, content=_BODY)]
+    )
+
+    async with _respx_client(settings) as edgar:
+        assert await edgar.get_bytes(_URL) == _BODY
+
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_a_404_raises_immediately_after_a_single_call(settings: Settings) -> None:
+    """The other acceptance criterion. A missing document is missing on the
+    fifth attempt too, and a backfill spends that time once per absent file."""
+    route = respx.get(_URL).mock(return_value=httpx.Response(404))
+
+    async with _respx_client(settings) as edgar:
+        with pytest.raises(httpx.HTTPStatusError):
+            await edgar.get_bytes(_URL)
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_a_400_is_not_retried_either(settings: Settings) -> None:
+    """A malformed request is our bug. Repeating it just delays the traceback."""
+    route = respx.get(_URL).mock(return_value=httpx.Response(400))
+
+    async with _respx_client(settings) as edgar:
+        with pytest.raises(httpx.HTTPStatusError):
+            await edgar.get_bytes(_URL)
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_a_500_is_not_retried(settings: Settings) -> None:
+    """Only 502/503/504 are treated as "EDGAR is briefly unwell". A 500 is an
+    unhandled error on their side and does not resolve itself in eight seconds;
+    this test exists so that widening the set is a deliberate edit."""
+    route = respx.get(_URL).mock(return_value=httpx.Response(500))
+
+    async with _respx_client(settings) as edgar:
+        with pytest.raises(httpx.HTTPStatusError):
+            await edgar.get_bytes(_URL)
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_a_dropped_connection_is_retried(settings: Settings) -> None:
+    """EDGAR closes connections under load, which surfaces as a transport error
+    with no response at all rather than as a status code."""
+    route = respx.get(_URL).mock(
+        side_effect=[httpx.ConnectError("connection reset"), httpx.Response(200, content=_BODY)]
+    )
+
+    async with _respx_client(settings) as edgar:
+        assert await edgar.get_bytes(_URL) == _BODY
+
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_a_read_timeout_is_retried(settings: Settings) -> None:
+    route = respx.get(_URL).mock(
+        side_effect=[httpx.ReadTimeout("timed out"), httpx.Response(200, content=_BODY)]
+    )
+
+    async with _respx_client(settings) as edgar:
+        assert await edgar.get_bytes(_URL) == _BODY
+
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_a_persistent_503_gives_up_after_five_attempts(settings: Settings) -> None:
+    """Bounded, so a genuinely broken EDGAR fails the job instead of pinning a
+    worker forever — and reraised as itself, not wrapped in a RetryError."""
+    route = respx.get(_URL).mock(return_value=httpx.Response(503))
+
+    async with _respx_client(settings) as edgar:
+        with pytest.raises(EdgarServerError) as caught:
+            await edgar.get_bytes(_URL)
+
+    assert route.call_count == _MAX_ATTEMPTS == 5
+    assert caught.value.status_code == 503
+
+
+@respx.mock
+async def test_a_403_is_retried_at_most_twice(settings: Settings) -> None:
+    """A 403 means the IP is already blocked, so every extra request lands on a
+    host that is counting them. Two retries, then the caller decides."""
+    route = respx.get(_URL).mock(return_value=httpx.Response(403))
+
+    async with _respx_client(settings) as edgar:
+        with pytest.raises(EdgarRateLimited):
+            await edgar.get_bytes(_URL)
+
+    assert route.call_count == _RATE_LIMIT_ATTEMPTS == 3
+
+
+@respx.mock
+async def test_a_429_that_clears_is_retried_into_a_success(settings: Settings) -> None:
+    route = respx.get(_URL).mock(
+        side_effect=[httpx.Response(429), httpx.Response(200, content=_BODY)]
+    )
+
+    async with _respx_client(settings) as edgar:
+        assert await edgar.get_bytes(_URL) == _BODY
+
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_get_json_is_retried_too(settings: Settings) -> None:
+    """The policy lives on the shared request path, so it is not something
+    ``get_json`` callers have to opt into separately."""
+    route = respx.get(_URL).mock(
+        side_effect=[httpx.Response(502), httpx.Response(200, content=_BODY)]
+    )
+
+    async with _respx_client(settings) as edgar:
+        assert await edgar.get_json(_URL) == {"cik": "0000320193"}
+
+    assert route.call_count == 2
+
+
+# --- retry waits ------------------------------------------------------------
+# Asserted against the functions that compute them rather than by timing a
+# sleep, so the numbers are checked exactly and the suite stays fast.
+
+
+def test_a_rate_limit_never_retries_sooner_than_a_minute() -> None:
+    """Even when SEC suggests otherwise. Its counter runs on a window longer
+    than any one request, so obeying a short hint just spends an attempt."""
+    assert _rate_limit_wait(1.0) == 60.0
+    assert _rate_limit_wait(0.0) == 60.0
+    # A longer suggestion is honoured as given.
+    assert _rate_limit_wait(90.0) == 90.0
+
+
+def test_a_rate_limit_wait_is_capped_at_the_length_of_a_block() -> None:
+    """So a malformed Retry-After — an HTTP-date a week out — cannot park a
+    worker for a week."""
+    assert _rate_limit_wait(600.0) == 600.0
+    assert _rate_limit_wait(86_400.0) == 600.0
+
+
+def test_backoff_grows_and_is_capped() -> None:
+    attempts = [_BACKOFF(_state(attempt)) for attempt in range(1, 12)]
+
+    # Exponential: ~1, ~2, ~4, ~8 …, each within one second of jitter.
+    assert 1.0 <= attempts[0] <= 2.0
+    assert 2.0 <= attempts[1] <= 3.0
+    assert 4.0 <= attempts[2] <= 5.0
+    # …and never beyond the cap, however long the failure persists.
+    assert all(wait <= _BACKOFF_MAX_SECONDS for wait in attempts)
+    assert attempts[-1] == _BACKOFF_MAX_SECONDS
+
+
+def test_backoff_is_jittered() -> None:
+    """Without jitter, twenty requests that fail together sleep for the same
+    interval and wake in the same millisecond — reconverging into the very burst
+    that provoked the failure."""
+    waits = {_BACKOFF(_state(attempt=3)) for _ in range(50)}
+
+    assert len(waits) > 1
+
+
+def _state(attempt: int) -> RetryCallState:
+    """A retry state at ``attempt``, which is all wait_exponential_jitter reads."""
+    state = RetryCallState(retry_object=_EDGAR_RETRY, fn=None, args=(), kwargs={})
+    state.attempt_number = attempt
+    return state
+
+
 async def test_get_json_parses_the_body(settings: Settings) -> None:
     async with _client(settings) as edgar:
         assert await edgar.get_json("https://data.sec.gov/submissions") == {"cik": "0000320193"}
@@ -271,7 +508,11 @@ async def test_a_transport_failure_is_logged_even_though_it_has_no_status(
     settings: Settings, log_stream: io.StringIO
 ) -> None:
     """A timeout produces no response, so the access line above never runs and
-    the attempt would otherwise leave no trace at all."""
+    the attempt would otherwise leave no trace at all.
+
+    One line per *attempt*, not per call: which of the five failed and how is the
+    question being asked when a backfill is slow rather than dead.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectTimeout("no route to sec.gov", request=request)
@@ -280,9 +521,48 @@ async def test_a_transport_failure_is_logged_even_though_it_has_no_status(
         with pytest.raises(httpx.ConnectTimeout):
             await edgar.get_bytes("https://data.sec.gov/one")
 
-    (event,) = _events(log_stream, "edgar.request_failed")
-    assert event["url"] == "https://data.sec.gov/one"
-    assert event["error"] == "ConnectTimeout"
+    events = _events(log_stream, "edgar.request_failed")
+    assert len(events) == _MAX_ATTEMPTS
+    assert events[0]["url"] == "https://data.sec.gov/one"
+    assert events[0]["error"] == "ConnectTimeout"
+
+
+@respx.mock
+async def test_every_retry_logs_its_attempt_number_and_reason(
+    settings: Settings, log_stream: io.StringIO
+) -> None:
+    """The acceptance criterion, and the line that answers "why did this take
+    four minutes?" — as fields, so the question can be asked of a whole run."""
+    respx.get(_URL).mock(
+        side_effect=[httpx.Response(503), httpx.Response(504), httpx.Response(200, content=_BODY)]
+    )
+
+    async with _respx_client(settings) as edgar:
+        await edgar.get_bytes(_URL)
+
+    first, second = _events(log_stream, "edgar.retry")
+    assert first["attempt"] == 1
+    assert first["url"] == _URL
+    assert first["error"] == "EdgarServerError"
+    assert first["status"] == 503
+    # The retry before the *successful* attempt is logged too; the second
+    # attempt is only known to have failed once the third one is being set up.
+    assert second["attempt"] == 2
+    assert second["status"] == 504
+
+
+@respx.mock
+async def test_a_successful_first_attempt_logs_no_retry(
+    settings: Settings, log_stream: io.StringIO
+) -> None:
+    """The common case stays quiet, so an ``edgar.retry`` line in production
+    always means something actually went wrong."""
+    respx.get(_URL).mock(return_value=httpx.Response(200, content=_BODY))
+
+    async with _respx_client(settings) as edgar:
+        await edgar.get_bytes(_URL)
+
+    assert _events(log_stream, "edgar.retry") == []
 
 
 # --- URL construction -------------------------------------------------------

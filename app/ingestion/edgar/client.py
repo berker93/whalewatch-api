@@ -23,6 +23,42 @@ the client is long-lived and scoped by an ``async with``::
 
     async with EdgarClient(settings) as edgar:
         raw = await edgar.get_json(EdgarClient.submissions_url("0000320193"))
+
+Retrying, and not retrying
+--------------------------
+EDGAR fails in three ways that want three different answers, and the expensive
+mistake is treating them as one. A dropped connection or a 503 is EDGAR having a
+moment: the same request a second later usually works. A 404 is a document that
+does not exist, and no number of attempts will conjure it — retrying one only
+spends wall-clock time to arrive at the same answer, multiplied by every missing
+document in a backfill. A 403 is worse than useless: the IP is already blocked,
+and each extra request lands on a host that is counting them.
+
+So :data:`_EDGAR_RETRY` sorts failures by what a retry would actually accomplish:
+
+===================================  ===========================================
+``httpx.TransportError`` (connect    Up to 5 attempts, exponential backoff with
+errors, read timeouts, dropped       jitter from 1s, capped at 120s.
+connections), 502/503/504
+-----------------------------------  -------------------------------------------
+403, 429 (:class:`EdgarRateLimited`) At most 2 retries, never sooner than 60s —
+                                     and preferring SEC's own ``Retry-After``
+                                     when it sent one.
+-----------------------------------  -------------------------------------------
+400, 404, every other 4xx            Not retried. Raised on the first attempt.
+===================================  ===========================================
+
+The jitter is not decoration. Twenty concurrent fetches that fail together would,
+under a deterministic backoff, sleep for the same interval and wake in the same
+millisecond — reconverging into exactly the synchronized burst that provoked the
+failure. Spreading the wakeups across the interval is what stops a retry storm
+from being indistinguishable from an attack.
+
+Note that a rate-limit retry can sleep for the length of SEC's block (about ten
+minutes) before its next attempt. That is deliberate — coming back sooner means
+knocking on a door we know is shut — but it means a task hitting a 403 is parked,
+not failed, and a caller that would rather abandon the unit of work should catch
+:class:`EdgarRateLimited` and decide for itself rather than await it blindly.
 """
 
 import time
@@ -32,6 +68,12 @@ from types import TracebackType
 from typing import Any, Final, Self
 
 import httpx
+from tenacity import (
+    AsyncRetrying,
+    RetryCallState,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 from app.core.config import Settings
 from app.core.logging import get_logger
@@ -57,6 +99,26 @@ _THROTTLED_SECONDS: Final = 60.0
 #: one filing, one of these should stop the whole run.
 _LIMITED_STATUSES: Final = frozenset({403, 429})
 
+#: Status codes that mean EDGAR is briefly unwell rather than wrong about us: a
+#: gateway that could not reach the origin, a load shedder, a timeout upstream.
+#: Only these three, and not the whole 5xx range — a 500 is an unhandled error on
+#: their side and a 501 is a request they will never serve, and neither improves
+#: by being sent again.
+_RETRYABLE_SERVER_STATUSES: Final = frozenset({502, 503, 504})
+
+#: Attempt budgets. Five for the transient failures, which at the backoff below
+#: spans roughly two minutes of trying before giving up. Three for a rate limit —
+#: the point of retrying a 403 at all is to survive a block that ends while we
+#: wait, and if two long waits did not outlast it, a third will not either.
+_MAX_ATTEMPTS: Final = 5
+_RATE_LIMIT_ATTEMPTS: Final = 3
+
+#: Exponential backoff with jitter, in seconds: ~1, ~2, ~4, ~8 between attempts,
+#: each spread by up to a second, and never longer than the cap. The cap is what
+#: bounds a retry to something a job scheduler can reason about.
+_BACKOFF_INITIAL_SECONDS: Final = 1.0
+_BACKOFF_MAX_SECONDS: Final = 120.0
+
 
 # The suppression below is for pep8-naming's ``Error`` suffix rule. This reads
 # at the call site as the condition it is — ``except EdgarRateLimited`` — and it
@@ -76,6 +138,21 @@ class EdgarRateLimited(Exception):  # noqa: N818
         self.url = url
         self.status_code = status_code
         self.retry_after = retry_after
+
+
+class EdgarServerError(Exception):
+    """EDGAR returned a status that means "try again", not "you are wrong".
+
+    Its own type rather than an ``httpx.HTTPStatusError`` carrying a 503, because
+    the retry policy has to tell 503 from 404 and matching on exception type is
+    the only way tenacity gets to make that distinction. A caller that reaches
+    this has already had five attempts spent on its behalf.
+    """
+
+    def __init__(self, *, url: str, status_code: int) -> None:
+        super().__init__(f"EDGAR returned {status_code} for {url}")
+        self.url = url
+        self.status_code = status_code
 
 
 def _suggested_wait(response: httpx.Response) -> float:
@@ -107,6 +184,117 @@ def _suggested_wait(response: httpx.Response) -> float:
 
 def _elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000, 2)
+
+
+# --- retry policy -----------------------------------------------------------
+# Three small functions rather than a stack of tenacity's combinators, because
+# the decision genuinely depends on both the exception *and* the attempt number
+# (a 503 gets five tries, a 403 gets three) and no combinator expresses that
+# without being harder to read than the ``if`` that replaces it.
+
+
+def _failure(state: RetryCallState) -> BaseException | None:
+    """The exception the last attempt raised, or ``None`` if it succeeded."""
+    outcome = state.outcome
+    if outcome is None or not outcome.failed:
+        return None
+    return outcome.exception()
+
+
+def _should_retry(state: RetryCallState) -> bool:
+    """Decide whether the failure that just happened is worth repeating.
+
+    Anything not named here — ``httpx.HTTPStatusError`` for a 404 or a 400, a
+    ``json`` decode failure, a bug in our own code — falls through to ``False``
+    and is raised to the caller on the first attempt. That default is the right
+    way round: a new failure mode should surface immediately rather than be
+    quietly attempted five times.
+    """
+    exc = _failure(state)
+    if isinstance(exc, EdgarRateLimited):
+        # Counted separately and stopped earlier than the transient failures.
+        # ``attempt_number`` is the attempt that just failed, so this permits
+        # _RATE_LIMIT_ATTEMPTS in total — two retries.
+        return state.attempt_number < _RATE_LIMIT_ATTEMPTS
+    return isinstance(exc, httpx.TransportError | EdgarServerError)
+
+
+def _rate_limit_wait(retry_after: float) -> float:
+    """How long to wait before re-approaching a host that just refused us.
+
+    Floored at :data:`_THROTTLED_SECONDS` so that even a server suggesting "one
+    second" is met with a minute — SEC's counter runs on a window longer than
+    any single request, and obeying a short hint just spends an attempt. Ceilinged
+    at :data:`_BLOCKED_SECONDS`, the length of the longest block SEC actually
+    imposes, so a malformed or absurd ``Retry-After`` (an HTTP-date a week out)
+    cannot park a worker indefinitely.
+    """
+    return min(max(_THROTTLED_SECONDS, retry_after), _BLOCKED_SECONDS)
+
+
+def _retry_wait(state: RetryCallState) -> float:
+    """Seconds to sleep before the next attempt.
+
+    Rate limits get the flat, long wait above; everything retryable gets
+    exponential backoff with jitter. Two curves and not one because they are
+    answering different questions — "has EDGAR recovered yet?" wants to ask
+    sooner and sooner-ish, "has our block expired yet?" has a known answer and
+    asking early only extends it.
+    """
+    exc = _failure(state)
+    if isinstance(exc, EdgarRateLimited):
+        return _rate_limit_wait(exc.retry_after)
+    return _BACKOFF(state)
+
+
+def _log_retry(state: RetryCallState) -> None:
+    """One line per retry, before the sleep that follows it.
+
+    Emitted here rather than by tenacity's ``before_sleep_log`` so the attempt
+    number, the wait and the reason arrive as fields — a backfill that finishes
+    late is diagnosed by asking how many ``edgar.retry`` events it logged and
+    against which URLs, and that is not a question you can ask of a sentence.
+    """
+    exc = _failure(state)
+    logger.warning(
+        "edgar.retry",
+        url=_retry_url(state),
+        attempt=state.attempt_number,
+        max_attempts=_MAX_ATTEMPTS,
+        sleep_seconds=round(state.upcoming_sleep, 2),
+        error=type(exc).__name__,
+        status=getattr(exc, "status_code", None),
+    )
+
+
+def _retry_url(state: RetryCallState) -> str | None:
+    """Recover the URL from the wrapped ``_get(self, url)`` call's arguments."""
+    url = state.kwargs.get("url", state.args[1] if len(state.args) > 1 else None)
+    return url if isinstance(url, str) else None
+
+
+#: Backoff for transient failures, built once: ``wait_exponential_jitter`` is
+#: stateless and derives everything from the attempt number on the state passed
+#: to it, so one instance serves every concurrent request.
+_BACKOFF: Final = wait_exponential_jitter(
+    initial=_BACKOFF_INITIAL_SECONDS, max=_BACKOFF_MAX_SECONDS
+)
+
+#: The policy itself, as an object rather than a ``@retry(...)`` decoration, for
+#: two reasons: it can be documented and referenced by name, and a test can swap
+#: the wait for a zero one without monkeypatching an attribute that tenacity
+#: merely happens to hang off the wrapped function. ``wraps`` copies it per call,
+#: so concurrent requests do not share iteration state.
+_EDGAR_RETRY: Final = AsyncRetrying(
+    retry=_should_retry,
+    wait=_retry_wait,
+    stop=stop_after_attempt(_MAX_ATTEMPTS),
+    before_sleep=_log_retry,
+    # So callers see httpx.ConnectTimeout or EdgarRateLimited — the exceptions
+    # the rest of the ingestion code is written to catch — rather than a
+    # tenacity.RetryError wrapping the one that matters.
+    reraise=True,
+)
 
 
 class EdgarClient:
@@ -192,8 +380,17 @@ class EdgarClient:
         response = await self._get(url)
         return response.json()
 
+    @_EDGAR_RETRY.wraps
     async def _get(self, url: str) -> httpx.Response:
-        """The single path every EDGAR request takes."""
+        """The single path every EDGAR request takes.
+
+        Retried here rather than around :meth:`get_bytes`, which is the same
+        thing for a byte fetch and additionally covers :meth:`get_json` — the
+        transient failures the policy exists for are properties of the request,
+        not of what the caller intends to do with the body. Retrying inside the
+        limiter's scope also means each attempt draws its own token, so a burst
+        of retries stays inside SEC's rate ceiling instead of bypassing it.
+        """
         async with self._limiter:
             started = time.perf_counter()
             try:
@@ -224,6 +421,12 @@ class EdgarClient:
                 status_code=response.status_code,
                 retry_after=_suggested_wait(response),
             )
+        if response.status_code in _RETRYABLE_SERVER_STATUSES:
+            raise EdgarServerError(url=url, status_code=response.status_code)
+        # Everything else 4xx/5xx: a 404 for a document that is not there, a 400
+        # for a URL we built wrong. Both are ours to fix, neither improves with
+        # another attempt, so they leave here as an ordinary HTTPStatusError that
+        # the retry policy declines to match.
         response.raise_for_status()
         return response
 
