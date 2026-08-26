@@ -1,7 +1,9 @@
 # WhaleWatch — data model
 
-Target state for Epic 1. Nothing here is migrated yet; when it is, this document
-and `app/db/models/` move together or the document is wrong.
+Target state for Epic 1. The five core tables — `filer`, `filer_cik`, `filing`,
+`security`, `holding` — are migrated as of `0002_core_schema`; everything else
+below is still a sketch and is marked where it matters. This document and
+`app/db/models/` move together or the document is wrong.
 
 ## Three layers
 
@@ -37,7 +39,8 @@ of a duplicate.
 
 | Entity | Natural key |
 | --- | --- |
-| `filer`, `issuer`, `insider` | `cik` |
+| `filer` | none of its own — see `filer_cik` |
+| `issuer`, `insider` | `cik` |
 | `filing` | `accession_no` |
 | `holding` | `(filing_id, cusip, put_call, sshprnamt_type)` |
 | `insider_transaction` | `(filing_id, line_number)` |
@@ -53,24 +56,54 @@ can report the same CUSIP three times in one filing — common stock, calls, and
 puts — and a key of `(filing_id, cusip)` collapses them into one row on
 conflict, silently losing two positions.
 
+That key is declared `UNIQUE NULLS NOT DISTINCT`, which is not optional and is
+easy to leave off. `put_call` is null on every common-stock row — most of the
+table — and under Postgres's default handling two nulls never conflict, so the
+constraint would permit unlimited duplicates of exactly the rows it exists to
+protect. `ON CONFLICT` would never fire and every re-ingest would add another
+full copy of the filing, which surfaces as a fund that appears to hold twice
+what it holds. Requires Postgres 15+.
+
 ## Tables
 
-### `filer`
+### `filer` / `filer_cik`
 
-The institution behind a 13F.
+The institution behind a 13F, and the CIKs it files under. Two tables, because
+the thing a user means by "Berkshire" and the thing EDGAR means by a CIK do not
+have the same cardinality.
 
 ```
-id            bigint pk
-cik           char(10)     unique, not null
-name          text         not null      -- as reported on the latest cover page
-slug          citext       unique        -- 'berkshire-hathaway', stable, ours
-first_period  date                       -- earliest period we hold
-last_period   date                       -- latest period we hold
+filer
+  id            bigint pk
+  name          text         not null    -- as reported on the latest cover page
+  slug          text         unique      -- 'berkshire-hathaway', stable, ours
+  first_period  date                     -- earliest period we hold
+  last_period   date                     -- latest period we hold
+
+filer_cik
+  id        bigint pk
+  filer_id  bigint    fk -> filer, on delete cascade
+  cik       char(10)  unique, not null
 ```
+
+**`filer` carries no `cik` column.** One institution files under several CIKs,
+routinely and permanently: funds are registered per legal entity, entities get
+reorganised, and an acquired manager keeps filing under its own CIK for years.
+A unique `cik` on `filer` forces ingestion to choose between inventing a second
+filer for what is obviously one institution — the API then showing two
+Berkshires with a decade of history each — and discarding every filing made
+under the non-canonical CIKs.
+
+The unique constraint moves to `filer_cik.cik`, so the relationship is
+many-CIKs-to-one-filer in one direction and a function in the other. That second
+half is what makes resolving a filing's CIK to a filer well-defined.
 
 `slug` is the public identifier in URLs, and it is generated once and then frozen
 even if the filer renames itself. A slug derived live from `name` is a URL that
-changes under a client when a fund rebrands.
+changes under a client when a fund rebrands. It is `text` rather than the
+`citext` this document originally specified: slugs are minted lowercase by one
+function, so case-insensitive comparison has nothing to do, and `citext` is an
+extension to install in every database anyone ever creates.
 
 ### `issuer` / `security`
 
@@ -92,12 +125,19 @@ issuer
 security
   id                bigint pk
   cusip             char(9)    unique, not null
-  issuer_id         bigint     fk -> issuer
+  issuer_id         bigint     fk -> issuer          -- NOT YET MIGRATED, see below
+  name              text                    -- nameOfIssuer as the filing wrote it
   ticker            text                    -- null when unresolved; see below
-  figi              text
+  figi              char(12)
   resolution_source text                    -- 'openfigi' | '13f_column' | 'manual'
   resolved_at       timestamptz
 ```
+
+`issuer` and `security.issuer_id` are **not in `0002_core_schema`**. A 13F
+information table gives us a CUSIP and a filer-supplied issuer name and nothing
+else, so the issuer table arrives with the `/stocks` search that needs it. Until
+then `security.name` holds the name as filed — inconsistent, abbreviated
+("BERKSHIRE HATHAWAY INC DEL"), and enough to display an unresolved security.
 
 `ticker` is nullable and stays nullable. CUSIP→ticker resolution fails for
 delisted names and obscure instruments, and a `NOT NULL` here would force the
@@ -115,17 +155,51 @@ One row per EDGAR submission, of any form type.
 
 ```
 id                bigint pk
-accession_no      char(20)     unique, not null   -- dashed
-cik               char(10)     not null           -- the filer, may be issuer or insider
+accession_no      char(20)     unique, not null   -- dashed. THE idempotency key
+cik               char(10)     not null, indexed  -- as filed; issuer or insider too
+filer_id          bigint       fk -> filer        -- null until resolved; null for Form 4
 form_type         text         not null           -- '13F-HR', '13F-HR/A', '4', ...
-period            date                            -- report date; null for Form 4
+period_of_report  date                            -- report date; null for Form 4
+quarter           text         GENERATED STORED   -- '2024Q1', from period_of_report
 filed_at          timestamptz  not null
-raw_document_id   bigint       fk -> raw_document
-amends            bigint       fk -> filing       -- self-ref, set on /A forms
+value_multiplier  smallint     not null           -- 1 or 1000; see below
+amends_id         bigint       fk -> filing       -- self-ref, set on /A forms
+amendment_kind    amendment_kind                  -- enum; null when not an amendment
 report_type       text                            -- 13F cover page: HOLDINGS | NOTICE | COMBINATION
 parsed_at         timestamptz                     -- null = fetched but not yet parsed
 parse_error       text
+raw_document_id   bigint       fk -> raw_document -- NOT YET MIGRATED (Epic 2)
 ```
+
+`accession_no` is **the idempotency key** and its `UNIQUE` is the constraint the
+whole ingestion pipeline rests on. Every task in `app/jobs` is keyed on an
+accession number and Celery delivers at least once, so the collision happens in
+normal operation — a retried task, a resumed backfill, an operator re-running a
+quarter. Without the constraint that does not raise, it duplicates: two filings,
+two sets of holdings, a portfolio reporting twice the positions it holds.
+
+`quarter` is a Postgres generated column, not a value the loader writes, so
+there is no code path anywhere that can put `2024Q1` on a June period. The
+expression is *not* the obvious `to_char(period_of_report, 'YYYY"Q"Q')`:
+`to_char(timestamp, text)` is `STABLE` rather than `IMMUTABLE` — its output
+depends on `lc_time` and `DateStyle` — and Postgres rejects a non-immutable
+generation expression outright with "generation expression is not immutable".
+It is composed from `extract` instead, which is immutable and produces identical
+output. Alembic cannot see generated columns at all, so it is written in raw DDL
+and any change to it is a hand-written drop-and-re-add.
+
+`value_multiplier` records what the information table's `value` column had to be
+multiplied by — 1 or 1000, per the
+[whole-dollars cutover](ingestion-spec.md#the-whole-dollars-cutover). It is keyed
+off `filed_at`, never off the period, and it exists so that a 1000x mis-parse is
+diagnosable from the database rather than by re-reading the raw document.
+`holding.value_usd` is normalised to whole dollars regardless.
+
+`amendment_kind` is a native enum, `restatement | new_holdings`, normalised from
+EDGAR's `<amendmentType>`. It is the most consequential field on an amendment: a
+restatement replaces the period's holdings wholesale and a new-holdings
+amendment adds to them, so getting it backwards either doubles every position or
+discards the ones the original reported. Both outcomes look plausible.
 
 `filed_at` matters more than it looks: it is what decides whether a 13F's dollar
 values are in thousands or whole dollars. See the
@@ -142,10 +216,11 @@ One line of a 13F information table.
 
 ```
 id                bigint pk
-filing_id         bigint    fk -> filing, not null
-security_id       bigint    fk -> security, not null
+filing_id         bigint    not null   -- FK is composite, with period_of_report
+security_id       bigint    fk -> security, not null, on delete restrict
 filer_id          bigint    fk -> filer, not null      -- denormalised from filing
-period            date      not null                    -- denormalised from filing
+period_of_report  date      not null                    -- denormalised from filing
+cusip             char(9)   not null                    -- as the filing wrote it
 value_usd         numeric(20,2)  not null               -- ALWAYS whole dollars
 shares            numeric(20,4)  not null
 sshprnamt_type    text      not null                    -- 'SH' | 'PRN'
@@ -161,8 +236,21 @@ regardless of what the filing said. Storing the filing's own units and
 converting at query time means every consumer has to know about the cutover, and
 one of them will not.
 
-`filer_id` and `period` are denormalised off `filing` because every read path
-filters on them and the alternative is a join on every query in the service.
+`filer_id` and `period_of_report` are denormalised off `filing` because every
+read path filters on them and the alternative is a join on every query in the
+service. They are held to their source by a composite foreign key —
+`(filing_id, period_of_report)` references `filing (id, period_of_report)`,
+which is what the otherwise-pointless `UNIQUE (id, period_of_report)` on
+`filing` exists to satisfy — so the copy cannot drift from the original. That FK
+also carries the referential integrity for `filing_id`, which is why that column
+has no foreign key of its own. `ON UPDATE CASCADE`, so an amendment correcting a
+period carries its holdings with it; `ON DELETE CASCADE`, because re-parsing a
+bad filing is a delete and the holdings are its content.
+
+`cusip` is stored here as well as on `security`, and it is not redundant: this is
+the filing's own bytes and part of the natural key, whereas `security` is a
+mutable interpretation of them. When a resolution turns out to be wrong, this is
+the column to compare against.
 
 `shares` is `numeric`, not `bigint`: `sshprnamt_type = 'PRN'` rows report a
 principal amount, and fractional share counts appear after some corporate
@@ -244,12 +332,12 @@ looks wrong two years from now, whether the bytes changed or our parser did.
 `holding` is the only table with a partitioning plan, and it is deferred until it
 hurts. Rough shape: ~4,000 filers × ~200 positions × 4 quarters is low millions of
 rows a year, which Postgres does not care about. When it does, it partitions by
-`RANGE (period)` — every read path already filters on `period`, so partition
+`RANGE (period_of_report)` — every read path already filters on it, so partition
 pruning is free rather than a rewrite.
 
-Written down now so that when the day comes, `period` is already `NOT NULL` and
-already in every unique constraint, which is what partitioning requires and what
-is expensive to add later.
+Written down now so that when the day comes, `period_of_report` is already
+`NOT NULL` on `holding` and already in every unique constraint, which is what
+partitioning requires and what is expensive to add later.
 
 ## Materialised views
 
@@ -268,16 +356,25 @@ with a real `downgrade`, like everything else in
 
 ## Invariants
 
-The ones worth a constraint rather than a convention:
+The ones worth a constraint rather than a convention. Everything marked
+**enforced** is a real constraint in `0002_core_schema` with a test in
+`tests/integration/test_core_schema.py`; the rest await the tables they concern.
 
-- `holding.value_usd >= 0` and `holding.shares >= 0` — 13F is long-only; a
-  negative is a parse error, not a short position.
-- `holding.put_call IN ('Put','Call')` or null.
-- `holding.sshprnamt_type IN ('SH','PRN')`.
+- **enforced** — `holding.value_usd >= 0` and `holding.shares >= 0`. 13F is
+  long-only; a negative is a parse error, not a short position.
+- **enforced** — `holding.put_call IN ('Put','Call')` or null.
+- **enforced** — `holding.sshprnamt_type IN ('SH','PRN')`.
+- **enforced** — `filing.value_multiplier IN (1, 1000)`.
+- **enforced** — a 13F form type has a non-null `period_of_report`. Written as an
+  implication on `form_type` rather than `NOT NULL`, because Form 4 shares this
+  table and genuinely has no period.
 - `insider_transaction.acquired_disposed IN ('A','D')`.
-- `filing.period` is the last day of a calendar quarter, for 13F form types.
-- Exactly one non-amended `filing` per `(cik, period)` with
-  `report_type = 'HOLDINGS'`; amendments chain through `amends`.
-- Every `holding` row's `period` equals its `filing`'s `period`. A trigger, or a
-  composite FK on `(filing_id, period)`, because the denormalisation above is
-  otherwise a lie waiting to happen.
+- `filing.period_of_report` is the last day of a calendar quarter, for 13F form
+  types. Not enforced: amended and late filings do occasionally carry an
+  off-quarter date, and rejecting them at the boundary would lose the filing
+  rather than flag it.
+- Exactly one non-amended `filing` per `(cik, period_of_report)` with
+  `report_type = 'HOLDINGS'`; amendments chain through `amends_id`.
+- **enforced** — every `holding` row's `period_of_report` equals its `filing`'s,
+  by the composite FK above rather than by a trigger, because the
+  denormalisation is otherwise a lie waiting to happen.
