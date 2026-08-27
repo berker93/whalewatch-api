@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Deliberately carries a different namespace URI from the other fixtures. The
+  URI on this document is not one EDGAR has served; it is here so that a parser
+  which hardcodes a namespace fails this test instead of failing in production
+  the next time the schema is revised. See tests/test_primary_doc.py.
+-->
+<edgarSubmission xmlns="http://www.sec.gov/edgar/thirteenffiler/2013"
+                 xmlns:com="http://www.sec.gov/edgar/common">
+  <schemaVersion>X0201</schemaVersion>
+  <headerData>
+    <submissionType>13F-HR/A</submissionType>
+    <filerInfo>
+      <liveTestFlag>LIVE</liveTestFlag>
+      <filer>
+        <credentials>
+          <cik>0001350694</cik>
+          <ccc>XXXXXXXX</ccc>
+        </credentials>
+      </filer>
+      <periodOfReport>06-30-2023</periodOfReport>
+    </filerInfo>
+  </headerData>
+  <formData>
+    <coverPage>
+      <reportCalendarOrQuarter>06-30-2023</reportCalendarOrQuarter>
+      <isAmendment>true</isAmendment>
+      <amendmentNo>1</amendmentNo>
+      <amendmentInfo>
+        <amendmentType>RESTATEMENT</amendmentType>
+      </amendmentInfo>
+      <filingManager>
+        <name>Bridgewater Associates, LP</name>
+        <address>
+          <com:street1>ONE GLENDINNING PLACE</com:street1>
+          <com:city>WESTPORT</com:city>
+          <com:stateOrCountry>CT</com:stateOrCountry>
+          <com:zipCode>06880</com:zipCode>
+        </address>
+      </filingManager>
+      <reportType>13F HOLDINGS REPORT</reportType>
+      <form13FFileNumber>028-11431</form13FFileNumber>
+      <provideInfoForInstruction5>N</provideInfoForInstruction5>
+    </coverPage>
+    <signatureBlock>
+      <name>Kyle Delaney</name>
+      <title>Chief Financial Officer</title>
+      <phone>203-226-3030</phone>
+      <signature>Kyle Delaney</signature>
+      <city>Westport</city>
+      <stateOrCountry>CT</stateOrCountry>
+      <signatureDate>09-08-2023</signatureDate>
+    </signatureBlock>
+    <summaryPage>
+      <otherIncludedManagersCount>0</otherIncludedManagersCount>
+      <tableEntryTotal>793</tableEntryTotal>
+      <tableValueTotal>19608242</tableValueTotal>
+      <isConfidentialOmitted>false</isConfidentialOmitted>
+    </summaryPage>
+  </formData>
+</edgarSubmission>

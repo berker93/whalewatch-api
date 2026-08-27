@@ -11,6 +11,11 @@ dependencies = [
     # Runtime, not dev: the EDGAR client is application code. It was already
     # here as a test dependency for httpx.AsyncClient against the ASGI app.
     "httpx>=0.28",
+    # The 13F documents are namespaced and the namespace URI has changed between
+    # EDGAR schema versions, so every lookup is a local-name() XPath. stdlib
+    # ElementTree implements only a subset of XPath that excludes local-name(),
+    # which leaves hardcoding a URI that is known to vary as the alternative.
+    "lxml>=5.3",
     "pydantic-settings>=2.7",
     "pydantic[email]>=2.9",
     "redis>=5.2",
@@ -55,6 +60,7 @@ markers = [
 [dependency-groups]
 dev = [
     "httpx>=0.28",
+    "lxml-stubs>=0.5",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
