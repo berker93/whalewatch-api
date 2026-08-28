@@ -153,11 +153,17 @@ Three rules, and the middle one is the one people get backwards:
   submission. An amendment filed in 2024 for a 2019 period is in **whole
   dollars**, even though the original filing for that same period was in
   thousands — so a `period < 2023` test gets amendments exactly inverted.
-- **Verify, do not assume.** Check the parsed sum against the cover page's own
-  `tableValueTotal`, and check `value` against `shares × period-end price`. A
-  ratio clustering near 1000 or 1/1000 means the units were misread. Keep
-  fixtures from both sides of the boundary *and* a post-cutover amendment of a
-  pre-cutover period; that third case is the one that regresses.
+- **Verify, do not assume.** `app/ingestion/normalisation.py` runs three guards
+  over every normalised filing — the implied share price, the row count against
+  the cover page's `tableEntryTotal`, and the summed value against its
+  `tableValueTotal` — and records what fires in `filing.parse_status` and
+  `filing.parse_notes`. The price check is the one that matters most: it is the
+  only one that reaches outside the document, so it catches a filer who kept
+  using the old convention as well as a parser that did. Guards **flag, they do
+  not reject** — a suspect filing still loads, because the alternative is a hole
+  that looks exactly like a manager who filed nothing. Fixtures exist for both
+  sides of the boundary *and* for a post-cutover amendment of a pre-cutover
+  period; that third case is the one that regresses.
 
 ### Also true, and also enough to make a number wrong
 

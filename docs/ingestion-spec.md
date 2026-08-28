@@ -164,17 +164,39 @@ on read — requires every consumer to know about the cutover, and one of them w
 not.
 
 **3. Verify, do not assume.** The boundary above is what EDGAR's rules say; the
-filings are what you actually have. Check both:
+filings are what you actually have. `app/ingestion/normalisation.py` applies the
+multiplier and then runs three guards over the result, writing what they find to
+`filing.parse_status` and `filing.parse_notes`:
 
-- Against the filing's own `tableValueTotal`, whose units match the table's.
-- Against the arithmetic: `value` should be within a factor of ~2 of
-  `shares × price at period end` for common stock. A ratio clustering near 1000
-  or 1/1000 across a filing means the convention was misread. Run this as an
-  assertion during backfill, not as a dashboard nobody opens.
+- **Implied price.** `value_usd / shares` outside $0.01–$100,000. The only check
+  that reaches outside the document, and so the only one that catches a units
+  error the *filer* made consistently — several managers kept filing in thousands
+  after the cutover and had to amend, and every internal total in those documents
+  agrees with itself.
+- **Entry count.** Parsed rows against the cover page's `tableEntryTotal`.
+  Catches a truncated download and a silently skipped row, both of which produce
+  a portfolio that is merely *smaller* than the real one.
+- **Value total.** The summed value against `tableValueTotal`, within 1%.
+  Filers round; nothing rounds by 1000.
+
+Known limit of the price guard: dividing by 1000 in error only pushes an implied
+price under a cent for a stock trading below about $10, so an under-scaled
+mega-cap ($170 a share read as $0.17) passes it. Closing that gap needs
+`shares × price at period end`, which is a dependency on the price feed and
+therefore an enrichment-step check rather than a parse-time one. `pytest
+tests/test_normalisation.py -k mega_cap` pins the blind spot so nobody assumes it
+away.
+
+**Guards flag, they do not reject.** A filing that fails all three still loads,
+marked `suspect`. It is the only disclosure that manager made for the quarter,
+and dropping it leaves a hole indistinguishable from a manager who filed nothing.
 
 Keep a fixture of one real filing from each side of the boundary, plus one
 post-cutover amendment of a pre-cutover period, in `tests/fixtures/`. That third
 case is the one that regresses.
+`information_table_thousands.xml` and `information_table_dollars.xml` are that
+pair — the same four positions, values 1000x apart — and the amendment case is
+`test_an_amendment_follows_the_date_it_was_filed_not_the_period_it_describes`.
 
 ### And the other traps
 

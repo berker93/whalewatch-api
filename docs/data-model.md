@@ -167,7 +167,9 @@ amends_id         bigint       fk -> filing       -- self-ref, set on /A forms
 amendment_kind    amendment_kind                  -- enum; null when not an amendment
 report_type       text                            -- 13F cover page: HOLDINGS | NOTICE | COMBINATION
 parsed_at         timestamptz                     -- null = fetched but not yet parsed
-parse_error       text
+parse_error       text                            -- set only alongside parse_status = 'failed'
+parse_status      text         not null           -- pending | ok | suspect | failed
+parse_notes       jsonb                           -- what the guards found; null when nothing did
 raw_document_id   bigint       fk -> raw_document -- NOT YET MIGRATED (Epic 2)
 ```
 
@@ -204,6 +206,26 @@ discards the ones the original reported. Both outcomes look plausible.
 `filed_at` matters more than it looks: it is what decides whether a 13F's dollar
 values are in thousands or whole dollars. See the
 [ingestion spec](ingestion-spec.md#the-whole-dollars-cutover).
+
+`parse_status` and `parse_notes` are the record of the
+[validation guards](ingestion-spec.md#the-whole-dollars-cutover). `pending` is
+the default and means fetched but not parsed; `failed` means the document could
+not be read at all and `parse_error` says why; `ok` means every guard passed.
+The one that earns the column is `suspect`: parsed, **loaded**, and believed with
+reservations, because some guard fired — a row count that disagrees with the
+cover page, a total that does not sum, or a position implying a share price no
+security has. A suspect filing is flagged rather than rejected. Withholding it
+leaves a gap that reads, to every query downstream, exactly like a manager who
+filed nothing.
+
+`parse_status` is `text` with a `CHECK` rather than a native enum, per the rule
+in `app/db/models/enums.py`: the vocabulary is ours and will grow, and
+`ALTER TYPE ... ADD VALUE` has no reverse. `parse_notes` is `jsonb` because the
+question it exists to answer is asked across a backfill rather than about one
+row — `WHERE parse_notes @> '[{"kind": "implied_price"}]'` — and against a text
+column that is a grep. Its `Decimal`s are stored as **strings**: a JSON number is
+an IEEE 754 double, and a column recording a suspected 1000x error is a poor
+place to round the figure a second time.
 
 `report_type` is on the filing, not derived at query time, because a `13F NOTICE`
 contains no holdings and a `13F COMBINATION REPORT` contains only the subset the
@@ -357,14 +379,19 @@ with a real `downgrade`, like everything else in
 ## Invariants
 
 The ones worth a constraint rather than a convention. Everything marked
-**enforced** is a real constraint in `0002_core_schema` with a test in
-`tests/integration/test_core_schema.py`; the rest await the tables they concern.
+**enforced** is a real constraint in `0002_core_schema` or `0003_parse_status`,
+with a test in `tests/integration/test_core_schema.py`; the rest await the tables
+they concern.
 
 - **enforced** — `holding.value_usd >= 0` and `holding.shares >= 0`. 13F is
   long-only; a negative is a parse error, not a short position.
 - **enforced** — `holding.put_call IN ('Put','Call')` or null.
 - **enforced** — `holding.sshprnamt_type IN ('SH','PRN')`.
 - **enforced** — `filing.value_multiplier IN (1, 1000)`.
+- **enforced** — `filing.parse_status IN ('pending','ok','suspect','failed')`.
+- **enforced** — a `suspect` filing has non-null `parse_notes`. A filing we do not
+  fully believe has to say why; the status exists to send a person to a specific
+  row of a specific document, which a bare flag cannot do.
 - **enforced** — a 13F form type has a non-null `period_of_report`. Written as an
   implication on `form_type` rather than `NOT NULL`, because Form 4 shares this
   table and genuinely has no period.

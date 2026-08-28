@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The post-cutover half of the pair. Filed on or after 2023-01-03, so every
+  <value> here is WHOLE DOLLARS - the same four positions as
+  information_table_thousands.xml, written 1000x larger.
+
+  The <figi> elements are the other visible difference between the two, and they
+  are here because they are true of the era rather than because anything in the
+  cutover tests reads them: the column does not exist on a filing from 2021.
+
+  Keep the two files in step. The property they exist to support is that the
+  loader's value_usd is identical for both.
+-->
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+  <infoTable>
+    <nameOfIssuer>APPLE INC</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>037833100</cusip>
+    <figi>BBG000B9XRY4</figi>
+    <value>2040000000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>12000000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+    <votingAuthority>
+      <Sole>12000000</Sole>
+      <Shared>0</Shared>
+      <None>0</None>
+    </votingAuthority>
+  </infoTable>
+
+  <infoTable>
+    <nameOfIssuer>MICROSOFT CORP</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>594918104</cusip>
+    <figi>BBG000BPH459</figi>
+    <value>1190000000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>3500000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+    <votingAuthority>
+      <Sole>3500000</Sole>
+      <Shared>0</Shared>
+      <None>0</None>
+    </votingAuthority>
+  </infoTable>
+
+  <infoTable>
+    <nameOfIssuer>COCA COLA CO</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>191216100</cusip>
+    <figi>BBG000BMX289</figi>
+    <value>1500000000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>25000000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>DEFINED</investmentDiscretion>
+    <votingAuthority>
+      <Sole>25000000</Sole>
+      <Shared>0</Shared>
+      <None>0</None>
+    </votingAuthority>
+  </infoTable>
+
+  <infoTable>
+    <nameOfIssuer>SIRIUS XM HLDGS INC</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>82968B103</cusip>
+    <figi>BBG000BT0093</figi>
+    <value>200000000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>40000000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+    <votingAuthority>
+      <Sole>40000000</Sole>
+      <Shared>0</Shared>
+      <None>0</None>
+    </votingAuthority>
+  </infoTable>
+
+</informationTable>

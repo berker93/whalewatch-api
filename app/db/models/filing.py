@@ -8,6 +8,8 @@ schema.
 from __future__ import annotations
 
 from datetime import date, datetime
+from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     CHAR,
@@ -22,7 +24,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     desc,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.models.base import Base
@@ -47,6 +51,64 @@ QUARTER_EXPRESSION = (
     "EXTRACT(YEAR FROM period_of_report)::int::text"
     " || 'Q' || "
     "EXTRACT(QUARTER FROM period_of_report)::int::text"
+)
+
+
+class ParseStatus(StrEnum):
+    """How much we believe the numbers this filing produced.
+
+    Text with a ``CHECK`` rather than a native Postgres enum, unlike
+    :class:`~app.db.models.enums.AmendmentKind`, and the rule that decides which
+    is written out in :mod:`app.db.models.enums`: an enum is for a set closed by
+    someone else's rules, text plus a check for a set that is ours and will
+    grow. This one is ours — the next guard we write adds no value here, but the
+    day a fifth *status* is wanted, ``ALTER TYPE`` is a migration that cannot be
+    reversed, and a check constraint is one line of DDL in both directions.
+
+    The four states are not four opinions about the same thing:
+
+    ``pending``
+        Fetched, not yet parsed. The default, and what a row looks like between
+        the archive step and the parse step — see :attr:`Filing.parsed_at`.
+    ``ok``
+        Parsed, and every guard in :mod:`app.ingestion.normalisation` passed.
+    ``suspect``
+        Parsed, loaded, and *believed with reservations*. Some guard fired:
+        the row count disagrees with the cover page, the values do not sum to
+        ``tableValueTotal``, or a position implies a share price no security
+        has. The holdings are in the table — a suspect filing is flagged, not
+        rejected, because withholding a portfolio that is 99% right is its own
+        kind of wrong answer — and :attr:`Filing.parse_notes` says which rows
+        provoked it.
+    ``failed``
+        The document could not be parsed at all. :attr:`Filing.parse_error`
+        says why, and no holdings exist for this filing.
+
+    The distinction that earns this column its place is ``ok`` versus
+    ``suspect``. Both load. Only one of them should be trusted by a backfill
+    that is about to publish, and without somewhere to write the difference down
+    the only record of a fired guard is a log line nobody greps.
+    """
+
+    PENDING = "pending"
+    OK = "ok"
+    SUSPECT = "suspect"
+    FAILED = "failed"
+
+
+# The vocabulary above as a SQL predicate, built from the enum so that adding a
+# member cannot leave the constraint behind. Imported by the migration for the
+# same reason QUARTER_EXPRESSION is: one definition, two consumers.
+PARSE_STATUS_CHECK = "parse_status IN ({})".format(
+    ", ".join(f"'{status.value}'" for status in ParseStatus)
+)
+
+# A filing we do not fully believe has to say why. Without this, `suspect` is a
+# flag someone can set and nobody can act on: the whole point of the status is
+# that it sends a person to a specific row of a specific document, and it cannot
+# do that from a bare boolean.
+SUSPECT_HAS_NOTES_CHECK = (
+    f"parse_status <> '{ParseStatus.SUSPECT.value}' OR parse_notes IS NOT NULL"
 )
 
 
@@ -225,6 +287,49 @@ class Filing(Base):
 
     "Which filings are broken right now" should be a query, not a grep through
     whatever retention the log shipper happens to have.
+
+    Set only alongside ``parse_status = 'failed'``. A filing that parsed and
+    then failed a guard is not an error — it is a :attr:`parse_status` of
+    ``suspect`` with :attr:`parse_notes` — and conflating the two loses the
+    distinction between "there are no holdings" and "there are holdings I would
+    check before publishing".
+    """
+
+    parse_status: Mapped[str] = mapped_column(
+        Text,
+        # 'pending' rather than NULL, so that "not parsed yet" is a value the
+        # constraint covers rather than a hole underneath it, and so that every
+        # existing row got a defensible answer when this column was added.
+        server_default=text(f"'{ParseStatus.PENDING.value}'"),
+    )
+    """``pending``, ``ok``, ``suspect`` or ``failed``. See :class:`ParseStatus`.
+
+    Typed ``str`` rather than ``Mapped[ParseStatus]`` on purpose: the column is
+    ``text`` with a check constraint, not a Postgres enum, and annotating it
+    with the Python enum would make SQLAlchemy emit an ``Enum()`` type and
+    create a database type nobody asked for. :class:`ParseStatus` supplies the
+    spellings; the constraint enforces them.
+    """
+
+    parse_notes: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    """What the guards found, as an array of objects. Null when they found nothing.
+
+    ``jsonb`` rather than ``text``, because the question this column exists to
+    answer is not "what happened to this filing" but "which filings did the
+    implied-price guard fire on, and on which CUSIPs" — asked across a whole
+    backfill, after the fact, by someone deciding whether to publish. One is a
+    ``WHERE parse_notes @> '[{"kind": "implied_price"}]'``; the other is a
+    grep through a text column.
+
+    The shape is :class:`~app.ingestion.normalisation.ParseNote`, serialised
+    with ``mode="json"`` — which renders every ``Decimal`` as a *string*, not a
+    JSON number. Deliberate: JSON numbers are IEEE 754 doubles, and a column
+    that exists to record a suspected 1000x error is a poor place to introduce
+    a second rounding of the same figure.
+
+    Null and ``[]`` are not made to mean the same thing by anything here, but
+    nothing writes ``[]``: :meth:`~app.ingestion.normalisation.NormalisedFiling.parse_notes_json`
+    returns ``None`` for an empty list, so "no findings" has one spelling.
     """
 
     filer: Mapped[Filer | None] = relationship()
@@ -268,4 +373,6 @@ class Filing(Base):
             "form_type NOT LIKE '13F%' OR period_of_report IS NOT NULL",
             name="thirteen_f_has_a_period_of_report",
         ),
+        CheckConstraint(PARSE_STATUS_CHECK, name="parse_status_is_known"),
+        CheckConstraint(SUSPECT_HAS_NOTES_CHECK, name="a_suspect_filing_says_why"),
     )

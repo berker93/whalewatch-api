@@ -27,7 +27,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from alembic import command
-from app.db.models import AmendmentKind, Filer, FilerCik, Filing, Holding, Security
+from app.db.models import (
+    AmendmentKind,
+    Filer,
+    FilerCik,
+    Filing,
+    Holding,
+    ParseStatus,
+    Security,
+)
+from app.ingestion.normalisation import normalise_filing
+from app.ingestion.parsers.thirteen_f import InformationTable, InfoTableRow, PrimaryDoc
 from tests.integration.conftest import ALEMBIC_INI
 
 # `command.upgrade` / `command.downgrade` with the revision already bound.
@@ -523,6 +533,167 @@ async def test_the_value_multiplier_is_one_or_one_thousand(db_session: AsyncSess
                 )
             )
             await db_session.flush()
+
+
+async def test_a_filing_is_pending_until_something_parses_it(db_session: AsyncSession) -> None:
+    """The server default, which is what every row already in the table got.
+
+    ``pending`` rather than NULL, so "nobody has looked at this yet" is a value
+    the check constraint covers rather than a hole underneath it — and so that
+    ``WHERE parse_status <> 'ok'`` is an honest answer to "what is not published
+    yet" without having to remember the null.
+    """
+    filer = await _a_filer(db_session)
+    filing = await _a_filing(db_session, filer)
+
+    await db_session.refresh(filing)
+
+    assert filing.parse_status == ParseStatus.PENDING
+    assert filing.parse_notes is None
+
+
+async def test_the_parse_status_vocabulary_is_closed(db_session: AsyncSession) -> None:
+    """Text with a CHECK, not a native enum — see ParseStatus for why — which
+    means the constraint is the only thing standing between this column and a
+    status somebody invented in a one-off script."""
+    filer = await _a_filer(db_session)
+    filing = await _a_filing(db_session, filer)
+
+    with pytest.raises(IntegrityError, match="parse_status_is_known"):
+        async with db_session.begin_nested():
+            await db_session.execute(
+                text("UPDATE filing SET parse_status = 'probably_fine' WHERE id = :id"),
+                {"id": filing.id},
+            )
+
+
+async def test_a_suspect_filing_must_say_why(db_session: AsyncSession) -> None:
+    """``suspect`` with no notes is a flag nobody can act on.
+
+    The status exists to send a person to a specific row of a specific document.
+    A bare boolean cannot do that, so the constraint refuses to store one.
+    """
+    filer = await _a_filer(db_session)
+    filing = await _a_filing(db_session, filer)
+
+    with pytest.raises(IntegrityError, match="a_suspect_filing_says_why"):
+        async with db_session.begin_nested():
+            filing.parse_status = ParseStatus.SUSPECT
+            await db_session.flush()
+
+
+async def test_the_guards_findings_land_in_a_column_that_can_be_queried(
+    db_session: AsyncSession,
+) -> None:
+    """The reason ``parse_notes`` is ``jsonb`` rather than ``text``.
+
+    The question this column is for is not "what happened to this filing" — it
+    is "which filings did the implied-price guard fire on", asked across a whole
+    backfill by someone deciding whether to publish it. That is a containment
+    lookup, and against a text column it is a grep.
+
+    Written here from a real :func:`normalise_filing` result rather than from a
+    hand-built dict, so that a change to the note shape fails this test instead
+    of quietly making every operator's query return nothing.
+    """
+    misread = normalise_filing(
+        # A $5 stock filed in thousands and read as dollars: a fifth of a cent
+        # a share, which is the shape of a 1000x error.
+        filed_at=datetime(2024, 5, 15, 16, 30, tzinfo=UTC),
+        cover=PrimaryDoc(
+            cik=BERKSHIRE,
+            filer_name="Berkshire Hathaway Inc",
+            form_type="13F-HR",
+            period_of_report=date(2024, 3, 31),
+            signature_date=None,
+            amendment_no=None,
+            amendment_kind=None,
+            report_type="13F HOLDINGS REPORT",
+            table_entry_total=1,
+            table_value_total=200_000,
+            other_included_managers_count=None,
+            confidential_omitted=False,
+        ),
+        table=InformationTable(
+            rows=(
+                InfoTableRow(
+                    name_of_issuer="SIRIUS XM HLDGS INC",
+                    title_of_class="COM",
+                    cusip="82968B103",
+                    figi=None,
+                    value=Decimal(200_000),
+                    shares=Decimal(40_000_000),
+                    sh_prn_type="SH",
+                    put_call=None,
+                    investment_discretion="SOLE",
+                    other_managers=None,
+                    voting_sole=None,
+                    voting_shared=None,
+                    voting_none=None,
+                ),
+            ),
+            warnings=(),
+        ),
+    )
+    filer = await _a_filer(db_session)
+    filing = await _a_filing(db_session, filer)
+    filing.value_multiplier = misread.value_multiplier
+    filing.parse_status = misread.parse_status
+    filing.parse_notes = misread.parse_notes_json
+    await db_session.flush()
+
+    fired_on = (
+        await db_session.execute(
+            text("""
+                SELECT accession_no FROM filing
+                WHERE parse_notes @> '[{"kind": "implied_price"}]'
+            """)
+        )
+    ).scalars()
+
+    assert misread.parse_status is ParseStatus.SUSPECT
+    assert fired_on.all() == [filing.accession_no]
+
+
+async def test_a_suspect_filings_holdings_are_loaded_all_the_same(
+    db_session: AsyncSession,
+) -> None:
+    """Flagged, not rejected, all the way down to the table.
+
+    A filing that fails a guard is still the only disclosure that manager made
+    for the quarter. Withholding its holdings leaves a gap that reads, to every
+    query downstream, exactly like a manager who filed nothing.
+    """
+    filer = await _a_filer(db_session)
+    filing = await _a_filing(db_session, filer)
+    filing.parse_status = ParseStatus.SUSPECT
+    filing.parse_notes = [{"kind": "implied_price", "detail": "0.005 a share", "row": 1}]
+    security = await _a_security(db_session, APPLE)
+    db_session.add(
+        Holding(
+            filing_id=filing.id,
+            security_id=security.id,
+            filer_id=filer.id,
+            period_of_report=filing.period_of_report,
+            cusip=APPLE,
+            value_usd=Decimal("2040000000.00"),
+            shares=Decimal("12000000.0000"),
+            sshprnamt_type="SH",
+        )
+    )
+    await db_session.flush()
+
+    held = (
+        await db_session.execute(
+            text("""
+                SELECT count(*) FROM holding
+                JOIN filing ON filing.id = holding.filing_id
+                WHERE filing.parse_status = 'suspect'
+            """)
+        )
+    ).scalar_one()
+
+    assert held == 1
 
 
 async def test_a_thirteen_f_must_carry_a_period(db_session: AsyncSession) -> None:

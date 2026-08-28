@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  A post-2023 information table: values in whole dollars, and a <figi> column
+  that no filing before 2023 has.
+
+  Three things about this document are deliberate and none of them is
+  cosmetic:
+
+  * The namespace URI is not one EDGAR serves, and it is carried on a prefix
+    rather than as a default namespace. Both are here to fail the day someone
+    replaces a local-name() lookup with a hardcoded URI or an unprefixed tag
+    match — a change that passes every other fixture in this directory.
+  * The same CUSIP appears on three rows: the common stock, a call and a put.
+    That is legal, common, and the reason holding's natural key includes
+    put_call.
+  * Six rows are defective, each in one way, and each defect is one a filing
+    agent has actually produced.
+-->
+<it:informationTable xmlns:it="http://www.sec.gov/edgar/document/thirteenf/informationtable/2023">
+
+  <!-- Common stock, fully populated, with the filer's own FIGI. -->
+  <it:infoTable>
+    <it:nameOfIssuer>MICROSOFT CORP</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:cusip>594918104</it:cusip>
+    <it:figi>BBG000BPH459</it:figi>
+    <it:value>12345678900</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>29340000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+    <it:investmentDiscretion>SOLE</it:investmentDiscretion>
+    <it:otherManager>1</it:otherManager>
+    <it:votingAuthority>
+      <it:Sole>29340000</it:Sole>
+      <it:Shared>0</it:Shared>
+      <it:None>0</it:None>
+    </it:votingAuthority>
+  </it:infoTable>
+
+  <!-- Same issuer, same CUSIP, calls. The value is notional, not premium. -->
+  <it:infoTable>
+    <it:nameOfIssuer>MICROSOFT CORP</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:cusip>594918104</it:cusip>
+    <it:value>800000000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>1900000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+    <it:putCall>CALL</it:putCall>
+    <it:investmentDiscretion>SOLE</it:investmentDiscretion>
+    <it:votingAuthority>
+      <it:Sole>1900000</it:Sole>
+      <it:Shared>0</it:Shared>
+      <it:None>0</it:None>
+    </it:votingAuthority>
+  </it:infoTable>
+
+  <!-- And puts, spelled the third way agents spell it. -->
+  <it:infoTable>
+    <it:nameOfIssuer>MICROSOFT CORP</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:cusip>594918104</it:cusip>
+    <it:value>250000000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>600000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+    <it:putCall>put</it:putCall>
+    <it:investmentDiscretion>DEFINED</it:investmentDiscretion>
+    <it:votingAuthority>
+      <it:Sole>0</it:Sole>
+      <it:Shared>0</it:Shared>
+      <it:None>600000</it:None>
+    </it:votingAuthority>
+  </it:infoTable>
+
+  <!-- A convertible note: PRN is a face value in dollars, not a share count. -->
+  <it:infoTable>
+    <it:nameOfIssuer>TESLA INC</it:nameOfIssuer>
+    <it:titleOfClass>NOTE 2.000% 5/1</it:titleOfClass>
+    <it:cusip>88160RAG6</it:cusip>
+    <it:value>27500000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>25000000</it:sshPrnamt>
+      <it:sshPrnamtType>prn</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+    <it:investmentDiscretion>SOLE</it:investmentDiscretion>
+  </it:infoTable>
+
+  <!-- A CUSIP written the way a human reads one, and a lowercase FIGI. -->
+  <it:infoTable>
+    <it:nameOfIssuer>NVIDIA CORPORATION</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:cusip>67066G-10-4</it:cusip>
+    <it:figi>bbg000bbjqv0</it:figi>
+    <it:value>4500000000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>4,980,000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+    <it:investmentDiscretion>SHARED</it:investmentDiscretion>
+    <it:otherManager>2</it:otherManager>
+    <it:otherManager>7</it:otherManager>
+    <it:votingAuthority>
+      <it:Sole>3000000</it:Sole>
+      <it:Shared>1980000</it:Shared>
+      <it:None>0</it:None>
+    </it:votingAuthority>
+  </it:infoTable>
+
+  <!-- A CUSIP whose leading zero was eaten by a spreadsheet. -->
+  <it:infoTable>
+    <it:nameOfIssuer>AGILENT TECHNOLOGIES INC</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:cusip>846U101</it:cusip>
+    <it:value>310000000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>2130000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+    <it:putCall/>
+    <it:investmentDiscretion>SOLE</it:investmentDiscretion>
+  </it:infoTable>
+
+  <!-- Kept, with a warning: the position is real, the FIGI is not. -->
+  <it:infoTable>
+    <it:nameOfIssuer>AIRBNB INC</it:nameOfIssuer>
+    <it:titleOfClass>CL A</it:titleOfClass>
+    <it:cusip>009066101</it:cusip>
+    <it:figi>N/A</it:figi>
+    <it:value>145000000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>880000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+    <it:investmentDiscretion>SOLE</it:investmentDiscretion>
+  </it:infoTable>
+
+  <!-- Dropped: the value is not a number. -->
+  <it:infoTable>
+    <it:nameOfIssuer>UNREADABLE VALUE CORP</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:cusip>911312106</it:cusip>
+    <it:value>N/A</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>10000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+  </it:infoTable>
+
+  <!-- Dropped: no share count at all. -->
+  <it:infoTable>
+    <it:nameOfIssuer>NO SHARE COUNT CORP</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:cusip>92826C839</it:cusip>
+    <it:value>99000000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+  </it:infoTable>
+
+  <!-- Dropped: an option that is neither a put nor a call. -->
+  <it:infoTable>
+    <it:nameOfIssuer>STRADDLE CORP</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:cusip>404280406</it:cusip>
+    <it:value>1000000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>5000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+    <it:putCall>STRADDLE</it:putCall>
+  </it:infoTable>
+
+  <!-- Dropped: ten characters is not a CUSIP, and nine of them is a different
+       security. -->
+  <it:infoTable>
+    <it:nameOfIssuer>TOO LONG CORP</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:cusip>0378331000</it:cusip>
+    <it:value>2000000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>7000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+  </it:infoTable>
+
+  <!-- Dropped: nothing to identify the security with. -->
+  <it:infoTable>
+    <it:nameOfIssuer>NO CUSIP CORP</it:nameOfIssuer>
+    <it:titleOfClass>COM</it:titleOfClass>
+    <it:value>3000000</it:value>
+    <it:shrsOrPrnAmt>
+      <it:sshPrnamt>9000</it:sshPrnamt>
+      <it:sshPrnamtType>SH</it:sshPrnamtType>
+    </it:shrsOrPrnAmt>
+  </it:infoTable>
+
+</it:informationTable>

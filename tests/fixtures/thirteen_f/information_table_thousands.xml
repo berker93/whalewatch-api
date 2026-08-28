@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The pre-cutover half of a matched pair. Filed before 2023-01-03, so every
+  <value> here is THOUSANDS of dollars.
+
+  information_table_dollars.xml reports the same four positions - same CUSIPs,
+  same share counts, the same money - as a filing submitted after the cutover,
+  where the same figures are written in whole dollars and are therefore 1000x
+  larger. Neither document says which convention it uses; only filed_at does.
+
+  The pair exists so that "the same position, filed on either side of the line,
+  normalises to the same number of dollars" is a test rather than an intention.
+  Do not change a value in one file without changing the other by exactly 1000x,
+  or the property under test becomes untestable and the suite will say so.
+
+  The share counts are round and the implied prices are deliberately ordinary -
+  $170.00, $340.00, $60.00, $5.00. The last one is the interesting one: at $5 a
+  share, reading this document as whole dollars implies a price of half a cent,
+  which is what the implied-price guard is calibrated to catch.
+-->
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+  <infoTable>
+    <nameOfIssuer>APPLE INC</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>037833100</cusip>
+    <value>2040000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>12000000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+    <votingAuthority>
+      <Sole>12000000</Sole>
+      <Shared>0</Shared>
+      <None>0</None>
+    </votingAuthority>
+  </infoTable>
+
+  <infoTable>
+    <nameOfIssuer>MICROSOFT CORP</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>594918104</cusip>
+    <value>1190000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>3500000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+    <votingAuthority>
+      <Sole>3500000</Sole>
+      <Shared>0</Shared>
+      <None>0</None>
+    </votingAuthority>
+  </infoTable>
+
+  <infoTable>
+    <nameOfIssuer>COCA COLA CO</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>191216100</cusip>
+    <value>1500000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>25000000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>DEFINED</investmentDiscretion>
+    <votingAuthority>
+      <Sole>25000000</Sole>
+      <Shared>0</Shared>
+      <None>0</None>
+    </votingAuthority>
+  </infoTable>
+
+  <infoTable>
+    <nameOfIssuer>SIRIUS XM HLDGS INC</nameOfIssuer>
+    <titleOfClass>COM</titleOfClass>
+    <cusip>82968B103</cusip>
+    <value>200000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>40000000</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion>SOLE</investmentDiscretion>
+    <votingAuthority>
+      <Sole>40000000</Sole>
+      <Shared>0</Shared>
+      <None>0</None>
+    </votingAuthority>
+  </infoTable>
+
+</informationTable>
