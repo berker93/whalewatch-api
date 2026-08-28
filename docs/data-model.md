@@ -170,7 +170,10 @@ parsed_at         timestamptz                     -- null = fetched but not yet 
 parse_error       text                            -- set only alongside parse_status = 'failed'
 parse_status      text         not null           -- pending | ok | suspect | failed
 parse_notes       jsonb                           -- what the guards found; null when nothing did
-raw_document_id   bigint       fk -> raw_document -- NOT YET MIGRATED (Epic 2)
+raw_key           text                            -- object key of the archived document
+source_url        text                            -- the EDGAR URL it was fetched from
+ingested_at       timestamptz  not null           -- when the loader last wrote this row
+raw_document_id   bigint       fk -> raw_document -- NOT MIGRATED; see raw_key below
 ```
 
 `accession_no` is **the idempotency key** and its `UNIQUE` is the constraint the
@@ -179,6 +182,20 @@ accession number and Celery delivers at least once, so the collision happens in
 normal operation — a retried task, a resumed backfill, an operator re-running a
 quarter. Without the constraint that does not raise, it duplicates: two filings,
 two sets of holdings, a portfolio reporting twice the positions it holds.
+
+`raw_key` and `source_url` are the interim form of `raw_document_id`. A
+`raw_document` table earns its place when a filing has several archived
+documents worth describing separately — each with its own size, hash and fetch
+time — and until then two nullable text columns hold what the loader is handed.
+Both are nullable and both are written with a `coalesce` on re-ingest: a
+re-parse runs off bytes already on disk and may not know where they came from,
+and blanking the only pointer to a document would turn the next parser fix into
+a re-crawl of EDGAR at 10 requests a second.
+
+`ingested_at` is what makes an upsert legible after the fact. The row changes in
+place, so without it "which filings did the run I started an hour ago rewrite"
+has no answer — and `parsed_at` does not answer it, because a re-parse and a
+re-load are different events.
 
 `quarter` is a Postgres generated column, not a value the loader writes, so
 there is no code path anywhere that can put `2024Q1` on a June period. The

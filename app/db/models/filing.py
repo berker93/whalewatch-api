@@ -24,6 +24,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     desc,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -330,6 +331,47 @@ class Filing(Base):
     Null and ``[]`` are not made to mean the same thing by anything here, but
     nothing writes ``[]``: :meth:`~app.ingestion.normalisation.NormalisedFiling.parse_notes_json`
     returns ``None`` for an empty list, so "no findings" has one spelling.
+    """
+
+    raw_key: Mapped[str | None] = mapped_column(Text)
+    """Where the bytes this row was parsed from are archived, as an object key.
+
+    Nullable because it is a pointer to an artefact of one particular ingest and
+    not every row has one: a filing discovered through the daily index exists
+    before anything has fetched its documents, and a row re-parsed from bytes
+    already on disk is loaded by a caller that may not know where they came
+    from.
+
+    The interim shape of what :doc:`the data model </data-model>` calls
+    ``raw_document_id``. A ``raw_document`` table — one row per archived
+    document, with its size, its hash and its fetch time — is worth having when
+    a filing has more than one document worth keeping; until then a key on the
+    filing answers the only question anyone asks of it ("which bytes produced
+    this row"), and turning it into a foreign key later is a backfill from this
+    column rather than a re-crawl.
+    """
+
+    source_url: Mapped[str | None] = mapped_column(Text)
+    """The EDGAR archive URL the document was fetched from.
+
+    Kept next to :attr:`raw_key` rather than derived from
+    :attr:`accession_no` at display time. The archive path is EDGAR's
+    convention, not ours — it has changed shape before — and a URL reconstructed
+    by today's rule for a document fetched under yesterday's is a link that
+    404s in whatever incident report it lands in.
+    """
+
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    """When the loader last wrote this row. Updated on every re-ingest.
+
+    Distinct from :attr:`parsed_at`, which is when the *parse* happened, and
+    from :attr:`filed_at`, which is EDGAR's. They coincide on a first load and
+    diverge the moment anything is re-run, which is the case this column exists
+    for: "what did the backfill I started an hour ago actually touch" is a
+    question about ingest time, and neither of the other two answers it.
     """
 
     filer: Mapped[Filer | None] = relationship()
