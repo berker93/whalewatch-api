@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.middleware import RequestContextMiddleware, request_id_on_server_error
-from app.api.routers import health
+from app.api.routers import filings, health
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.redis import create_redis
@@ -93,6 +93,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.add_exception_handler(Exception, request_id_on_server_error)
 
     app.include_router(health.router)
+    app.include_router(filings.router)
 
     return app
 

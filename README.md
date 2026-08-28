@@ -164,6 +164,84 @@ is printed here and stored on `filing.parse_notes`; the filing is still loaded,
 because withholding a portfolio that is 99% right leaves a hole shaped exactly
 like a manager who filed nothing.
 
+## The API
+
+One read endpoint so far, and it is the one everything else gets debugged
+through.
+
+### `GET /filings/{accession_no}`
+
+A filing, its provenance, and every position it reports — largest first.
+
+```bash
+curl localhost:8000/filings/0001067983-24-000011
+curl localhost:8000/filings/000106798324000011              # same filing
+curl "localhost:8000/filings/0001067983-24-000011?include_options=false"
+```
+
+```json
+{
+  "accession_no": "0001067983-24-000011",
+  "cik": "0001067983",
+  "form_type": "13F-HR",
+  "period_of_report": "2024-03-31",
+  "quarter": "2024Q1",
+  "filer_name": "Berkshire Hathaway Inc",
+  "value_multiplier": 1,
+  "parse_status": "suspect",
+  "parse_notes": [
+    { "kind": "entry_count", "detail": "parsed 3 rows, cover page declares 99" }
+  ],
+  "holdings": [
+    {
+      "cusip": "037833100",
+      "issuer_name": "APPLE INC",
+      "ticker": null,
+      "value_usd": "2040000000.00",
+      "shares": "12000000.0000",
+      "sshprnamt_type": "SH",
+      "put_call": null
+    }
+  ]
+}
+```
+
+Five things about that response are decisions rather than defaults:
+
+- **Every `numeric` is a JSON string.** `value_usd` and `shares` are
+  `numeric(20,2)` and `numeric(20,4)`; a JSON number is an IEEE 754 double at
+  the far end of every client, which carries fewer significant digits than
+  either column and cannot represent the difference between `1000` and
+  `1000.00` at all. Strings round-trip exactly, and a client that wants
+  arithmetic has to parse into its own decimal type deliberately.
+- **`value_multiplier` and `parse_status` are in the response on purpose.** They
+  are what ingestion *decided*: which units the filing's own `value` column used
+  (1000 before the 2023-01-03 cutover, 1 after), and whether any normalisation
+  guard fired. A portfolio that is out by 1000x looks entirely normal — every
+  position is wrong by the same factor — so the field that distinguishes "the
+  filing said thousands" from "we multiplied when we should not have" has to be
+  visible from outside the container. A `suspect` filing is returned, not
+  withheld, with `parse_notes` saying which rows provoked it.
+- **Both spellings of the accession number work.** Dashed as EDGAR's indexes
+  print it, undashed as its archive URLs do. The path parameter is normalised
+  before anything is looked up, so the undashed form cannot produce a 404 for a
+  filing that is sitting in the table. A string that is not an accession number
+  at all is a 422 naming the shape expected — a different answer from 404,
+  because it sends you somewhere different.
+- **404 says what to do about it.** On this endpoint "not found" almost always
+  means "not ingested yet", and the reader is usually the person who can fix
+  that, so the message carries the `ingest-filing` command that would.
+- **`include_options=false` filters on `put_call IS NOT NULL`, not on the
+  security.** An option line's `value_usd` is the notional value of the
+  underlying rather than a premium, so a total that includes it is inflated by
+  the whole exposure — but the option and the underlying position share a CUSIP,
+  and a filter that worked by security would take the real holding with it.
+
+An empty `holdings` list means one of three things, and the rest of the response
+says which: a `13F-NT`, which reports no positions by design; a `parse_status` of
+`failed`, with `parse_error` saying why; or a filing whose `filer_id` is still
+null, whose positions are waiting on a CIK being resolved to a filer.
+
 ## Data sources and limitations
 
 Write these down once so you are not re-deriving them from a 13F XML at midnight.

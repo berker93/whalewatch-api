@@ -54,6 +54,7 @@ import structlog
 import typer
 from sqlalchemy import select
 
+from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.models.filing import Filing, ParseStatus
@@ -366,32 +367,20 @@ def _require_thirteen_f(submission: Submission) -> None:
 
 # --- input normalisation -----------------------------------------------------
 
-#: An accession number is ten digits of transmitter, two of year, six of
-#: sequence. Accepted with or without the dashes because both spellings are in
-#: circulation — the dashed one in EDGAR's own indexes and in this database, the
-#: undashed one in archive URLs — and an operator pasting either should not have
-#: to know which.
-_ACCESSION_PARTS: Final = (10, 2, 6)
-
 
 def _normalise_accession(value: str) -> str:
-    """``000106798324000011`` or ``0001067983-24-000011`` -> the dashed form.
+    """The dashed form, or a :class:`CommandError` naming the shape expected.
 
-    Normalised at the door rather than at the four places that use it, because
-    the two spellings are not interchangeable downstream:
-    ``Filing.accession_no`` is ``CHAR(20)`` holding the dashed one, and a lookup
-    with the undashed spelling silently matches nothing — which this command
-    would report as "not in the database", sending the operator to fetch a
-    filing it already has.
+    The rule itself lives in :mod:`app.core.accession`, shared with the API,
+    because "what an accession number looks like" is one fact and the two
+    spellings must not be allowed to diverge between the endpoint that reads a
+    filing and the command that writes it. All this adds is the CLI's failure
+    mode: a message on stderr and exit 1, rather than a traceback.
     """
-    digits = value.strip().replace("-", "")
-    if not digits.isdigit() or len(digits) != sum(_ACCESSION_PARTS):
-        raise CommandError(
-            f"{value!r} is not an accession number: expected "
-            f"{'-'.join('#' * part for part in _ACCESSION_PARTS)}"
-        )
-    first, second = _ACCESSION_PARTS[0], _ACCESSION_PARTS[0] + _ACCESSION_PARTS[1]
-    return f"{digits[:first]}-{digits[first:second]}-{digits[second:]}"
+    try:
+        return normalise_accession(value)
+    except ValueError as malformed:
+        raise CommandError(str(malformed)) from malformed
 
 
 def _padded_cik(value: str) -> str:
