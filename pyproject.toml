@@ -24,6 +24,10 @@ dependencies = [
     # 9.0+ for AsyncRetrying.wraps copying per call, which is what makes one
     # shared policy object safe for concurrent EDGAR requests.
     "tenacity>=9.0",
+    # The operational interface (app/cli.py). Runtime rather than dev: backfill,
+    # recompute and replay are how this thing is operated in production, and a
+    # container that cannot run them is a container you cannot fix a quarter from.
+    "typer>=0.15",
     "uvicorn[standard]>=0.32",
 ]
 

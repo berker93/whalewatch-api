@@ -72,6 +72,7 @@ Then `make test`, and read the specs above.
 | `make logs` | follow every service; `make logs s=db` for one |
 | `make shell` | a shell inside the api container |
 | `make psql` | psql on the dev database |
+| `make cli c="ingest-filing ..."` | run a CLI verb in the api container — see [The CLI](#the-cli) |
 | `make test` | the whole pytest suite |
 | `make lint` / `make fmt` | ruff check + mypy --strict / ruff format + safe fixes |
 | `make check` | lint, then test — what CI runs |
@@ -89,6 +90,79 @@ slate rather than an archaeology project — and it is the only way to pick up a
 edit to [scripts/init-db.sql](scripts/init-db.sql), which Postgres runs once per
 volume and never again. Nothing outside this project is in reach; see
 [Databases](#databases).
+
+## The CLI
+
+[app/cli.py](app/cli.py) is the operational interface: the same ingestion code
+Celery runs on a schedule, wrapped in a verb and a summary a person can read. It
+exists so that a quarter that came out wrong can be re-run by hand, with no
+broker in the loop and without anyone writing a throwaway script at the point in
+the incident where throwaway scripts are least trustworthy.
+
+```bash
+make cli c="ingest-filing 0001067983-24-000011 --cik 1067983"
+```
+
+or, from a shell that can reach the database directly:
+
+```bash
+uv run python -m app.cli ingest-filing 0001067983-24-000011 --cik 1067983
+```
+
+### `ingest-filing ACCESSION_NO [--cik] [--force] [--dry-run]`
+
+Fetches, parses and loads one 13F. It looks the accession number up in EDGAR's
+submissions index for the CIK, lists the filing directory, identifies the cover
+page and the information table, and writes the result in one transaction.
+
+```
+0001193125-26-352200  13F-HR
+  filer       Berkshire Hathaway Inc  (CIK 0001067983)
+  period      2026-06-30  (2026Q2)
+  filed       2026-08-14 20:05:04+00:00  (values x1)
+  documents   primary_doc.xml + 56757.xml
+  rows        89 rows parsed, 89 declared, 29 positions loaded, 60 folded into another line
+  value       $299,253,556,246.00
+  status      ok
+  written     filing #1, 29 holdings, 29 new securities
+```
+
+| Flag | |
+| --- | --- |
+| `--cik` | Which filer's archive the filing lives under. Optional only for a filing already in the database, whose CIK is then already known — see below |
+| `--force` | Re-fetch and re-load a filing that is already loaded |
+| `--dry-run` | Fetch, parse and print the same summary. Write nothing |
+
+**`--cik` is not optional as often as you would like.** EDGAR's archive path is
+`/Archives/edgar/data/<cik>/<accession>/`, and the CIK in it is the *filer's* —
+not the ten digits at the front of the accession number, which identify whoever
+transmitted the submission and are usually a filing agent. Berkshire's own 13F
+lives under `data/1067983/` with an accession number beginning `0001193125`, and
+the path built from the latter does not exist. So the CIK has to come from
+somewhere, and the command will take it from an existing `filing` row — which is
+the common case, because discovery writes that row before anything fetches the
+documents — or from this flag.
+
+**Re-running is safe and cheap.** A filing that is already loaded is left alone
+and reported as such, at exit 0, without a single EDGAR request; `--force`
+re-fetches it. Either way the database ends up with one filing and one set of
+holdings, because [the loader](app/ingestion/loaders/filing.py) upserts on the
+accession number and replaces the holdings wholesale.
+
+**Exit codes.** Zero when the filing is loaded, and zero when it was already
+loaded — "already done" has to be a success or a resumed backfill fails on every
+filing it had finished. Non-zero for anything else, with a one-line reason on
+stderr. The summary goes to stdout and the operational log to stderr, so
+`... > report.txt` keeps the two apart.
+
+**What the summary will not let you misread.** `0 holdings` means two opposite
+things — a `13F-NT`, which reports no positions by design, and a filing whose
+CIK is not yet a known filer, whose positions are waiting on `holding.filer_id`
+being `NOT NULL`. The second prints `DEFERRED` and tells you to re-run it once
+the filer is resolved. Likewise a `suspect` status means every guard's finding
+is printed here and stored on `filing.parse_notes`; the filing is still loaded,
+because withholding a portfolio that is 99% right leaves a hole shaped exactly
+like a manager who filed nothing.
 
 ## Data sources and limitations
 
@@ -460,8 +534,7 @@ be a container that did not exist when `Settings` was built.
 Each test is wrapped in a transaction that is rolled back:
 
 ```python
-async def test_something(db_session: AsyncSession, client: AsyncClient) -> None:
-    ...
+async def test_something(db_session: AsyncSession, client: AsyncClient) -> None: ...
 ```
 
 `db_session` opens a connection, begins a transaction on it, and binds the

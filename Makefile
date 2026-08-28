@@ -21,7 +21,7 @@ COMPOSE := docker compose
 s ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down build ps logs shell psql test lint fmt check migrate revision reset-db
+.PHONY: help up down build ps logs shell psql cli test lint fmt check migrate revision reset-db
 
 help:  ## List the targets in this file
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -E 's/:[^#]*## /|/' | awk -F'|' '{printf "  %-9s %s\n", $$1, $$2}'
@@ -48,6 +48,14 @@ shell:  ## Open a shell in the api container
 
 psql:  ## Open psql on the dev database
 	$(COMPOSE) exec db psql -U $(POSTGRES_USER) $(POSTGRES_DB)
+
+# Inside compose for the same reason migrate is: the CLI writes to the database,
+# and POSTGRES_HOST is a name only the compose network resolves. Quote the whole
+# verb — `c="ingest-filing ACC --cik N"` — because make splits on spaces and the
+# unquoted form would pass only the first word.
+cli:  ## Run a CLI verb in the api container: make cli c="ingest-filing 0001067983-24-000011 --cik 1067983"
+	@test -n "$(c)" || { echo 'usage: make cli c="ingest-filing ACCESSION_NO --cik CIK"' >&2; exit 1; }
+	$(COMPOSE) exec api uv run python -m app.cli $(c)
 
 # --- code --------------------------------------------------------------------
 
