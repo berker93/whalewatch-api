@@ -11,3 +11,6 @@ wheels/
 
 # Local environment (ports, credentials) — .env.example is the tracked template
 .env
+
+# graphify knowledge-graph outputs — regenerate with /graphify
+graphify-out/
