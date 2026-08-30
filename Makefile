@@ -21,7 +21,7 @@ COMPOSE := docker compose
 s ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down build ps logs shell psql cli test lint fmt check migrate revision reset-db
+.PHONY: help up down build ps logs shell psql cli test lint fmt check fixtures fixtures-fetch migrate revision reset-db
 
 help:  ## List the targets in this file
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -E 's/:[^#]*## /|/' | awk -F'|' '{printf "  %-9s %s\n", $$1, $$2}'
@@ -71,6 +71,23 @@ fmt:  ## Format, and apply ruff's safe fixes
 	uv run ruff check --fix .
 
 check: lint test  ## Lint then test — what CI runs
+
+# --- golden fixtures ---------------------------------------------------------
+
+# The only thing that writes a snapshot. Tests read them and never rewrite them:
+# a suite that repaired its own expectations on failure would turn every parser
+# regression into a clean run. Read the diff this produces before committing it —
+# `git diff tests/fixtures/13f` is the review, and it is the whole point of the
+# suite. See tests/fixtures/13f/README.md.
+fixtures:  ## Rewrite the 13F snapshots from the committed documents — read the diff
+	uv run python -m tests.fixtures_13f
+
+# Adds a *new* fixture. Never run to refresh an existing one: those bytes are the
+# input the committed snapshots describe. The only target here that opens a
+# socket to EDGAR, and it needs SEC_CONTACT_EMAIL set, same as the crawler.
+fixtures-fetch:  ## Download one filing into tests/fixtures/13f: make fixtures-fetch a=ACC cik=CIK slug=NAME note="why"
+	@test -n "$(a)$(cik)$(slug)" || { echo 'usage: make fixtures-fetch a=ACCESSION_NO cik=CIK slug=NAME note="why it is interesting"' >&2; exit 1; }
+	uv run python -m scripts.fetch_13f_fixture --accession "$(a)" --cik "$(cik)" --slug "$(slug)" --note "$(note)"
 
 # --- migrations --------------------------------------------------------------
 

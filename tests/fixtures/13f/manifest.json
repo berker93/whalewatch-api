@@ -1,0 +1,76 @@
+{
+  "fixtures": [
+    {
+      "slug": "berkshire-2022q3-thousands",
+      "cik": "0001067983",
+      "accession_no": "0000950123-22-012275",
+      "filer_name": "BERKSHIRE HATHAWAY INC",
+      "form_type": "13F-HR",
+      "period_of_report": "2022-09-30",
+      "filed_at": "2022-11-14T21:01:07.000+00:00",
+      "note": "Filed 2022-11-14, before the 2023-01-03 units cutover, so every value is thousands of dollars. Paired with berkshire-2022q4-dollars.",
+      "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012322012275/primary_doc.xml",
+      "information_table_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012322012275/18337.xml"
+    },
+    {
+      "slug": "berkshire-2022q4-dollars",
+      "cik": "0001067983",
+      "accession_no": "0000950123-23-002585",
+      "filer_name": "BERKSHIRE HATHAWAY INC",
+      "form_type": "13F-HR",
+      "period_of_report": "2022-12-31",
+      "filed_at": "2023-02-14T21:00:08.000+00:00",
+      "note": "The very next quarter from the same manager, filed 2023-02-14 in whole dollars. Near-identical portfolio across the cutover, which is what makes the pair a 1000x regression guard.",
+      "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012323002585/primary_doc.xml",
+      "information_table_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012323002585/20651.xml"
+    },
+    {
+      "slug": "berkshire-2023q3-restatement",
+      "cik": "0001067983",
+      "accession_no": "0000950123-23-011029",
+      "filer_name": "BERKSHIRE HATHAWAY INC",
+      "form_type": "13F-HR/A",
+      "period_of_report": "2023-09-30",
+      "filed_at": "2023-11-16T21:46:50.000+00:00",
+      "note": "13F-HR/A with amendmentType RESTATEMENT: the whole table again, replacing the original. Also carries isConfidentialOmitted=true.",
+      "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012323011029/primary_doc.xml",
+      "information_table_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012323011029/28498.xml"
+    },
+    {
+      "slug": "berkshire-2023q4-new-holdings",
+      "cik": "0001067983",
+      "accession_no": "0000950123-24-005664",
+      "filer_name": "BERKSHIRE HATHAWAY INC",
+      "form_type": "13F-HR/A",
+      "period_of_report": "2023-12-31",
+      "filed_at": "2024-05-15T20:16:06.000+00:00",
+      "note": "13F-HR/A with amendmentType NEW HOLDINGS: one row, released when confidential treatment expired. Loading it as a restatement would delete the rest of the quarter.",
+      "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324005664/primary_doc.xml",
+      "information_table_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324005664/32498.xml"
+    },
+    {
+      "slug": "point72-2025q3-large",
+      "cik": "0001603466",
+      "accession_no": "0000902664-25-005042",
+      "filer_name": "Point72 Asset Management, L.P.",
+      "form_type": "13F-HR",
+      "period_of_report": "2025-09-30",
+      "filed_at": "2025-11-14T21:20:08.000+00:00",
+      "note": "2,263 rows, the size that makes iterparse worth streaming.",
+      "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1603466/000090266425005042/primary_doc.xml",
+      "information_table_url": "https://www.sec.gov/Archives/edgar/data/1603466/000090266425005042/infotable.xml"
+    },
+    {
+      "slug": "soros-2026q2-options",
+      "cik": "0001029160",
+      "accession_no": "0000902664-26-003507",
+      "filer_name": "SOROS FUND MANAGEMENT LLC",
+      "form_type": "13F-HR",
+      "period_of_report": "2026-06-30",
+      "filed_at": "2026-08-14T20:10:21.000+00:00",
+      "note": "266 rows from a manager who uses options: put and call rows against CUSIPs that also appear as common stock, plus PRN principal amounts.",
+      "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1029160/000090266426003507/primary_doc.xml",
+      "information_table_url": "https://www.sec.gov/Archives/edgar/data/1029160/000090266426003507/infotable.xml"
+    }
+  ]
+}
