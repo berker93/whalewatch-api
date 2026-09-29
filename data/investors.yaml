@@ -1,0 +1,863 @@
+# The investor universe: every institution WhaleWatch has a page for.
+#
+# This file is product, not config. A filer that is not in it gets no page, and
+# its holdings are deferred at load time because nothing maps its CIK to a
+# filer. Seed it with:   make cli c="seed-investors"
+# Validated by tests/test_investors.py; schema in app/ingestion/investors.py.
+#
+# Fields
+#   slug          Public URL segment, /investors/<slug>. NEVER rename one: it
+#                 breaks every link to the page, and the seed refuses it anyway
+#                 (the new slug would claim CIKs the old one owns). The brand
+#                 as people say it, lowercase, legal and generic suffixes
+#                 dropped where what is left is still unambiguous.
+#   display_name  Page title. Our spelling, not the cover page's.
+#   manager_name  The person the page is known by, which is not always who runs
+#                 the money today: "Warren Buffett", "Jim Simons". Succession
+#                 goes in notes. "Investment team" for committee-run firms with
+#                 no single public face.
+#   category      value | activist | quant | macro | growth | multi_strategy.
+#                 One per filer, deliberately coarse; large diversified filers
+#                 get their dominant style.
+#   country       ISO 3166-1 alpha-2, where the manager is run from - not
+#                 EDGAR's mailing address. Quote "NO" (Norway): YAML reads a
+#                 bare NO as false.
+#   ciks          Every CIK the institution has filed 13Fs under, oldest first.
+#                 Predecessor entities belong here: they are the same
+#                 institution's history, and filer_cik exists for exactly this.
+#                 THE ORDER MATTERS: when two of a filer's CIKs both filed for
+#                 one period (an OVERLAP), only the CIK listed LAST counts. That
+#                 is the successor during a reorganisation, which is the usual
+#                 case; where the primary filer is not the newest entity, list
+#                 the primary last anyway (see rokos).
+#   overlap       Optional. "successor" (the default, see above) or "sum": every
+#                 CIK counts, for institutions that file several separate books
+#                 permanently. Set "sum" only once `audit-overlaps` shows the
+#                 books really are separate - summing one book filed twice
+#                 doubles the fund.
+#   notes         For maintainers, not shown to users. Record anything
+#                 ingestion needs to know, and every known OVERLAP with how it
+#                 resolves.
+#
+# Sources: Dataroma's superinvestor index and WhaleWisdom's top filers for the
+# selection; every CIK checked against EDGAR's submissions API (data.sec.gov)
+# on 2026-09-29 for its entity name and its 13F-HR history.
+#
+# Deliberately absent: pure index managers (Vanguard, BlackRock, State Street).
+# Their 13F is the market, and in aggregate views they would drown every
+# decision anyone else made. Market makers (Jane Street, Susquehanna, Citadel
+# Securities) likewise: inventory, not conviction.
+
+# --- value ---------------------------------------------------------------------
+
+- slug: berkshire-hathaway
+  display_name: Berkshire Hathaway
+  manager_name: Warren Buffett
+  category: value
+  country: US
+  ciks: [1067983]
+  notes: >-
+    Files late in the window. Occasionally requests confidential treatment.
+    Greg Abel succeeded Buffett as CEO on 2026-01-01.
+
+- slug: baupost
+  display_name: The Baupost Group
+  manager_name: Seth Klarman
+  category: value
+  country: US
+  ciks: [1061768]
+
+- slug: greenlight
+  display_name: Greenlight Capital
+  manager_name: David Einhorn
+  category: value
+  country: US
+  ciks: [1079114, 1489933]
+  notes: >-
+    Greenlight Capital Inc through 2023Q4, then DME Capital Management from
+    2024Q1. No overlapping periods.
+
+- slug: appaloosa
+  display_name: Appaloosa Management
+  manager_name: David Tepper
+  category: value
+  country: US
+  ciks: [1006438, 1656456]
+  notes: >-
+    Appaloosa Management LP through 2015Q4, Appaloosa LP from 2016Q1. No
+    overlapping periods.
+
+- slug: oaktree
+  display_name: Oaktree Capital Management
+  manager_name: Howard Marks
+  category: value
+  country: US
+  ciks: [949509]
+
+- slug: gotham
+  display_name: Gotham Asset Management
+  manager_name: Joel Greenblatt
+  category: value
+  country: US
+  ciks: [1510387]
+
+- slug: markel
+  display_name: Markel Group
+  manager_name: Tom Gayner
+  category: value
+  country: US
+  ciks: [1096343]
+
+- slug: fairholme
+  display_name: Fairholme Capital Management
+  manager_name: Bruce Berkowitz
+  category: value
+  country: US
+  ciks: [1056831]
+
+- slug: ruane-cunniff
+  display_name: Ruane, Cunniff & Goldfarb
+  manager_name: Investment team
+  category: value
+  country: US
+  ciks: [728014, 1720792]
+  notes: >-
+    Adviser to the Sequoia Fund; founded by Bill Ruane. Ruane, Cunniff &
+    Goldfarb Inc through 2018Q1, the L.P. from 2018Q1. OVERLAP 2018Q1: both
+    filed; the L.P. counts.
+
+- slug: davis-advisors
+  display_name: Davis Advisors
+  manager_name: Chris Davis
+  category: value
+  country: US
+  ciks: [1036325]
+  notes: Files as Davis Selected Advisers.
+
+- slug: dodge-and-cox
+  display_name: Dodge & Cox
+  manager_name: Investment team
+  category: value
+  country: US
+  ciks: [200217]
+  notes: Large diversified filer.
+
+- slug: first-eagle
+  display_name: First Eagle Investment Management
+  manager_name: Matthew McLennan
+  category: value
+  country: US
+  ciks: [1325447]
+
+- slug: tweedy-browne
+  display_name: Tweedy, Browne
+  manager_name: Investment team
+  category: value
+  country: US
+  ciks: [732905]
+
+- slug: southeastern-asset-management
+  display_name: Southeastern Asset Management
+  manager_name: Mason Hawkins
+  category: value
+  country: US
+  ciks: [807985]
+  notes: Adviser to the Longleaf Partners funds.
+
+- slug: yacktman
+  display_name: Yacktman Asset Management
+  manager_name: Donald Yacktman
+  category: value
+  country: US
+  ciks: [905567]
+  notes: Run day to day by Stephen Yacktman and Jason Subotky.
+
+- slug: pabrai
+  display_name: Pabrai Investment Funds
+  manager_name: Mohnish Pabrai
+  category: value
+  country: US
+  ciks: [1549575]
+  notes: Files as Dalal Street, LLC.
+
+- slug: himalaya-capital
+  display_name: Himalaya Capital Management
+  manager_name: Li Lu
+  category: value
+  country: US
+  ciks: [1709323]
+
+- slug: semper-augustus
+  display_name: Semper Augustus Investments Group
+  manager_name: Christopher Bloomstran
+  category: value
+  country: US
+  ciks: [1115373]
+
+- slug: glenview
+  display_name: Glenview Capital Management
+  manager_name: Larry Robbins
+  category: value
+  country: US
+  ciks: [1138995]
+
+- slug: harris-oakmark
+  display_name: Harris Associates (Oakmark)
+  manager_name: Bill Nygren
+  category: value
+  country: US
+  ciks: [813917]
+
+- slug: brave-warrior
+  display_name: Brave Warrior Advisors
+  manager_name: Glenn Greenberg
+  category: value
+  country: US
+  ciks: [1553733]
+
+- slug: gardner-russo-quinn
+  display_name: Gardner Russo & Quinn
+  manager_name: Thomas Russo
+  category: value
+  country: US
+  ciks: [860643]
+
+- slug: gates-foundation
+  display_name: Gates Foundation Trust
+  manager_name: Bill Gates
+  category: value
+  country: US
+  ciks: [1166559]
+
+- slug: pzena
+  display_name: Pzena Investment Management
+  manager_name: Richard Pzena
+  category: value
+  country: US
+  ciks: [1027796]
+
+- slug: fairfax-financial
+  display_name: Fairfax Financial Holdings
+  manager_name: Prem Watsa
+  category: value
+  country: CA
+  ciks: [915191]
+
+- slug: daily-journal
+  display_name: Daily Journal Corporation
+  manager_name: Charlie Munger
+  category: value
+  country: US
+  ciks: [783412]
+  notes: >-
+    Munger died in November 2023; the page covers the portfolio he built. A
+    handful of positions that rarely change.
+
+- slug: hh-international
+  display_name: H&H International Investment
+  manager_name: Duan Yongping
+  category: value
+  country: US
+  ciks: [1759760]
+
+- slug: scion
+  display_name: Scion Asset Management
+  manager_name: Michael Burry
+  category: value
+  country: US
+  ciks: [1649339]
+  notes: >-
+    Last 13F-HR covers 2025Q3; Scion stopped filing after Burry deregistered
+    it. Kept for its history. Expect no new periods.
+
+- slug: miller-value
+  display_name: Miller Value Partners
+  manager_name: Bill Miller
+  category: value
+  country: US
+  ciks: [1135778]
+
+- slug: gmo
+  display_name: GMO
+  manager_name: Jeremy Grantham
+  category: value
+  country: US
+  ciks: [1352662]
+  notes: >-
+    Grantham, Mayo, Van Otterloo & Co. An older CIK (1070039) under the same
+    name has no 13F filings and is deliberately not listed.
+
+# --- activist ------------------------------------------------------------------
+
+- slug: pershing-square
+  display_name: Pershing Square Capital Management
+  manager_name: Bill Ackman
+  category: activist
+  country: US
+  ciks: [1336528, 2026053]
+  notes: >-
+    Pershing Square Inc. (2026053) files the 13F-HR from 2026Q2, and the
+    management company files a 13F-NT. OVERLAP 2025Q2-2026Q1: both filed,
+    very likely the same book twice; Pershing Square Inc. counts. Confirm with
+    audit-overlaps.
+
+- slug: third-point
+  display_name: Third Point
+  manager_name: Dan Loeb
+  category: activist
+  country: US
+  ciks: [1040273]
+
+- slug: icahn
+  display_name: Icahn Capital Management
+  manager_name: Carl Icahn
+  category: activist
+  country: US
+  ciks: [921669]
+  notes: The 13F is filed in Carl C. Icahn's own name.
+
+- slug: trian
+  display_name: Trian Fund Management
+  manager_name: Nelson Peltz
+  category: activist
+  country: US
+  ciks: [1345471]
+
+- slug: elliott
+  display_name: Elliott Management
+  manager_name: Paul Singer
+  category: activist
+  country: US
+  ciks: [1048445, 904495, 1791786]
+  notes: >-
+    Elliott Management Corp through 2020Q3, Elliott Investment Management from
+    2020Q1. Elliott Associates filed three 13F-HRs in 2011 and 13F-NTs since.
+    OVERLAP 2020Q1-2020Q3: Elliott Management Corp and Elliott Investment
+    Management both filed; Elliott Investment Management counts.
+
+- slug: valueact
+  display_name: ValueAct Capital
+  manager_name: Mason Morfit
+  category: activist
+  country: US
+  ciks: [1418814]
+  notes: Files as ValueAct Holdings, L.P.
+
+- slug: starboard-value
+  display_name: Starboard Value
+  manager_name: Jeff Smith
+  category: activist
+  country: US
+  ciks: [1517137]
+
+- slug: jana-partners
+  display_name: JANA Partners
+  manager_name: Barry Rosenstein
+  category: activist
+  country: US
+  ciks: [1159159, 1998597]
+  notes: >-
+    JANA Partners LLC through 2023Q2, JANA Partners Management from 2023Q3.
+    No overlapping periods.
+
+- slug: sachem-head
+  display_name: Sachem Head Capital Management
+  manager_name: Scott Ferguson
+  category: activist
+  country: US
+  ciks: [1582090]
+
+- slug: engaged-capital
+  display_name: Engaged Capital
+  manager_name: Glenn Welling
+  category: activist
+  country: US
+  ciks: [1559771]
+
+- slug: tci
+  display_name: TCI Fund Management
+  manager_name: Chris Hohn
+  category: activist
+  country: GB
+  ciks: [1647251]
+
+- slug: corvex
+  display_name: Corvex Management
+  manager_name: Keith Meister
+  category: activist
+  country: US
+  ciks: [1535472]
+
+- slug: saba-capital
+  display_name: Saba Capital Management
+  manager_name: Boaz Weinstein
+  category: activist
+  country: US
+  ciks: [1510281]
+  notes: >-
+    Activism is mostly in closed-end funds, so many positions are funds, not
+    operating companies.
+
+- slug: politan
+  display_name: Politan Capital Management
+  manager_name: Quentin Koffey
+  category: activist
+  country: US
+  ciks: [1885245]
+
+- slug: mantle-ridge
+  display_name: Mantle Ridge
+  manager_name: Paul Hilal
+  category: activist
+  country: US
+  ciks: [1695459]
+
+- slug: ancora
+  display_name: Ancora
+  manager_name: Fred DiSanto
+  category: activist
+  country: US
+  ciks: [1446114]
+  notes: >-
+    Ancora Advisors also runs wealth management, so the 13F likely mixes
+    activist stakes with advisory accounts.
+
+# --- growth --------------------------------------------------------------------
+
+- slug: akre
+  display_name: Akre Capital Management
+  manager_name: Chuck Akre
+  category: growth
+  country: US
+  ciks: [1112520]
+  notes: Run day to day by John Neff and Chris Cerimele.
+
+- slug: fundsmith
+  display_name: Fundsmith
+  manager_name: Terry Smith
+  category: growth
+  country: GB
+  ciks: [1569205]
+
+- slug: polen
+  display_name: Polen Capital
+  manager_name: Dan Davidowitz
+  category: growth
+  country: US
+  ciks: [1034524]
+
+- slug: lone-pine
+  display_name: Lone Pine Capital
+  manager_name: Stephen Mandel
+  category: growth
+  country: US
+  ciks: [1061165]
+  notes: Mandel has stepped back from day-to-day portfolio management.
+
+- slug: tiger-global
+  display_name: Tiger Global Management
+  manager_name: Chase Coleman
+  category: growth
+  country: US
+  ciks: [1167483]
+
+- slug: coatue
+  display_name: Coatue Management
+  manager_name: Philippe Laffont
+  category: growth
+  country: US
+  ciks: [1135730]
+
+- slug: viking-global
+  display_name: Viking Global Investors
+  manager_name: Andreas Halvorsen
+  category: growth
+  country: US
+  ciks: [1103804]
+
+- slug: maverick
+  display_name: Maverick Capital
+  manager_name: Lee Ainslie
+  category: growth
+  country: US
+  ciks: [934639]
+
+- slug: d1-capital
+  display_name: D1 Capital Partners
+  manager_name: Dan Sundheim
+  category: growth
+  country: US
+  ciks: [1747057]
+
+- slug: ark-invest
+  display_name: ARK Invest
+  manager_name: Cathie Wood
+  category: growth
+  country: US
+  ciks: [1697748]
+
+- slug: baillie-gifford
+  display_name: Baillie Gifford
+  manager_name: Investment team
+  category: growth
+  country: GB
+  ciks: [1088875]
+  notes: Large diversified filer.
+
+- slug: fisher-investments
+  display_name: Fisher Investments
+  manager_name: Ken Fisher
+  category: growth
+  country: US
+  ciks: [850529]
+  notes: Large diversified filer. Files as Fisher Asset Management.
+
+- slug: fidelity
+  display_name: Fidelity Investments
+  manager_name: Abigail Johnson
+  category: growth
+  country: US
+  ciks: [315066]
+  notes: Large diversified filer. Files as FMR LLC.
+
+- slug: t-rowe-price
+  display_name: T. Rowe Price
+  manager_name: Investment team
+  category: growth
+  country: US
+  ciks: [80255]
+  notes: Large diversified filer.
+
+- slug: capital-world-investors
+  display_name: Capital World Investors
+  manager_name: Investment team
+  category: growth
+  country: US
+  ciks: [1422849]
+  notes: >-
+    Large diversified filer. One of Capital Group's equity divisions, which
+    file separately and report different books. Deliberately NOT merged with
+    capital-research-global-investors.
+
+- slug: capital-research-global-investors
+  display_name: Capital Research Global Investors
+  manager_name: Investment team
+  category: growth
+  country: US
+  ciks: [1422848]
+  notes: >-
+    Large diversified filer. One of Capital Group's equity divisions, which
+    file separately and report different books. Deliberately NOT merged with
+    capital-world-investors.
+
+- slug: altimeter
+  display_name: Altimeter Capital
+  manager_name: Brad Gerstner
+  category: growth
+  country: US
+  ciks: [1541617]
+
+- slug: durable-capital
+  display_name: Durable Capital Partners
+  manager_name: Henry Ellenbogen
+  category: growth
+  country: US
+  ciks: [1798849]
+
+- slug: sands-capital
+  display_name: Sands Capital
+  manager_name: Frank Sands
+  category: growth
+  country: US
+  ciks: [1020066]
+
+- slug: baker-bros
+  display_name: Baker Bros. Advisors
+  manager_name: Julian and Felix Baker
+  category: growth
+  country: US
+  ciks: [1263508]
+  notes: Concentrated in biotech.
+
+- slug: baron-capital
+  display_name: Baron Capital
+  manager_name: Ron Baron
+  category: growth
+  country: US
+  ciks: [1017918]
+  notes: Files as BAMCO Inc.
+
+- slug: valley-forge
+  display_name: Valley Forge Capital Management
+  manager_name: Dev Kantesaria
+  category: growth
+  country: US
+  ciks: [1697868]
+
+- slug: lindsell-train
+  display_name: Lindsell Train
+  manager_name: Nick Train
+  category: growth
+  country: GB
+  ciks: [1484150]
+
+- slug: hillhouse
+  display_name: Hillhouse Investment
+  manager_name: Zhang Lei
+  category: growth
+  country: HK
+  ciks: [1762304]
+  notes: Files as HHLR Advisors, Ltd., whose EDGAR address is in Grand Cayman.
+
+- slug: cantillon
+  display_name: Cantillon Capital Management
+  manager_name: William von Mueffling
+  category: growth
+  country: US
+  ciks: [1279936]
+
+# --- macro ---------------------------------------------------------------------
+
+- slug: duquesne
+  display_name: Duquesne Family Office
+  manager_name: Stanley Druckenmiller
+  category: macro
+  country: US
+  ciks: [1008925, 1536411]
+  notes: >-
+    Duquesne Capital Management through 2010Q4, when Druckenmiller stopped
+    managing outside money; Duquesne Family Office from 2011Q4. No overlapping
+    periods.
+
+- slug: soros
+  display_name: Soros Fund Management
+  manager_name: George Soros
+  category: macro
+  country: US
+  ciks: [1029160]
+  notes: Chaired by Alex Soros since 2023.
+
+- slug: bridgewater
+  display_name: Bridgewater Associates
+  manager_name: Ray Dalio
+  category: macro
+  country: US
+  ciks: [1350694]
+  notes: Dalio completed his handover of control in 2022.
+
+- slug: tudor
+  display_name: Tudor Investment Corp
+  manager_name: Paul Tudor Jones
+  category: macro
+  country: US
+  ciks: [923093]
+
+- slug: moore-capital
+  display_name: Moore Capital Management
+  manager_name: Louis Bacon
+  category: macro
+  country: US
+  ciks: [924178, 1448574]
+  notes: >-
+    Moore Capital Management LLC through 2008Q2, the LP from 2008Q3. No
+    overlapping periods.
+
+- slug: caxton
+  display_name: Caxton Associates
+  manager_name: Andrew Law
+  category: macro
+  country: GB
+  ciks: [872573, 2051323]
+  notes: >-
+    Caxton Associates LP (New York) through 2024Q4, Caxton Associates LLP
+    (London) from 2025Q1. No overlapping periods.
+
+- slug: rokos
+  display_name: Rokos Capital Management
+  manager_name: Chris Rokos
+  category: macro
+  country: GB
+  ciks: [1827377, 1666335]
+  notes: >-
+    The LLP (1666335) files the 13F-HR; the US LP files 13F-NTs. Listed with
+    the LLP last although it is the older entity, because it is the primary
+    filer. OVERLAP 2025Q3: the US LP filed a single 13F-HR alongside the LLP's;
+    the LLP counts. Confirm with audit-overlaps.
+
+- slug: graham-capital
+  display_name: Graham Capital Management
+  manager_name: Kenneth Tropin
+  category: macro
+  country: US
+  ciks: [1315421]
+
+# --- quant ---------------------------------------------------------------------
+
+- slug: renaissance-technologies
+  display_name: Renaissance Technologies
+  manager_name: Jim Simons
+  category: quant
+  country: US
+  ciks: [1037389]
+  notes: Simons died in May 2024.
+
+- slug: two-sigma
+  display_name: Two Sigma
+  manager_name: John Overdeck and David Siegel
+  category: quant
+  country: US
+  ciks: [1179392, 1478735]
+  overlap: sum
+  notes: >-
+    OVERLAP every quarter since 2010Q4: Two Sigma Investments and Two Sigma
+    Advisers both file, as two registered advisers with (apparently) separate
+    books, so both count. Set before audit-overlaps could check it, on the
+    strength of fifteen years of concurrent filing. Confirm once loaded.
+
+- slug: de-shaw
+  display_name: D. E. Shaw & Co.
+  manager_name: David Shaw
+  category: quant
+  country: US
+  ciks: [1009207]
+
+- slug: aqr
+  display_name: AQR Capital Management
+  manager_name: Cliff Asness
+  category: quant
+  country: US
+  ciks: [1167557]
+
+- slug: dimensional
+  display_name: Dimensional Fund Advisors
+  manager_name: David Booth
+  category: quant
+  country: US
+  ciks: [354204]
+  notes: Large diversified filer.
+
+- slug: lsv
+  display_name: LSV Asset Management
+  manager_name: Josef Lakonishok
+  category: quant
+  country: US
+  ciks: [1050470]
+
+- slug: arrowstreet
+  display_name: Arrowstreet Capital
+  manager_name: Investment team
+  category: quant
+  country: US
+  ciks: [1164508]
+
+- slug: man-group
+  display_name: Man Group
+  manager_name: Investment team
+  category: quant
+  country: GB
+  ciks: [1637460]
+
+- slug: qube
+  display_name: Qube Research & Technologies
+  manager_name: Investment team
+  category: quant
+  country: GB
+  ciks: [1729829]
+
+- slug: pdt-partners
+  display_name: PDT Partners
+  manager_name: Peter Muller
+  category: quant
+  country: US
+  ciks: [1564702]
+
+- slug: worldquant
+  display_name: WorldQuant
+  manager_name: Igor Tulchinsky
+  category: quant
+  country: US
+  ciks: [1745981]
+  notes: Files as WorldQuant Millennium Advisors.
+
+# --- multi_strategy ------------------------------------------------------------
+
+- slug: citadel
+  display_name: Citadel
+  manager_name: Ken Griffin
+  category: multi_strategy
+  country: US
+  ciks: [1423053]
+  notes: Citadel Advisors, the hedge fund. Citadel Securities is not tracked.
+
+- slug: millennium
+  display_name: Millennium Management
+  manager_name: Israel Englander
+  category: multi_strategy
+  country: US
+  ciks: [1273087]
+
+- slug: point72
+  display_name: Point72 Asset Management
+  manager_name: Steve Cohen
+  category: multi_strategy
+  country: US
+  ciks: [1018103, 1451928, 1603466]
+  notes: >-
+    Includes S.A.C. Capital Advisors, which became Point72 in 2014: the LLC
+    through 2009Q3, the LP 2009Q1-2015Q3. OVERLAP 2009Q1 and 2009Q3: the SAC
+    LP counts. OVERLAP 2014Q2-2015Q3: Point72 counts, which drops SAC LP's
+    wind-down book if it was a separate one. Confirm with audit-overlaps.
+
+- slug: balyasny
+  display_name: Balyasny Asset Management
+  manager_name: Dmitry Balyasny
+  category: multi_strategy
+  country: US
+  ciks: [1218710]
+
+- slug: marshall-wace
+  display_name: Marshall Wace
+  manager_name: Paul Marshall and Ian Wace
+  category: multi_strategy
+  country: GB
+  ciks: [1318757]
+
+- slug: farallon
+  display_name: Farallon Capital Management
+  manager_name: Andrew Spokes
+  category: multi_strategy
+  country: US
+  ciks: [909661]
+  notes: Founded by Tom Steyer, who left in 2012.
+
+- slug: sculptor
+  display_name: Sculptor Capital Management
+  manager_name: Investment team
+  category: multi_strategy
+  country: US
+  ciks: [1054587]
+  notes: >-
+    Formerly Och-Ziff; files as Sculptor Capital LP (once OZ Management).
+    The parent company's CIK (1403256) has no 13F filings and is deliberately
+    not listed.
+
+- slug: schonfeld
+  display_name: Schonfeld Strategic Advisors
+  manager_name: Steven Schonfeld
+  category: multi_strategy
+  country: US
+  ciks: [1665241]
+
+- slug: verition
+  display_name: Verition Fund Management
+  manager_name: Nicholas Maounis
+  category: multi_strategy
+  country: US
+  ciks: [1454027]
+
+- slug: exoduspoint
+  display_name: ExodusPoint Capital Management
+  manager_name: Michael Gelband
+  category: multi_strategy
+  country: US
+  ciks: [1736225]

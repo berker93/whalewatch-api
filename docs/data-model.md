@@ -77,6 +77,12 @@ filer
   id            bigint pk
   name          text         not null    -- as reported on the latest cover page
   slug          text         unique      -- 'berkshire-hathaway', stable, ours
+  display_name  text                     -- curated, from data/investors.yaml
+  manager_name  text                     -- curated
+  category      text         check       -- value|activist|quant|macro|growth|multi_strategy
+  country       char(2)                  -- ISO 3166-1 alpha-2, curated
+  notes         text                     -- curated, for maintainers
+  overlap       text         not null    -- successor | sum; default successor
   first_period  date                     -- earliest period we hold
   last_period   date                     -- latest period we hold
 
@@ -84,6 +90,7 @@ filer_cik
   id        bigint pk
   filer_id  bigint    fk -> filer, on delete cascade
   cik       char(10)  unique, not null
+  priority  smallint  not null           -- position in the YAML list; highest wins an overlap
 ```
 
 **`filer` carries no `cik` column.** One institution files under several CIKs,
@@ -104,6 +111,46 @@ changes under a client when a fund rebrands. It is `text` rather than the
 `citext` this document originally specified: slugs are minted lowercase by one
 function, so case-insensitive comparison has nothing to do, and `citext` is an
 extension to install in every database anyone ever creates.
+
+The curated columns (`0005_filer_curation`) come from
+[`data/investors.yaml`](../data/investors.yaml), written by `seed-investors`.
+They are nullable: the list is how a filer gets curated, not what makes a row a
+filer. `name` stays ingestion's — the seed sets it once on insert as a
+placeholder and never touches it again.
+
+**A filer's CIKs can overlap in time.** Most multi-CIK filers hand over cleanly
+from one entity to the next, but some have quarters in which two of their CIKs
+each filed an original 13F-HR — during a reorganisation (Elliott 2020, Pershing
+Square 2025–26) or permanently (Two Sigma's two advisers). Summing a filer's
+filings for such a period double counts it in the first case and is correct in
+the second. So `filer` carries an `overlap` policy (`successor`, the default,
+or `sum`) and `filer_cik` a `priority` (the CIK's position in the YAML list);
+see *Which filings count* below.
+
+### Which filings count: `effective_filing`
+
+Every filing is loaded as filed. Two views (`0006_effective_filing`) decide
+which of them a per-filer read adds up, and **every read that sums holdings per
+filer joins through `effective_filing`** rather than grouping on
+`holding.filer_id` directly.
+
+```
+effective_filing_by_cik   (filing_id, filer_id, cik, period_of_report)
+effective_filing          (filing_id, filer_id, cik, period_of_report)
+```
+
+`effective_filing_by_cik` resolves amendments within one CIK's filings for a
+period: the latest-filed whole-period filing counts (the original `13F-HR`, or
+a `restatement` amendment, which replaces it), plus every `new_holdings`
+amendment filed after it. Only filings with loaded holdings count (`ok`,
+`suspect`); an amendment with no `<amendmentType>` is left out rather than
+guessed at.
+
+`effective_filing` then applies the filer's policy across its CIKs. Under
+`successor` only the highest-priority CIK with anything for the period counts —
+the one listed last, which is the successor entity during a reorganisation. Under
+`sum` all of them do. `audit-overlaps` compares the holdings of overlapping CIKs
+and reports whether each policy matches what the filings show.
 
 ### `issuer` / `security`
 

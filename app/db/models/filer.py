@@ -8,11 +8,74 @@ cardinality.
 from __future__ import annotations
 
 from datetime import date
+from enum import StrEnum
 
-from sqlalchemy import CHAR, BigInteger, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import (
+    CHAR,
+    BigInteger,
+    CheckConstraint,
+    ForeignKey,
+    SmallInteger,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.models.base import Base
+
+
+class FilerCategory(StrEnum):
+    """The investment style a filer is filed under on the site.
+
+    Text with a ``CHECK``, not a native enum, by the rule in
+    :mod:`app.db.models.enums`: the set is ours, it is editorial, and the day a
+    seventh style is wanted should be one line of DDL rather than an
+    ``ALTER TYPE`` that cannot be reversed.
+
+    One per filer, and deliberately coarse. It exists to group pages and to cut
+    the aggregate views, not to describe a strategy — a style label precise
+    enough to be uncontroversial would be too fine to group anything by.
+    """
+
+    VALUE = "value"
+    ACTIVIST = "activist"
+    QUANT = "quant"
+    MACRO = "macro"
+    GROWTH = "growth"
+    MULTI_STRATEGY = "multi_strategy"
+
+
+CATEGORY_CHECK = "category IS NULL OR category IN ({})".format(
+    ", ".join(f"'{category.value}'" for category in FilerCategory)
+)
+
+
+class OverlapPolicy(StrEnum):
+    """What to do when two of a filer's CIKs both report the same period.
+
+    It happens in two situations that look identical in the filing index and
+    need opposite treatment. During a reorganisation the old entity and the
+    new one both file for a quarter or two, reporting **one book twice** —
+    summing them doubles the fund. A few institutions instead run **several
+    books permanently**, each registered adviser filing its own — keeping
+    only one of them loses the rest.
+
+    ``successor``
+        The default. Only the CIK listed last in ``data/investors.yaml`` (the
+        highest :attr:`FilerCik.priority`) counts for a period both filed.
+    ``sum``
+        Every CIK's filings count. Opt-in, per filer, and only once
+        ``audit-overlaps`` has shown the books really are separate.
+
+    Applied by the ``effective_filing`` view, never by the loader: every filing
+    is loaded as filed, and this decides only which of them a read counts.
+    """
+
+    SUCCESSOR = "successor"
+    SUM = "sum"
+
+
+OVERLAP_CHECK = "overlap IN ({})".format(", ".join(f"'{policy.value}'" for policy in OverlapPolicy))
 
 
 class Filer(Base):
@@ -46,6 +109,47 @@ class Filer(Base):
     developer's throwaway one.
     """
 
+    display_name: Mapped[str | None] = mapped_column(Text)
+    """Our name for the institution, from ``data/investors.yaml``.
+
+    Separate from :attr:`name` because they answer different questions.
+    ``name`` is what the filer called itself on its latest cover page —
+    "Pershing Square Capital Management, L.P." — and belongs to ingestion;
+    this is what the page header says, and belongs to whoever edits the list.
+
+    The curated columns below are all nullable for the same reason: the list
+    is how a filer *gets* them, not what makes a filer a filer. A row a test or
+    a future discovery job inserts with only a name and a slug is still a valid
+    filer, and "not curated yet" is a state worth being able to represent.
+    """
+
+    manager_name: Mapped[str | None] = mapped_column(Text)
+    """The person the page is known by, which is not always who runs it today.
+
+    "Warren Buffett" for Berkshire, "Jim Simons" for Renaissance. Succession
+    goes in :attr:`notes`, not here — a manager name that tracked every CIO
+    change would make the pages people search for harder to find.
+    """
+
+    category: Mapped[str | None] = mapped_column(Text)
+    """One :class:`FilerCategory` value. See there for why it is coarse."""
+
+    country: Mapped[str | None] = mapped_column(CHAR(2))
+    """ISO 3166-1 alpha-2, where the manager is run from — ``GB`` for London.
+
+    Not EDGAR's ``stateOrCountry``, which is a mailing address and a private
+    code list (``X0`` is the United Kingdom, ``E9`` the Cayman Islands). A
+    Hong Kong manager filing through a Cayman entity is ``HK`` here.
+    """
+
+    notes: Mapped[str | None] = mapped_column(Text)
+    """Editorial notes for whoever maintains ingestion. Not shown to users."""
+
+    overlap: Mapped[str] = mapped_column(Text, server_default=OverlapPolicy.SUCCESSOR.value)
+    """One :class:`OverlapPolicy` value. ``NOT NULL``, unlike the curated
+    columns above: it changes what a read returns, so "unset" has to mean the
+    safe default rather than nothing."""
+
     first_period: Mapped[date | None]
     last_period: Mapped[date | None]
     """The span of periods we actually hold, maintained by ingestion.
@@ -60,6 +164,11 @@ class Filer(Base):
         back_populates="filer",
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(CATEGORY_CHECK, name="category_is_known"),
+        CheckConstraint(OVERLAP_CHECK, name="overlap_is_known"),
     )
 
 
@@ -103,6 +212,17 @@ class FilerCik(Base):
     ``CHAR`` rather than ``VARCHAR`` because the width is genuinely fixed at ten
     — the padding is part of the identifier, not incidental — so a nine
     character value in here is a bug worth having the type reject.
+    """
+
+    priority: Mapped[int] = mapped_column(SmallInteger, server_default="0")
+    """This CIK's position in its filer's ``ciks`` list, from 0.
+
+    Decides who wins an overlap under :attr:`OverlapPolicy.SUCCESSOR`: the
+    highest priority. The list is written oldest first, so the successor
+    entity wins a reorganisation's overlap quarters by default — and a filer
+    whose *primary* entity is not its newest lists the primary last anyway.
+    Rows inserted outside the seed get 0, and ties are broken by CIK so a
+    period never resolves to two CIKs by accident.
     """
 
     filer: Mapped[Filer] = relationship(back_populates="ciks")

@@ -164,6 +164,60 @@ is printed here and stored on `filing.parse_notes`; the filing is still loaded,
 because withholding a portfolio that is 99% right leaves a hole shaped exactly
 like a manager who filed nothing.
 
+### `seed-investors [--file] [--dry-run]`
+
+Upserts [`data/investors.yaml`](data/investors.yaml) — the ~100 institutions the
+site covers — into `filer` and `filer_cik`. Run it once on a fresh database and
+again whenever the list changes; until a filer's CIK is seeded, its filings load
+with their holdings deferred.
+
+```
+seed-investors  investors.yaml
+  filers      100 listed: 0 created, 1 updated, 99 unchanged
+  ciks        114 listed: 0 added, 0 reprioritised
+  categories  value 30, growth 25, activist 16, quant 11, multi_strategy 10, macro 8
+  overlap     sum: two-sigma; every other filer: successor
+  updated     berkshire-hathaway
+```
+
+**Idempotent, and additive only.** A second run reports every filer unchanged.
+Nothing is ever deleted: a CIK dropped from the list stays mapped (and is
+printed as `kept`), because filings already resolve through it.
+
+**Slugs are public URLs, and the seed defends them.** A CIK that the database
+maps to a different slug is refused, and nothing is written. The usual cause is
+a renamed slug. Restore the old slug, or move the CIK on purpose with a
+migration.
+
+**The file is validated first,** before any connection is opened, by the schema in
+[app/ingestion/investors.py](app/ingestion/investors.py). The same schema runs
+over the committed file in `tests/test_investors.py`, so a duplicate slug, a
+duplicate CIK or an unknown category fails the unit suite, not a deploy.
+
+**The order of an entry's `ciks` is data.** When two of a filer's CIKs both filed
+for one period, only the one listed last counts, unless the entry says
+`overlap: sum`. See [Which filings count](docs/data-model.md#which-filings-count-effective_filing).
+
+### `audit-overlaps [--filer SLUG]`
+
+For every period in which two of a filer's own CIKs both filed, compares the
+loaded holdings and says whether they are one book filed twice or two separate
+books — and whether the filer's `overlap` policy agrees. Read-only, exit 0.
+Illustrative output (the figures are made up):
+
+```
+audit-overlaps  4 overlapping periods across 1 filers, 0 disagreeing with their policy
+  pershing-square  2025-06-30  0002026053 vs 0001336528
+              12 vs 12 positions, $13,812,443,210 vs $13,812,443,210, 100% identical -> same book
+              policy successor: agrees
+```
+
+The test is matching share counts, not shared tickers: two books from one shop
+hold many of the same names, but only one book filed twice reports the same
+number of shares of each. It only sees periods that have been ingested, so run
+it after loading a filer's overlap quarters. When it disagrees with a policy,
+change `overlap` in the YAML and re-seed.
+
 ## The API
 
 One read endpoint so far, and it is the one everything else gets debugged

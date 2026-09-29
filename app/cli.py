@@ -1,4 +1,4 @@
-"""Typer CLI: ingest-filing, backfill, recompute, refresh-views.
+"""Typer CLI: ingest-filing, seed-investors, audit-overlaps, backfill, recompute, refresh-views.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -12,6 +12,8 @@ the incident where throwaway scripts are least trustworthy.
 
     uv run python -m app.cli ingest-filing 0001067983-24-000011 --cik 1067983
     uv run python -m app.cli ingest-filing 0001067983-24-000011 --dry-run
+    uv run python -m app.cli seed-investors
+    uv run python -m app.cli audit-overlaps --filer pershing-square
 
 Exit codes
 ----------
@@ -44,9 +46,11 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Annotated, Final
 
 import httpx
@@ -57,7 +61,9 @@ from sqlalchemy import select
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
+from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import Filing, ParseStatus
+from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.session import session_scope
 from app.ingestion.edgar.client import EdgarClient, EdgarRateLimited, EdgarServerError
 from app.ingestion.edgar.documents import (
@@ -70,6 +76,15 @@ from app.ingestion.edgar.submissions import (
     SubmissionMalformedError,
     SubmissionNotFoundError,
     find_submission,
+)
+from app.ingestion.investors import (
+    DEFAULT_INVESTORS_PATH,
+    InvestorEntry,
+    InvestorListError,
+    SeedConflictError,
+    SeedResult,
+    load_investors,
+    seed_investors,
 )
 from app.ingestion.loaders import LoadResult, load_filing
 from app.ingestion.normalisation import NormalisedFiling, normalise_filing
@@ -636,6 +651,155 @@ def _instant(moment: datetime) -> str:
     show why a filing near it got the multiplier it did.
     """
     return moment.isoformat(sep=" ", timespec="seconds")
+
+
+# --- seed-investors ----------------------------------------------------------
+
+
+@app.command("seed-investors")
+def seed_investors_command(
+    path: Annotated[
+        Path,
+        typer.Option(
+            "--file",
+            help="The investor list to seed from.",
+            show_default="data/investors.yaml",
+        ),
+    ] = DEFAULT_INVESTORS_PATH,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Validate and report what would change. Write nothing."),
+    ] = False,
+) -> None:
+    """Upsert the investor list into filer and filer_cik.
+
+    Idempotent: a second run reports every filer unchanged and adds no CIKs.
+    Never deletes, and refuses to move a CIK from one slug to another.
+    """
+    try:
+        asyncio.run(_seed_investors(path, dry_run=dry_run))
+    except (InvestorListError, SeedConflictError) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+async def _seed_investors(path: Path, *, dry_run: bool) -> None:
+    """Validate first, then write in one transaction.
+
+    The file is validated before a connection is opened, so a malformed list
+    fails in milliseconds with the problem named, rather than after a connect
+    and with a constraint violation that names a table.
+
+    A dry run is the real run rolled back, not a separate code path: it goes
+    through the same upserts and conflict check, so what it prints is what the
+    real run will print.
+    """
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    structlog.contextvars.bind_contextvars(job_name="seed-investors")
+
+    entries = load_investors(path)
+
+    async with session_scope(settings) as session:
+        result = await seed_investors(session, entries)
+        if dry_run:
+            await session.rollback()
+
+    logger.info(
+        "investors.seeded",
+        created=len(result.created),
+        updated=len(result.updated),
+        ciks_added=result.ciks_added,
+        dry_run=dry_run,
+    )
+    _echo_seed(path, entries, result, dry_run=dry_run)
+
+
+def _echo_seed(
+    path: Path, entries: tuple[InvestorEntry, ...], result: SeedResult, *, dry_run: bool
+) -> None:
+    typer.echo(f"seed-investors  {path.name}" + ("  — dry run, nothing written" if dry_run else ""))
+    _line(
+        "filers",
+        f"{len(entries)} listed: {len(result.created)} created, "
+        f"{len(result.updated)} updated, {result.unchanged} unchanged",
+    )
+    _line(
+        "ciks",
+        f"{result.ciks_listed} listed: {result.ciks_added} added, "
+        f"{result.ciks_reprioritised} reprioritised",
+    )
+    categories = Counter(entry.category.value for entry in entries)
+    _line("categories", ", ".join(f"{name} {count}" for name, count in categories.most_common()))
+    summed = [entry.slug for entry in entries if entry.overlap is OverlapPolicy.SUM]
+    if summed:
+        _line("overlap", f"sum: {', '.join(summed)}; every other filer: successor")
+    for slug in result.created:
+        _line("created", slug)
+    for slug in result.updated:
+        _line("updated", slug)
+    # A CIK the list no longer mentions is still mapped, and still resolving
+    # filings to this filer. Printed so that removing one from the file is not
+    # mistaken for having removed it from the database.
+    for slug, cik in result.unlisted_ciks:
+        _line("kept", f"CIK {cik} on {slug} is not in the list — left mapped, not removed")
+
+
+# --- audit-overlaps ----------------------------------------------------------
+
+
+@app.command("audit-overlaps")
+def audit_overlaps_command(
+    filer: Annotated[
+        str | None,
+        typer.Option("--filer", metavar="SLUG", help="Audit one filer instead of all of them."),
+    ] = None,
+) -> None:
+    """Compare filings from a filer's own CIKs that report the same period.
+
+    Reads the loaded holdings, so it only knows about periods that have been
+    ingested. For each overlap it says whether the two filings look like one
+    book filed twice or two separate books, and whether the filer's overlap
+    policy agrees. Writes nothing; exits 0 whatever it finds.
+    """
+    asyncio.run(_audit_overlaps(filer))
+
+
+async def _audit_overlaps(slug: str | None) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    structlog.contextvars.bind_contextvars(job_name="audit-overlaps")
+
+    async with session_scope(settings) as session:
+        findings = await audit_overlaps(session, slug=slug)
+
+    if not findings:
+        typer.echo("audit-overlaps  no overlapping periods in the loaded filings")
+        return
+
+    conflicts = [finding for finding in findings if finding.conflict is not None]
+    filers = len({finding.slug for finding in findings})
+    typer.echo(
+        f"audit-overlaps  {len(findings)} overlapping periods across {filers} filers, "
+        f"{len(conflicts)} disagreeing with their policy"
+    )
+    for finding in findings:
+        _echo_overlap(finding)
+
+
+def _echo_overlap(finding: OverlapFinding) -> None:
+    """Two lines per overlap: the comparison, then what the policy makes of it."""
+    typer.echo(
+        f"  {finding.slug}  {finding.period.isoformat()}  "
+        f"{finding.primary_cik} vs {finding.other_cik}"
+    )
+    typer.echo(
+        f"  {'':<{_LABEL_WIDTH}}{finding.primary_positions} vs {finding.other_positions} "
+        f"positions, ${finding.primary_value:,.0f} vs ${finding.other_value:,.0f}, "
+        f"{finding.identical_share:.0%} identical -> {finding.verdict.value}"
+    )
+    verdict = finding.conflict or "agrees"
+    typer.echo(f"  {'':<{_LABEL_WIDTH}}policy {finding.policy.value}: {verdict}")
 
 
 if __name__ == "__main__":

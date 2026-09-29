@@ -18,6 +18,9 @@ dependencies = [
     "lxml>=5.3",
     "pydantic-settings>=2.7",
     "pydantic[email]>=2.9",
+    # data/investors.yaml, read by `seed-investors`. Runtime because the seed
+    # runs in the production container, not only on a developer's machine.
+    "pyyaml>=6.0",
     "redis>=5.2",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=25.1",
@@ -73,4 +76,5 @@ dev = [
     "respx>=0.22",
     "ruff>=0.16.4",
     "testcontainers[postgres]>=4.15",
+    "types-pyyaml>=6.0",
 ]
