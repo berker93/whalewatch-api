@@ -24,7 +24,7 @@ you want to discover empirically.
 
 **One client, one throttle.** `app/ingestion/edgar/client.py` is the only thing
 in this codebase that opens a connection to sec.gov. It owns the `User-Agent`,
-the rate limiter, retries, and the write into `raw_document`.
+the rate limiter and retries.
 
 **User-Agent.** SEC's fair-access policy wants a real, monitored contact address
 on every request and blocks traffic that omits or fakes one. It is built from
@@ -42,8 +42,12 @@ the block is by IP.
 it faster makes it permanent. Treat 403 as fatal for the run and log it loudly;
 retry 429 and 5xx with exponential backoff and jitter.
 
-**Archive before parse.** Every fetched document is written to `raw_document`
-with its sha256 before a parser sees it. Parsing is then a pure function from
+**Archive before parse.** Every fetched document is written to the raw store
+(`app/storage`) before a parser sees it, uncompressed and unmodified, under
+`raw/13f/{cik}/{accession_no}/{filename}` — cover page, information table and
+EDGAR's `index.json` side by side. Writes are once-only: a key that exists is
+left alone unless `--force`. The store is local disk under `./data/raw/` in
+development and an S3-compatible bucket (R2 included) when deployed. Parsing is then a pure function from
 stored bytes to rows, re-runnable at any time without touching the network,
 which is what makes a parser bug a `whalewatch recompute` rather than a week of
 re-crawling.

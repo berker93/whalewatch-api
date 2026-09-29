@@ -82,11 +82,62 @@ class Settings(BaseSettings):
     # a cached one is a quietly out-of-date answer.
     edgar_cache_dir: Path | None = None
 
+    # --- raw document archive -----------------------------------------------
+    # Where every fetched EDGAR document is kept, byte for byte, before a parser
+    # sees it (app/storage). "local" writes under raw_store_local_root and is for
+    # development; "s3" is any S3-compatible bucket — AWS, or R2 by pointing the
+    # endpoint URL at the account's r2.cloudflarestorage.com host.
+    raw_store_backend: Literal["local", "s3"] = "local"
+
+    # The root the object keys are laid out under, not the directory the files
+    # land in. Every key starts ``raw/``, so the default puts documents in
+    # ./data/raw/ — the same layout the bucket has, which is what makes an
+    # ``aws s3 sync`` of one into the other a plain copy.
+    raw_store_local_root: Path = Path("data")
+
+    raw_store_s3_bucket: str | None = None
+    # Unset for AWS itself. For R2: https://<account-id>.r2.cloudflarestorage.com
+    raw_store_s3_endpoint_url: str | None = None
+    # R2 wants "auto"; AWS wants the bucket's region.
+    raw_store_s3_region: str | None = None
+    # Both unset means botocore's own credential chain — an instance role, in a
+    # deployment that has one. Declared here rather than left to botocore's
+    # reading of AWS_* variables so that the store's whole configuration is on
+    # this class, like everything else's.
+    raw_store_s3_access_key_id: str | None = None
+    raw_store_s3_secret_access_key: SecretStr | None = None
+
     @model_validator(mode="after")
     def _edgar_cache_is_for_development(self) -> Self:
         if self.edgar_cache_dir is not None and self.environment in ("staging", "production"):
             raise ValueError(
                 f"EDGAR_CACHE_DIR is for development and must be unset in {self.environment}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _raw_store_is_complete(self) -> Self:
+        """Refuse a raw store configuration that would lose documents quietly.
+
+        The local backend in a deployed environment writes to a container's own
+        filesystem, which is gone at the next deploy — an archive that silently
+        is not one, discovered on the day it is needed. And an S3 backend with
+        no bucket, or half a key pair, would otherwise fail on the first put of
+        the first ingest rather than at boot.
+        """
+        if self.raw_store_backend == "local" and self.environment in ("staging", "production"):
+            raise ValueError(
+                f"RAW_STORE_BACKEND=local is for development; {self.environment} needs "
+                "RAW_STORE_BACKEND=s3 so archived documents outlive the container"
+            )
+        if self.raw_store_backend == "s3" and not self.raw_store_s3_bucket:
+            raise ValueError("RAW_STORE_BACKEND=s3 needs RAW_STORE_S3_BUCKET")
+        if (self.raw_store_s3_access_key_id is None) != (
+            self.raw_store_s3_secret_access_key is None
+        ):
+            raise ValueError(
+                "RAW_STORE_S3_ACCESS_KEY_ID and RAW_STORE_S3_SECRET_ACCESS_KEY are set "
+                "together or not at all"
             )
         return self
 

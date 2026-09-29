@@ -5,6 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # The S3 raw store (app/storage/s3.py). aiobotocore rather than aioboto3:
+    # the store needs five client calls and no resource layer, and one fewer
+    # wrapper is one fewer place for a botocore pin to conflict. Runtime because
+    # archiving is part of every ingest, not a developer convenience.
+    "aiobotocore>=2.15",
     "alembic>=1.14",
     "asyncpg>=0.30",
     "fastapi>=0.115",
@@ -68,6 +73,11 @@ markers = [
 dev = [
     "httpx>=0.28",
     "lxml-stubs>=0.5",
+    # Stands in for S3 in tests/test_raw_store_s3.py. The server flavour, not the
+    # in-process mock: moto patches botocore's HTTP layer, which aiobotocore
+    # replaces with aiohttp, so only a real endpoint URL reaches it — the same
+    # code path an R2 endpoint takes.
+    "moto[server]>=5.0",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -76,5 +86,6 @@ dev = [
     "respx>=0.22",
     "ruff>=0.16.4",
     "testcontainers[postgres]>=4.15",
+    "types-aiobotocore[s3]>=2.15",
     "types-pyyaml>=6.0",
 ]

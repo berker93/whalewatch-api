@@ -38,6 +38,7 @@ from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.core.rate_limit import AsyncTokenBucket
 from app.db.models import Filer, FilerCik, Filing, Holding, Security
+from app.storage.raw import LocalRawStore
 from tests.conftest import make_settings
 
 ACCESSION: Final = "0001067983-24-000011"
@@ -408,6 +409,122 @@ def test_a_forced_reload_drops_a_position_the_document_no_longer_reports(
         migrated_engine,
         select(Security.cusip).join(Holding, Holding.security_id == Security.id),
     ) == [(APPLE,)]
+
+
+# --- the raw archive ---------------------------------------------------------
+
+_ARCHIVE_PREFIX: Final = f"raw/13f/{CIK}/{ACCESSION}/"
+
+
+def _archived(settings: Settings) -> dict[str, bytes]:
+    """Everything in the local archive the command wrote to, key -> bytes."""
+
+    async def read() -> dict[str, bytes]:
+        store = LocalRawStore(settings.raw_store_local_root)
+        return {key: await store.get(key) for key in await store.list()}
+
+    return asyncio.run(read())
+
+
+@respx.mock
+def test_the_documents_are_archived_as_served_and_the_row_points_at_them(
+    runner: CliRunner, migrated_engine: AsyncEngine, cli_settings: Settings
+) -> None:
+    _edgar()
+    _register_filer(migrated_engine)
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
+
+    assert result.exit_code == 0, result.output
+    archived = _archived(cli_settings)
+    assert sorted(archived) == [
+        f"{_ARCHIVE_PREFIX}index.json",
+        f"{_ARCHIVE_PREFIX}infotable.xml",
+        f"{_ARCHIVE_PREFIX}primary_doc.xml",
+    ]
+    assert archived[f"{_ARCHIVE_PREFIX}primary_doc.xml"] == _primary_doc()
+    assert archived[f"{_ARCHIVE_PREFIX}infotable.xml"] == _info_table(APPLE, COCA_COLA)
+    assert _fetch(migrated_engine, select(Filing.raw_key)) == [(_ARCHIVE_PREFIX,)]
+    assert _ARCHIVE_PREFIX in result.stdout
+
+
+@respx.mock
+def test_a_filing_the_parser_rejects_is_archived_all_the_same(
+    runner: CliRunner, migrated_engine: AsyncEngine, cli_settings: Settings
+) -> None:
+    """The reason for archiving *before* parsing. The fix for a parser bug is a
+    re-parse of these bytes, which only works if the crash did not also lose
+    them."""
+    truncated = _primary_doc()[:200]
+    respx.get(_SUBMISSIONS_URL).mock(Response(200, json=_submissions()))
+    respx.get(f"{_DIRECTORY}/index.json").mock(
+        Response(200, json=_index("primary_doc.xml", "infotable.xml"))
+    )
+    respx.get(f"{_DIRECTORY}/primary_doc.xml").mock(Response(200, content=truncated))
+    respx.get(f"{_DIRECTORY}/infotable.xml").mock(Response(200, content=_info_table(APPLE)))
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
+
+    assert result.exit_code == 1
+    assert _fetch(migrated_engine, select(Filing.id)) == []
+    assert _archived(cli_settings)[f"{_ARCHIVE_PREFIX}primary_doc.xml"] == truncated
+
+
+@respx.mock
+def test_a_dry_run_archives_nothing(
+    runner: CliRunner, migrated_engine: AsyncEngine, cli_settings: Settings
+) -> None:
+    """``--dry-run`` promises to write nothing, and the archive is a write."""
+    _edgar()
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK, "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert _archived(cli_settings) == {}
+
+
+@respx.mock
+def test_a_re_run_keeps_the_first_archived_copy_until_forced(
+    runner: CliRunner, migrated_engine: AsyncEngine, cli_settings: Settings
+) -> None:
+    """A filing EDGAR restates is archived as first fetched; only ``--force``
+    replaces it, because that is the operator saying the new copy is the one
+    they want parsed."""
+    _edgar()
+    _register_filer(migrated_engine)
+    runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
+    key = f"{_ARCHIVE_PREFIX}infotable.xml"
+    original = _info_table(APPLE, COCA_COLA)
+
+    # A re-run of a filing that is not yet loaded fetches again without --force.
+    _execute(migrated_engine, text("UPDATE filing SET parse_status = 'failed'"))
+    respx.reset()
+    _edgar(entry_total=1, cusips=(APPLE,))
+    assert runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK]).exit_code == 0
+    assert _archived(cli_settings)[key] == original
+
+    assert runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK, "--force"]).exit_code == 0
+    assert _archived(cli_settings)[key] == _info_table(APPLE)
+
+
+@respx.mock
+def test_an_archive_that_cannot_be_written_stops_the_load(
+    runner: CliRunner, migrated_engine: AsyncEngine, cli_settings: Settings
+) -> None:
+    """One line on stderr and exit 1, not a traceback, and nothing loaded — a
+    filing in the database whose bytes are not archived is the one a parser fix
+    cannot reach without going back to EDGAR."""
+    _edgar()
+    _register_filer(migrated_engine)
+    cli_settings.raw_store_local_root.parent.mkdir(parents=True, exist_ok=True)
+    cli_settings.raw_store_local_root.write_bytes(b"a file where the archive should be")
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
+
+    assert result.exit_code == 1
+    assert "error:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert _fetch(migrated_engine, select(Filing.id)) == []
 
 
 # --- --cik -------------------------------------------------------------------

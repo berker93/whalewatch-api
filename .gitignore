@@ -17,3 +17,6 @@ graphify-out/
 
 # EDGAR_CACHE_DIR's conventional home: bodies fetched from sec.gov in development
 .edgar-cache/
+
+# The local raw store (RAW_STORE_BACKEND=local): archived EDGAR documents
+data/raw/

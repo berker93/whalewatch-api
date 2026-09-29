@@ -39,6 +39,7 @@ table should not be parsed twice to find out it was the right file.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Final
@@ -95,6 +96,19 @@ class FilingDocuments:
     which is a link that 404s in whatever incident report it lands in.
     """
 
+    index_url: str
+    """Where the directory listing was fetched from."""
+
+    index: bytes
+    """EDGAR's ``index.json`` for the filing, exactly as served.
+
+    Kept rather than discarded once the two documents are found, because it is
+    what the archive is read against later: the complete list of files EDGAR
+    had in the directory on the day, including the ones rejected as not being
+    the information table. Small, and the first thing anyone wants when a
+    filing's documents look wrong.
+    """
+
     primary_doc_url: str
     """Where the cover page was fetched from."""
 
@@ -129,7 +143,8 @@ async def fetch_13f_documents(
         accession number's leading digits belong to the transmitting agent and
         do not name a directory that exists.
     :param accession_no: The dashed accession number.
-    :returns: The bytes of both documents and the URLs they came from.
+    :returns: The bytes of both documents and of the directory listing, and the
+        URLs each came from.
     :raises FilingDocumentsError: If the directory has no cover page, or has
         candidate XML files none of which is an information table.
 
@@ -140,7 +155,9 @@ async def fetch_13f_documents(
     XML file in a directory that has at most a handful.
     """
     index_url = EdgarClient.filing_index_url(cik, accession_no)
-    listing = await edgar.get_json(index_url)
+    # Bytes first and parsed second, so the listing can be archived as served.
+    index = await edgar.get_bytes(index_url)
+    listing = json.loads(index)
 
     # The listing URL minus its filename, which is the directory every document
     # in it hangs off. Derived rather than rebuilt from the parts, so there is
@@ -166,6 +183,8 @@ async def fetch_13f_documents(
         # exist.
         logger.info("filing.no_information_table", accession_no=accession_no, url=base_url)
         return FilingDocuments(
+            index_url=index_url,
+            index=index,
             primary_doc_url=primary_url,
             primary_doc=primary_doc,
             info_table_url=None,
@@ -176,6 +195,8 @@ async def fetch_13f_documents(
         edgar, base_url=base_url, accession_no=accession_no, candidates=candidates
     )
     return FilingDocuments(
+        index_url=index_url,
+        index=index,
         primary_doc_url=primary_url,
         primary_doc=primary_doc,
         info_table_url=info_url,

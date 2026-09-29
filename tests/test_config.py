@@ -159,6 +159,60 @@ class TestValidation:
         with pytest.raises(ValidationError, match="EDGAR_CACHE_DIR"):
             build(monkeypatch, ENVIRONMENT=environment, EDGAR_CACHE_DIR=".edgar-cache")
 
+    def test_raw_store_defaults_to_local_under_data(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        settings = build(monkeypatch)
+
+        assert settings.raw_store_backend == "local"
+        assert settings.raw_store_local_root == Path("data")
+
+    @pytest.mark.parametrize("environment", ["staging", "production"])
+    def test_local_raw_store_is_refused_in_a_deployed_environment(
+        self, monkeypatch: pytest.MonkeyPatch, environment: str
+    ) -> None:
+        """A container's own disk is gone at the next deploy, and so would be
+        every document archived to it."""
+        with pytest.raises(ValidationError, match="RAW_STORE_BACKEND=local"):
+            build(monkeypatch, ENVIRONMENT=environment)
+
+    def test_s3_raw_store_needs_a_bucket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with pytest.raises(ValidationError, match="RAW_STORE_S3_BUCKET"):
+            build(monkeypatch, RAW_STORE_BACKEND="s3")
+
+    def test_s3_raw_store_is_accepted_in_production(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        settings = build(
+            monkeypatch,
+            ENVIRONMENT="production",
+            RAW_STORE_BACKEND="s3",
+            RAW_STORE_S3_BUCKET="whalewatch-raw",
+            RAW_STORE_S3_ENDPOINT_URL="https://account.r2.cloudflarestorage.com",
+            RAW_STORE_S3_REGION="auto",
+        )
+
+        assert settings.raw_store_s3_bucket == "whalewatch-raw"
+
+    def test_half_an_s3_key_pair_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Otherwise the half that is set is silently ignored in favour of
+        botocore's own credential chain, and the store authenticates as
+        whoever that turns out to be."""
+        with pytest.raises(ValidationError, match="set together"):
+            build(
+                monkeypatch,
+                RAW_STORE_BACKEND="s3",
+                RAW_STORE_S3_BUCKET="whalewatch-raw",
+                RAW_STORE_S3_ACCESS_KEY_ID="AKIA...",
+            )
+
+    def test_the_s3_secret_is_not_dumped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        settings = build(
+            monkeypatch,
+            RAW_STORE_BACKEND="s3",
+            RAW_STORE_S3_BUCKET="whalewatch-raw",
+            RAW_STORE_S3_ACCESS_KEY_ID="key-id",
+            RAW_STORE_S3_SECRET_ACCESS_KEY="hunter2",
+        )
+
+        assert "hunter2" not in repr(settings.model_dump())
+
 
 class TestEnvFile:
     def test_env_file_is_read_when_present(

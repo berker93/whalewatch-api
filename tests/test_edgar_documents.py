@@ -119,6 +119,24 @@ async def test_the_two_documents_are_found_and_fetched(settings: Settings) -> No
     assert documents.info_table_url.endswith(f"{DIRECTORY}/form13fInfoTable.xml")
 
 
+async def test_the_directory_listing_is_kept_as_served(settings: Settings) -> None:
+    """Kept for the archive, byte for byte — not re-serialised from the parsed
+    JSON, which would reorder and re-space it into something EDGAR never
+    sent."""
+    listing = _index("primary_doc.xml", "form13fInfoTable.xml").replace(b", ", b",  ")
+    documents = await _fetch(
+        settings,
+        {
+            f"{DIRECTORY}/index.json": listing,
+            f"{DIRECTORY}/primary_doc.xml": PRIMARY_DOC,
+            f"{DIRECTORY}/form13fInfoTable.xml": INFO_TABLE,
+        },
+    )
+
+    assert documents.index == listing
+    assert documents.index_url.endswith(f"{DIRECTORY}/index.json")
+
+
 @pytest.mark.parametrize(
     "name",
     [

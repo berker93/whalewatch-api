@@ -221,15 +221,20 @@ async def db_session(migrated_engine: AsyncEngine) -> AsyncIterator[AsyncSession
 
 
 @pytest.fixture
-def settings(pg_container: PostgresContainer) -> Settings:
+def settings(pg_container: PostgresContainer, tmp_path: Path) -> Settings:
     """Overrides the unit-suite fixture of the same name, pointed at the container.
 
     Every fixture in the parent conftest that builds an app builds it from
     ``settings``, so replacing this one is all it takes to make ``app`` — and
     anything reading ``settings.database_url`` — refer to the container rather
     than to the compose stack. Nothing else in the parent needs to know.
+
+    The raw store goes to the test's own temp directory for the same reason:
+    left at its default it would archive fixture documents into the
+    developer's real ./data/raw.
     """
     return make_settings(
+        raw_store_local_root=tmp_path / "archive",
         postgres_host=pg_container.get_container_host_ip(),
         postgres_port=int(pg_container.get_exposed_port(5432)),
         postgres_user=pg_container.username,

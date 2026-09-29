@@ -68,6 +68,7 @@ from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import Filing, ParseStatus
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.session import session_scope
+from app.ingestion.archive import archive_13f_documents
 from app.ingestion.edgar.client import EdgarClient, EdgarRateLimited, EdgarServerError
 from app.ingestion.edgar.documents import (
     FilingDocuments,
@@ -99,6 +100,7 @@ from app.ingestion.parsers.thirteen_f import (
     parse_primary_doc,
 )
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
+from app.storage.raw import RawStoreError, open_raw_store
 
 logger = get_logger(__name__)
 
@@ -180,7 +182,13 @@ def ingest_filing(
     ] = None,
     force: Annotated[
         bool,
-        typer.Option("--force", help="Re-fetch and re-load a filing that is already loaded."),
+        typer.Option(
+            "--force",
+            help=(
+                "Re-fetch and re-load a filing that is already loaded, replacing "
+                "its archived documents with what EDGAR serves now."
+            ),
+        ),
     ] = False,
     dry_run: Annotated[
         bool,
@@ -207,6 +215,10 @@ def ingest_filing(
         EdgarRateLimited,
         EdgarServerError,
         httpx.HTTPError,
+        # The archive being unreachable or refusing a write. Fatal rather than
+        # skipped: a filing loaded without its bytes archived is the one kind a
+        # parser fix cannot reach without going back to EDGAR.
+        RawStoreError,
     ) as failure:
         typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from failure
@@ -240,6 +252,15 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
         _require_thirteen_f(submission)
         documents = await fetch_13f_documents(edgar, cik=resolved_cik, accession_no=accession)
 
+    # Archived before parsed, always: a parser that raises below has nothing
+    # left to lose, and the fix is a re-parse of these bytes instead of a
+    # re-crawl. Skipped on a dry run, which promises to write nothing.
+    raw_prefix = (
+        None
+        if dry_run
+        else await _archive(settings, documents, cik=resolved_cik, accession=accession, force=force)
+    )
+
     # Parsing happens after the client is closed: it is pure CPU over bytes we
     # already hold, and holding a connection pool open across it keeps a socket
     # to sec.gov alive for no reason.
@@ -261,6 +282,7 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
             cover=cover,
             normalised=normalised,
             documents=documents,
+            raw_prefix=raw_prefix,
         )
     )
 
@@ -272,10 +294,31 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
             table=table,
             normalised=normalised,
             documents=documents,
+            raw_prefix=raw_prefix,
             result=result,
             dry_run=dry_run,
         )
     )
+
+
+async def _archive(
+    settings: Settings,
+    documents: FilingDocuments,
+    *,
+    cik: str,
+    accession: str,
+    force: bool,
+) -> str:
+    """Write the fetched documents to the raw store; return their prefix.
+
+    ``--force`` is what overwrites. Without it a filing archived by an earlier
+    run keeps the bytes it was first archived with, even though this run has
+    just fetched them again — the first copy is the one worth keeping.
+    """
+    async with open_raw_store(settings) as store:
+        return await archive_13f_documents(
+            store, documents, cik=cik, accession_no=accession, overwrite=force
+        )
 
 
 async def _load(
@@ -286,13 +329,13 @@ async def _load(
     cover: PrimaryDoc,
     normalised: NormalisedFiling,
     documents: FilingDocuments,
+    raw_prefix: str | None,
 ) -> LoadResult:
     """Write the parsed filing, in one transaction that ``session_scope`` commits.
 
-    ``raw_key`` is deliberately not passed. Nothing archives the bytes to object
-    storage yet, and :func:`~app.ingestion.loaders.load_filing` coalesces a
-    ``None`` against whatever is already on the row — so a re-ingest from here
-    cannot blank a key that a later archiving step has written.
+    ``raw_key`` is the filing's archive *prefix*, not one document's key: a
+    13F is several documents, and the prefix is what lists all of them. It is
+    only ever ``None`` on a dry run, which never gets here.
     """
     async with session_scope(settings) as session:
         result = await load_filing(
@@ -301,6 +344,7 @@ async def _load(
             filed_at=submission.filed_at,
             primary_doc=cover,
             normalised=normalised,
+            raw_key=raw_prefix,
             source_url=documents.primary_doc_url,
         )
     logger.info(
@@ -435,6 +479,7 @@ class _Report:
     table: InformationTable
     normalised: NormalisedFiling
     documents: FilingDocuments
+    raw_prefix: str | None
     result: LoadResult | None
     dry_run: bool
 
@@ -455,6 +500,8 @@ def _echo_report(report: _Report) -> None:
         f"{_instant(report.submission.filed_at)}  (values x{normalised.value_multiplier})",
     )
     _line("documents", _document_names(report.documents))
+    if report.raw_prefix is not None:
+        _line("archived", report.raw_prefix)
     _line("rows", _rows_line(report))
     _line("value", f"${_total_value(normalised):,.2f}")
     _line("status", normalised.parse_status.value)

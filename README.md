@@ -114,7 +114,9 @@ uv run python -m app.cli ingest-filing 0001067983-24-000011 --cik 1067983
 
 Fetches, parses and loads one 13F. It looks the accession number up in EDGAR's
 submissions index for the CIK, lists the filing directory, identifies the cover
-page and the information table, and writes the result in one transaction.
+page and the information table, archives all of it to the
+[raw store](#the-raw-archive), and only then parses it and writes the result in
+one transaction.
 
 ```
 0001193125-26-352200  13F-HR
@@ -122,6 +124,7 @@ page and the information table, and writes the result in one transaction.
   period      2026-06-30  (2026Q2)
   filed       2026-08-14 20:05:04+00:00  (values x1)
   documents   primary_doc.xml + 56757.xml
+  archived    raw/13f/0001067983/0001193125-26-352200/
   rows        89 rows parsed, 89 declared, 29 positions loaded, 60 folded into another line
   value       $299,253,556,246.00
   status      ok
@@ -131,8 +134,8 @@ page and the information table, and writes the result in one transaction.
 | Flag | |
 | --- | --- |
 | `--cik` | Which filer's archive the filing lives under. Optional only for a filing already in the database, whose CIK is then already known — see below |
-| `--force` | Re-fetch and re-load a filing that is already loaded |
-| `--dry-run` | Fetch, parse and print the same summary. Write nothing |
+| `--force` | Re-fetch and re-load a filing that is already loaded, replacing its archived documents |
+| `--dry-run` | Fetch, parse and print the same summary. Write nothing, archive included |
 
 **`--cik` is not optional as often as you would like.** EDGAR's archive path is
 `/Archives/edgar/data/<cik>/<accession>/`, and the CIK in it is the *filer's* —
@@ -164,6 +167,35 @@ the filer is resolved. Likewise a `suspect` status means every guard's finding
 is printed here and stored on `filing.parse_notes`; the filing is still loaded,
 because withholding a portfolio that is 99% right leaves a hole shaped exactly
 like a manager who filed nothing.
+
+### The raw archive
+
+Every document `ingest-filing` fetches is written to the raw store *before* it
+is parsed — the cover page, the information table and EDGAR's `index.json` for
+the directory — uncompressed and byte for byte as EDGAR served it:
+
+```
+raw/13f/{cik}/{accession_no}/{filename}
+raw/13f/0001067983/0001193125-26-352200/primary_doc.xml
+raw/13f/0001067983/0001193125-26-352200/56757.xml
+raw/13f/0001067983/0001193125-26-352200/index.json
+```
+
+That ordering is what makes a parser bug cheap: a filing whose parse crashes is
+already archived, and fixing the bug means re-parsing stored bytes rather than
+re-crawling EDGAR at ten requests a second. It also keeps our copy of a filing
+EDGAR later restates or withdraws. Writes are once-only — a key that exists is
+left alone, so the first copy is the one kept — unless `--force` says otherwise.
+`filing.raw_key` holds the filing's prefix.
+
+`RAW_STORE_BACKEND` picks the implementation ([app/storage](app/storage/)):
+
+- **`local`** (the default) writes under `./data/raw/`, gitignored. Refused in
+  staging and production, where a container's disk does not survive a deploy.
+- **`s3`** is any S3-compatible bucket. For Cloudflare R2, point
+  `RAW_STORE_S3_ENDPOINT_URL` at `https://<account-id>.r2.cloudflarestorage.com`
+  and set `RAW_STORE_S3_REGION=auto`; nothing else changes. The tests run the
+  S3 store against a moto server through that same endpoint setting.
 
 ### `seed-investors [--file] [--dry-run]`
 
@@ -463,7 +495,7 @@ Every variable is documented in [.env.example](.env.example), which is tracked;
 compose injects config in dev and a secret manager can inject it in production
 without a code change.
 
-Four things worth knowing:
+Five things worth knowing:
 
 - **`SEC_CONTACT_EMAIL` is required and has no default.** SEC's fair-access
   policy wants a real contact address in the User-Agent of every EDGAR request
@@ -486,6 +518,9 @@ Four things worth knowing:
   submissions history. Nothing in the cache expires, so a cached submissions
   index misses anything filed since. `Settings` refuses the variable in staging
   and production. Delete the directory to see what EDGAR says today.
+- **`RAW_STORE_BACKEND=local` is for development only.** Staging and production
+  must use `s3`, with a bucket, so archived documents outlive the container. See
+  [The raw archive](#the-raw-archive).
 
 ```bash
 uv run pytest tests/test_config.py   # the rules above, as tests
