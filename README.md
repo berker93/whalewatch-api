@@ -73,6 +73,7 @@ Then `make test`, and read the specs above.
 | `make shell` | a shell inside the api container |
 | `make psql` | psql on the dev database |
 | `make cli c="ingest-filing ..."` | run a CLI verb in the api container — see [The CLI](#the-cli) |
+| `make verify-investors` | check every investor CIK against EDGAR, on the host; needs `SEC_CONTACT_EMAIL` |
 | `make test` | the whole pytest suite |
 | `make lint` / `make fmt` | ruff check + mypy --strict / ruff format + safe fixes |
 | `make check` | lint, then test — what CI runs |
@@ -197,6 +198,39 @@ duplicate CIK or an unknown category fails the unit suite, not a deploy.
 **The order of an entry's `ciks` is data.** When two of a filer's CIKs both filed
 for one period, only the one listed last counts, unless the entry says
 `overlap: sum`. See [Which filings count](docs/data-model.md#which-filings-count-effective_filing).
+
+### `verify-investors [--file] [--csv PATH] [--as-of DATE]`
+
+Checks every CIK in [`data/investors.yaml`](data/investors.yaml) against EDGAR's
+submissions API. Hand-typed CIKs go wrong, and a wrong one validates and seeds
+without complaint. This command catches it. It reads no database, so run it on
+the host with `make verify-investors`, or from Actions → *verify-investors* →
+*Run workflow*. It is manual only, because every run makes ~120 requests to
+data.sec.gov. Illustrative output (from the test fixtures, not live EDGAR):
+
+```
+verify-investors  investors.yaml  as of 2026-09-30, stale before 2026-03-31
+        slug                cik         13F-HR  earliest    latest       sim  edgar name                            flags
+  ok    berkshire-hathaway  0001067983       2  2013-03-31  2026-06-30  1.00  BERKSHIRE HATHAWAY INC
+  warn  pershing-square     0001336528       1  2024-12-31  2024-12-31  1.00  Pershing Square Capital Management,…  stale (predecessor)
+  warn  pershing-square     0002026053       2  2025-03-31  2026-06-30  0.24  PSH Holdco 2025 LLC                   name_mismatch
+  2 filers, 3 CIKs: 0 failed, 2 with warnings, 1 ok
+```
+
+| Flag | Fails the run? | |
+| --- | --- | --- |
+| `NOT_FOUND` | yes | EDGAR has no such CIK — a typo |
+| `NO_13F` | yes | never filed a 13F-HR (amendments and notices do not count) — usually the wrong entity's CIK |
+| `STALE` | on a current CIK | latest 13F-HR period is more than two quarters behind: two due quarters missed, counting a quarter as due 45 days after it ends |
+| `stale` | no | the same, on a predecessor CIK — expected, since it was succeeded |
+| `name_mismatch` | no | EDGAR's name is under 0.6 `SequenceMatcher` similarity to our display or manager name, after dropping case, punctuation and legal suffixes. For a person to look at |
+| `FETCH_FAILED` | yes | EDGAR could not be read for that CIK, so it went unchecked |
+
+A CIK is *current* when it is the last one listed on its entry, or when the entry
+is `overlap: sum`. Failures print in capitals and warnings in lower case. Exit 1
+if anything failed. `--csv PATH` also writes the report as CSV, and `--csv -`
+writes CSV to stdout in place of the table. `--as-of` re-judges staleness for
+another date.
 
 ### `audit-overlaps [--filer SLUG]`
 

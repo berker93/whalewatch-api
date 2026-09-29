@@ -1,4 +1,5 @@
-"""Typer CLI: ingest-filing, seed-investors, audit-overlaps, backfill, recompute, refresh-views.
+"""Typer CLI: ingest-filing, seed-investors, verify-investors, audit-overlaps, backfill, recompute,
+refresh-views.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -13,6 +14,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli ingest-filing 0001067983-24-000011 --cik 1067983
     uv run python -m app.cli ingest-filing 0001067983-24-000011 --dry-run
     uv run python -m app.cli seed-investors
+    uv run python -m app.cli verify-investors --csv verify-investors.csv
     uv run python -m app.cli audit-overlaps --filer pershing-square
 
 Exit codes
@@ -45,13 +47,14 @@ event loop that ``asyncio.run`` is about to close.
 from __future__ import annotations
 
 import asyncio
+import csv
 import sys
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Annotated, Final, TextIO
 
 import httpx
 import structlog
@@ -95,6 +98,7 @@ from app.ingestion.parsers.thirteen_f import (
     parse_information_table,
     parse_primary_doc,
 )
+from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
 
 logger = get_logger(__name__)
 
@@ -800,6 +804,182 @@ def _echo_overlap(finding: OverlapFinding) -> None:
     )
     verdict = finding.conflict or "agrees"
     typer.echo(f"  {'':<{_LABEL_WIDTH}}policy {finding.policy.value}: {verdict}")
+
+
+# --- verify-investors --------------------------------------------------------
+
+#: Column order for ``--csv``. A contract with whatever reads the file, so
+#: append rather than reorder.
+_CSV_COLUMNS: Final = (
+    "status",
+    "slug",
+    "cik",
+    "current",
+    "listed_name",
+    "edgar_name",
+    "name_similarity",
+    "filings_13f_hr",
+    "earliest_period",
+    "latest_period",
+    "failures",
+    "warnings",
+    "error",
+)
+
+#: Enough of EDGAR's name to recognise it without pushing the flags off screen.
+_TABLE_NAME_WIDTH: Final = 36
+
+
+@app.command("verify-investors")
+def verify_investors_command(
+    path: Annotated[
+        Path,
+        typer.Option(
+            "--file",
+            help="The investor list to verify.",
+            show_default="data/investors.yaml",
+        ),
+    ] = DEFAULT_INVESTORS_PATH,
+    csv_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--csv",
+            metavar="PATH",
+            help="Also write the report as CSV to PATH. '-' writes CSV to stdout instead "
+            "of the table.",
+        ),
+    ] = None,
+    as_of: Annotated[
+        datetime | None,
+        typer.Option(
+            "--as-of",
+            formats=["%Y-%m-%d"],
+            help="Judge staleness as of this date rather than today.",
+        ),
+    ] = None,
+) -> None:
+    """Check every CIK in the investor list against EDGAR's submissions index.
+
+    Reports EDGAR's name, the 13F-HR count and the earliest and latest period
+    per CIK. Exits 1 if any CIK is missing from EDGAR, has never filed a 13F-HR,
+    could not be fetched, or is a current CIK that has stopped filing. Name
+    mismatches and stale predecessor CIKs are printed for review but pass.
+
+    Makes one or more requests to data.sec.gov per CIK. Needs no database.
+    """
+    try:
+        failed = asyncio.run(
+            _verify_investors(
+                path, csv_path=csv_path, today=as_of.date() if as_of else date.today()
+            )
+        )
+    except (InvestorListError, EdgarRateLimited, OSError) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+    if failed:
+        raise typer.Exit(code=1)
+
+
+async def _verify_investors(path: Path, *, csv_path: Path | None, today: date) -> bool:
+    """Run the checks and print them. Returns whether any CIK failed."""
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    structlog.contextvars.bind_contextvars(job_name="verify-investors")
+
+    entries = load_investors(path)
+    async with EdgarClient(settings) as edgar:
+        checks = await verify_investors(edgar, entries, today=today)
+
+    failed = sum(1 for check in checks if check.failures)
+    logger.info("investors.verified", ciks=len(checks), failed=failed)
+
+    to_stdout = csv_path is not None and str(csv_path) == "-"
+    if to_stdout:
+        _write_csv(checks, sys.stdout)
+    else:
+        _echo_verification(path, entries, checks, today=today)
+    if csv_path is not None and not to_stdout:
+        with csv_path.open("w", newline="", encoding="utf-8") as out:
+            _write_csv(checks, out)
+    return failed > 0
+
+
+def _echo_verification(
+    path: Path, entries: tuple[InvestorEntry, ...], checks: tuple[CikCheck, ...], *, today: date
+) -> None:
+    typer.echo(
+        f"verify-investors  {path.name}  as of {today.isoformat()}, "
+        f"stale before {stale_cutoff(today).isoformat()}"
+    )
+    slug_width = max((len(check.slug) for check in checks), default=4)
+    header = (
+        f"  {'':<4}  {'slug':<{slug_width}}  {'cik':<10}  {'13F-HR':>6}  "
+        f"{'earliest':<10}  {'latest':<10}  {'sim':>4}  {'edgar name':<{_TABLE_NAME_WIDTH}}  flags"
+    )
+    typer.echo(header)
+    for check in checks:
+        typer.echo(
+            f"  {check.status:<4}  {check.slug:<{slug_width}}  {check.cik:<10}  "
+            f"{check.thirteen_f_count:>6}  {_iso(check.earliest_period):<10}  "
+            f"{_iso(check.latest_period):<10}  {_similarity(check):>4}  "
+            f"{_truncate(check.edgar_name or '-', _TABLE_NAME_WIDTH):<{_TABLE_NAME_WIDTH}}  "
+            f"{_flags(check)}".rstrip()
+        )
+
+    failed = [check for check in checks if check.failures]
+    warned = [check for check in checks if check.warnings and not check.failures]
+    typer.echo(
+        f"  {len(entries)} filers, {len(checks)} CIKs: {len(failed)} failed, "
+        f"{len(warned)} with warnings, {len(checks) - len(failed) - len(warned)} ok"
+    )
+    for check in checks:
+        if check.error is not None:
+            _line("error", f"{check.slug} CIK {check.cik}: {check.error}")
+
+
+def _flags(check: CikCheck) -> str:
+    """Failures in capitals, so they stand out from warnings in a long table."""
+    flags = [flag.value.upper() for flag in check.failures] + [
+        flag.value for flag in check.warnings
+    ]
+    if not check.current:
+        flags.append("(predecessor)")
+    return " ".join(flags)
+
+
+def _write_csv(checks: tuple[CikCheck, ...], out: TextIO) -> None:
+    writer = csv.writer(out)
+    writer.writerow(_CSV_COLUMNS)
+    for check in checks:
+        writer.writerow(
+            (
+                check.status,
+                check.slug,
+                check.cik,
+                "true" if check.current else "false",
+                check.listed_name,
+                check.edgar_name or "",
+                "" if check.name_similarity is None else f"{check.name_similarity:.2f}",
+                check.thirteen_f_count,
+                _iso(check.earliest_period, blank=""),
+                _iso(check.latest_period, blank=""),
+                ";".join(check.failures),
+                ";".join(check.warnings),
+                check.error or "",
+            )
+        )
+
+
+def _similarity(check: CikCheck) -> str:
+    return "-" if check.name_similarity is None else f"{check.name_similarity:.2f}"
+
+
+def _iso(day: date | None, *, blank: str = "-") -> str:
+    return blank if day is None else day.isoformat()
+
+
+def _truncate(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 1] + "…"
 
 
 if __name__ == "__main__":

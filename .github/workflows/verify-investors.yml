@@ -1,0 +1,55 @@
+# Checks every CIK in data/investors.yaml against EDGAR's submissions API.
+#
+# Manual only. It makes a request or more per CIK to data.sec.gov, and SEC's
+# fair-access policy is per IP: running it on every PR would spend that budget
+# from shared runner IPs for a file most PRs never touch. Run it after editing
+# the investor list, from Actions > verify-investors > Run workflow.
+#
+# Needs the SEC_CONTACT_EMAIL repository secret: SEC blocks requests without a
+# real contact address in the User-Agent.
+
+name: verify-investors
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}
+      # Settings requires it; this command never opens a database connection.
+      POSTGRES_PASSWORD: unused
+      # The table is the output. Per-request lines would bury it; retries and
+      # rate-limit waits still log at WARNING.
+      LOG_LEVEL: WARNING
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the SEC contact address
+        run: |
+          test -n "$SEC_CONTACT_EMAIL" || {
+            echo "::error::Set the SEC_CONTACT_EMAIL repository secret; SEC refuses requests without a contact address."
+            exit 1
+          }
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version-file: .python-version
+
+      - run: uv sync --frozen
+
+      - name: Verify investor CIKs
+        run: uv run python -m app.cli verify-investors --csv verify-investors.csv
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-investors
+          path: verify-investors.csv
+          if-no-files-found: ignore

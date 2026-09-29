@@ -21,7 +21,7 @@ COMPOSE := docker compose
 s ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down build ps logs shell psql cli test lint fmt check fixtures fixtures-fetch migrate revision reset-db
+.PHONY: help up down build ps logs shell psql cli verify-investors test lint fmt check fixtures fixtures-fetch migrate revision reset-db
 
 help:  ## List the targets in this file
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -E 's/:[^#]*## /|/' | awk -F'|' '{printf "  %-9s %s\n", $$1, $$2}'
@@ -56,6 +56,12 @@ psql:  ## Open psql on the dev database
 cli:  ## Run a CLI verb in the api container: make cli c="ingest-filing 0001067983-24-000011 --cik 1067983"
 	@test -n "$(c)" || { echo 'usage: make cli c="ingest-filing ACCESSION_NO --cik CIK"' >&2; exit 1; }
 	$(COMPOSE) exec api uv run python -m app.cli $(c)
+
+# On the host, unlike `cli`: this verb reads the YAML and EDGAR and never the
+# database. It makes ~120 requests to data.sec.gov, so it needs SEC_CONTACT_EMAIL
+# and is not part of `check`.
+verify-investors:  ## Check every CIK in data/investors.yaml against EDGAR: make verify-investors a="--csv out.csv"
+	uv run python -m app.cli verify-investors $(a)
 
 # --- code --------------------------------------------------------------------
 

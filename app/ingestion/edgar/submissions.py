@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Final
 
+import httpx
+
 from app.core.logging import get_logger
 from app.ingestion.edgar.client import SEC_DATA_BASE, EdgarClient
 
@@ -69,6 +71,19 @@ class SubmissionNotFoundError(Exception):
         super().__init__(f"no submission {accession_no} is filed under CIK {cik}")
         self.cik = cik
         self.accession_no = accession_no
+
+
+class FilerNotFoundError(Exception):
+    """EDGAR has no submissions index for that CIK at all.
+
+    Not a :class:`SubmissionNotFoundError`: that one means the filer exists and
+    this filing is not among its submissions. This means the CIK itself names
+    nobody, which for a hand-typed CIK is almost always a typo.
+    """
+
+    def __init__(self, *, cik: str) -> None:
+        super().__init__(f"EDGAR has no submissions index for CIK {cik}")
+        self.cik = cik
 
 
 class SubmissionMalformedError(Exception):
@@ -187,6 +202,105 @@ async def find_submission(edgar: EdgarClient, *, cik: str, accession_no: str) ->
         period_of_report=_report_date(row, accession_no=accession_no),
         primary_document=_text(row, "primaryDocument"),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class IndexedFiling:
+    """One row of a filer's submissions index, reduced to what a listing needs.
+
+    Lighter than :class:`Submission` on purpose: no acceptance timestamp, so a
+    listing over twenty years of filings does not fail on one ancient row that
+    lacks the field only the loader needs.
+    """
+
+    accession_no: str
+    form_type: str
+    period_of_report: date | None
+
+
+@dataclass(frozen=True, slots=True)
+class FilingHistory:
+    """Everything EDGAR has indexed under one CIK, across every page."""
+
+    cik: str
+    """Zero-padded, from the document's own ``cik`` field."""
+
+    entity_name: str | None
+    filings: tuple[IndexedFiling, ...]
+
+
+#: The columns :func:`list_filings` zips. Only these, because zipping every
+#: array would make a sparse column EDGAR adds tomorrow a malformed document.
+_LISTING_COLUMNS: Final = (_ACCESSION_COLUMN, "form", "reportDate")
+
+
+async def list_filings(edgar: EdgarClient, *, cik: str) -> FilingHistory:
+    """Every submission indexed under ``cik``: ``filings.recent`` and every
+    overflow page after it.
+
+    All the pages, not only ``recent``, because the listing's callers ask about
+    the oldest filing as often as the newest, and ``recent`` stops at a thousand
+    submissions — about eight years for an old filer that also files Form 4s.
+
+    :raises FilerNotFoundError: The CIK has no submissions index (a 404).
+    :raises SubmissionMalformedError: An index could not be read as columns.
+    """
+    try:
+        payload = await edgar.get_json(EdgarClient.submissions_url(cik))
+    except httpx.HTTPStatusError as missing:
+        if missing.response.status_code == 404:
+            raise FilerNotFoundError(cik=_padded_cik(cik, fallback=cik)) from missing
+        raise
+    if not isinstance(payload, dict):
+        raise SubmissionMalformedError(f"submissions for CIK {cik} is not a JSON object")
+    filings = payload.get("filings")
+    if not isinstance(filings, dict):
+        raise SubmissionMalformedError(f"submissions for CIK {cik} has no 'filings' object")
+
+    rows = _listing_rows(filings.get("recent"), cik=cik)
+    for page in _older_pages(filings):
+        logger.info("submissions.page", cik=cik, page=page)
+        rows += _listing_rows(await edgar.get_json(f"{SEC_DATA_BASE}/submissions/{page}"), cik=cik)
+
+    entity_name = payload.get("name")
+    return FilingHistory(
+        cik=_padded_cik(payload.get("cik"), fallback=cik),
+        entity_name=entity_name if isinstance(entity_name, str) and entity_name else None,
+        filings=tuple(rows),
+    )
+
+
+def _listing_rows(columns: Any, *, cik: str) -> list[IndexedFiling]:
+    """Zip the parallel column arrays into rows.
+
+    ``strict`` because these three columns are the index itself: if they
+    disagree in length, every row after the first gap pairs one filing's form
+    with another's period, and that is a document to look at rather than read.
+    """
+    if not isinstance(columns, dict):
+        raise SubmissionMalformedError(f"submissions for CIK {cik} has a page that is not columns")
+    arrays = [columns.get(name) for name in _LISTING_COLUMNS]
+    if not all(isinstance(array, list) for array in arrays):
+        raise SubmissionMalformedError(
+            f"submissions for CIK {cik} lacks one of {', '.join(_LISTING_COLUMNS)}"
+        )
+    try:
+        rows = [
+            dict(zip(_LISTING_COLUMNS, values, strict=True)) for values in zip(*arrays, strict=True)
+        ]
+    except ValueError as ragged:
+        raise SubmissionMalformedError(
+            f"submissions for CIK {cik} has column arrays of different lengths"
+        ) from ragged
+
+    return [
+        IndexedFiling(
+            accession_no=str(row[_ACCESSION_COLUMN]),
+            form_type=_text(row, "form") or "",
+            period_of_report=_report_date(row, accession_no=str(row[_ACCESSION_COLUMN])),
+        )
+        for row in rows
+    ]
 
 
 def _older_pages(filings: dict[str, Any]) -> list[str]:
