@@ -29,16 +29,26 @@ filer of Berkshire's age that is about eight years, and every 13F older than
 that lives in one of the JSON files listed under ``filings.files`` — same column
 arrays, no ``filings`` wrapper. A lookup that only searched ``recent`` would
 report "no such filing" for a document that is sitting in the archive, which is
-the worst of the three possible answers.
+the worst of the three possible answers. Worse for a listing: a manager that
+also files Form 4s and 8-Ks can fill all thousand rows of ``recent`` without a
+single 13F among them.
 
-The pages are searched in order and there are usually none of them. Nothing
-skips a page by its declared ``filingFrom``/``filingTo`` range: those are filing
-*dates*, and all we hold is an accession number, whose leading digits identify
-the transmitting agent rather than any point in time.
+:func:`find_submission` searches the pages in order and stops at the first hit;
+there are usually none of them. Nothing skips a page by its declared
+``filingFrom``/``filingTo`` range: those are filing *dates*, and all it holds is
+an accession number, whose leading digits identify the transmitting agent rather
+than any point in time. :func:`fetch_all_filings` reads every page, and returns
+the merged rows oldest first.
+
+For a first backfill of many filers, SEC would rather be asked once for the bulk
+``submissions.zip`` than a hundred times for these pages. The row parsing here
+takes a page's columns and not a response, so it reads that archive's members
+unchanged.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Final
@@ -199,23 +209,42 @@ async def find_submission(edgar: EdgarClient, *, cik: str, accession_no: str) ->
         entity_name=entity_name if isinstance(entity_name, str) and entity_name else None,
         form_type=_text(row, "form") or "",
         filed_at=_accepted_at(row, accession_no=accession_no),
-        period_of_report=_report_date(row, accession_no=accession_no),
+        period_of_report=_date_column(row, "reportDate", accession_no=accession_no),
         primary_document=_text(row, "primaryDocument"),
     )
 
 
 @dataclass(frozen=True, slots=True)
-class IndexedFiling:
+class FilingRef:
     """One row of a filer's submissions index, reduced to what a listing needs.
 
     Lighter than :class:`Submission` on purpose: no acceptance timestamp, so a
     listing over twenty years of filings does not fail on one ancient row that
-    lacks the field only the loader needs.
+    lacks the field only the loader needs. Which also means a ``FilingRef`` is
+    for choosing filings, never for loading one — the loader goes through
+    :func:`find_submission` for its ``filed_at``.
     """
 
     accession_no: str
     form_type: str
-    period_of_report: date | None
+
+    filing_date: date
+    """``filingDate``: the day in New York the filing was dated.
+
+    What listings are ordered by, and nothing more. Not an instant, so not an
+    input to the units cutover; see the module docstring.
+    """
+
+    report_date: date | None
+    """``reportDate``: the period the filing describes. ``None`` for forms that
+    describe a day rather than a quarter."""
+
+    primary_document: str | None
+    """Advisory, as on :attr:`Submission.primary_document`."""
+
+    is_xbrl: bool
+    """``isXBRL``. False for every 13F: its information table is its own XML
+    schema, not XBRL."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,17 +255,42 @@ class FilingHistory:
     """Zero-padded, from the document's own ``cik`` field."""
 
     entity_name: str | None
-    filings: tuple[IndexedFiling, ...]
+
+    filings: tuple[FilingRef, ...]
+    """Oldest first, by :attr:`FilingRef.filing_date`."""
 
 
-#: The columns :func:`list_filings` zips. Only these, because zipping every
-#: array would make a sparse column EDGAR adds tomorrow a malformed document.
-_LISTING_COLUMNS: Final = (_ACCESSION_COLUMN, "form", "reportDate")
+#: The columns :func:`list_filings` zips and cannot do without. Only named
+#: columns, because zipping every array would make a sparse column EDGAR adds
+#: tomorrow a malformed document.
+_LISTING_COLUMNS: Final = (_ACCESSION_COLUMN, "form", "filingDate", "reportDate")
+
+#: Zipped when present, defaulted when absent. Absence would be new, but these
+#: two describe the filing rather than identify it, and a listing that failed
+#: on them would fail a whole filer for a field nobody asked about.
+_OPTIONAL_LISTING_COLUMNS: Final = ("primaryDocument", "isXBRL")
+
+#: What may follow a form-type prefix for it to count as a match: ``/A`` for an
+#: amendment, ``-HR`` for a variant. Anything else is a different form that
+#: shares leading characters — ``4`` is not ``424B2``.
+_FORM_SEPARATORS: Final = "/-"
+
+
+async def fetch_all_filings(edgar: EdgarClient, *, cik: str) -> list[FilingRef]:
+    """Every submission indexed under ``cik``, oldest first.
+
+    :func:`list_filings` without the filer's name, for callers that only want
+    the rows. Narrow the result with :func:`filter_forms`.
+
+    :raises FilerNotFoundError: The CIK has no submissions index (a 404).
+    :raises SubmissionMalformedError: An index could not be read as columns.
+    """
+    return list((await list_filings(edgar, cik=cik)).filings)
 
 
 async def list_filings(edgar: EdgarClient, *, cik: str) -> FilingHistory:
     """Every submission indexed under ``cik``: ``filings.recent`` and every
-    overflow page after it.
+    overflow page after it, merged and sorted by filing date.
 
     All the pages, not only ``recent``, because the listing's callers ask about
     the oldest filing as often as the newest, and ``recent`` stops at a thousand
@@ -257,10 +311,14 @@ async def list_filings(edgar: EdgarClient, *, cik: str) -> FilingHistory:
     if not isinstance(filings, dict):
         raise SubmissionMalformedError(f"submissions for CIK {cik} has no 'filings' object")
 
-    rows = _listing_rows(filings.get("recent"), cik=cik)
+    rows = filing_refs(filings.get("recent"), cik=cik)
     for page in _older_pages(filings):
         logger.info("submissions.page", cik=cik, page=page)
-        rows += _listing_rows(await edgar.get_json(f"{SEC_DATA_BASE}/submissions/{page}"), cik=cik)
+        rows += filing_refs(await edgar.get_json(f"{SEC_DATA_BASE}/submissions/{page}"), cik=cik)
+
+    # Accession number second, so two filings on one day come out in the same
+    # order on every run rather than in whatever order the pages listed them.
+    rows.sort(key=lambda filing: (filing.filing_date, filing.accession_no))
 
     entity_name = payload.get("name")
     return FilingHistory(
@@ -270,37 +328,76 @@ async def list_filings(edgar: EdgarClient, *, cik: str) -> FilingHistory:
     )
 
 
-def _listing_rows(columns: Any, *, cik: str) -> list[IndexedFiling]:
-    """Zip the parallel column arrays into rows.
+def filter_forms(filings: Iterable[FilingRef], *prefixes: str) -> list[FilingRef]:
+    """The filings whose form type is, or extends, one of ``prefixes``.
 
-    ``strict`` because these three columns are the index itself: if they
+    ``13F-HR`` matches ``13F-HR`` and ``13F-HR/A``; ``13F`` matches those and
+    ``13F-NT``. A prefix only matches at a form-name boundary, so ``4`` finds
+    ``4`` and ``4/A`` but not ``424B2`` or ``40-F``. Order is kept.
+    """
+    return [
+        filing
+        for filing in filings
+        if any(_form_matches(filing.form_type, prefix) for prefix in prefixes)
+    ]
+
+
+def _form_matches(form_type: str, prefix: str) -> bool:
+    if not form_type.startswith(prefix):
+        return False
+    rest = form_type[len(prefix) :]
+    return not rest or rest[0] in _FORM_SEPARATORS
+
+
+def filing_refs(columns: Any, *, cik: str) -> list[FilingRef]:
+    """One page of a submissions index — ``filings.recent``, or an overflow
+    file — as rows, in the page's own order.
+
+    ``strict`` zipping because these columns are the index itself: if they
     disagree in length, every row after the first gap pairs one filing's form
     with another's period, and that is a document to look at rather than read.
+
+    :raises SubmissionMalformedError: ``columns`` is not a page, lacks a
+        required column, has ragged columns, or has an unreadable date.
     """
     if not isinstance(columns, dict):
         raise SubmissionMalformedError(f"submissions for CIK {cik} has a page that is not columns")
-    arrays = [columns.get(name) for name in _LISTING_COLUMNS]
-    if not all(isinstance(array, list) for array in arrays):
+    if not all(isinstance(columns.get(name), list) for name in _LISTING_COLUMNS):
         raise SubmissionMalformedError(
             f"submissions for CIK {cik} lacks one of {', '.join(_LISTING_COLUMNS)}"
         )
+    names = [
+        *_LISTING_COLUMNS,
+        *(name for name in _OPTIONAL_LISTING_COLUMNS if isinstance(columns.get(name), list)),
+    ]
     try:
         rows = [
-            dict(zip(_LISTING_COLUMNS, values, strict=True)) for values in zip(*arrays, strict=True)
+            dict(zip(names, values, strict=True))
+            for values in zip(*(columns[name] for name in names), strict=True)
         ]
     except ValueError as ragged:
         raise SubmissionMalformedError(
             f"submissions for CIK {cik} has column arrays of different lengths"
         ) from ragged
 
-    return [
-        IndexedFiling(
-            accession_no=str(row[_ACCESSION_COLUMN]),
-            form_type=_text(row, "form") or "",
-            period_of_report=_report_date(row, accession_no=str(row[_ACCESSION_COLUMN])),
-        )
-        for row in rows
-    ]
+    return [_filing_ref(row) for row in rows]
+
+
+def _filing_ref(row: dict[str, Any]) -> FilingRef:
+    accession_no = str(row[_ACCESSION_COLUMN])
+    filing_date = _date_column(row, "filingDate", accession_no=accession_no)
+    if filing_date is None:
+        raise SubmissionMalformedError(f"{accession_no}: submissions index has no filingDate")
+    return FilingRef(
+        accession_no=accession_no,
+        form_type=_text(row, "form") or "",
+        filing_date=filing_date,
+        report_date=_date_column(row, "reportDate", accession_no=accession_no),
+        primary_document=_text(row, "primaryDocument"),
+        # An integer flag, 0 or 1. Compared rather than truthiness-tested so a
+        # string "0" could never read as true.
+        is_xbrl=row.get("isXBRL") == 1,
+    )
 
 
 def _older_pages(filings: dict[str, Any]) -> list[str]:
@@ -403,8 +500,8 @@ def _accepted_at(row: dict[str, Any], *, accession_no: str) -> datetime:
     return accepted
 
 
-def _report_date(row: dict[str, Any], *, accession_no: str) -> date | None:
-    """``reportDate`` as a date, absent meaning absent.
+def _date_column(row: dict[str, Any], name: str, *, accession_no: str) -> date | None:
+    """A date column such as ``reportDate``, absent meaning absent.
 
     Unlike :func:`_accepted_at` this one tolerates absence — a Form 4 describes
     a day and has no period at all — but not a malformed value, which is the
@@ -412,14 +509,14 @@ def _report_date(row: dict[str, Any], *, accession_no: str) -> date | None:
     the parser and the archived document disagree with nothing recording that
     they do.
     """
-    raw = _text(row, "reportDate")
+    raw = _text(row, name)
     if raw is None:
         return None
     try:
         return date.fromisoformat(raw)
     except ValueError as exc:
         raise SubmissionMalformedError(
-            f"{accession_no}: reportDate is not an ISO-8601 date ({raw!r})"
+            f"{accession_no}: {name} is not an ISO-8601 date ({raw!r})"
         ) from exc
 
 

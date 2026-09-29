@@ -463,7 +463,7 @@ Every variable is documented in [.env.example](.env.example), which is tracked;
 compose injects config in dev and a secret manager can inject it in production
 without a code change.
 
-Three things worth knowing:
+Four things worth knowing:
 
 - **`SEC_CONTACT_EMAIL` is required and has no default.** SEC's fair-access
   policy wants a real contact address in the User-Agent of every EDGAR request
@@ -480,6 +480,12 @@ Three things worth knowing:
   host portion. The same variables configure the `db` container in
   [docker-compose.yml](docker-compose.yml), so the credentials Postgres is
   created with and the ones the app connects with cannot drift apart.
+- **`EDGAR_CACHE_DIR` is for development only.** When it is set, the EDGAR
+  client keeps every body it fetches under that directory and serves it from
+  there next time, so re-running a parser does not refetch a filer's whole
+  submissions history. Nothing in the cache expires, so a cached submissions
+  index misses anything filed since. `Settings` refuses the variable in staging
+  and production. Delete the directory to see what EDGAR says today.
 
 ```bash
 uv run pytest tests/test_config.py   # the rules above, as tests

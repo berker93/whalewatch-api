@@ -200,10 +200,11 @@ async def test_list_filings_zips_the_parallel_arrays_and_walks_every_page(
 
     assert history.cik == "0001067983"
     assert history.entity_name == "BERKSHIRE HATHAWAY INC"
-    assert [(f.accession_no, f.form_type, f.period_of_report) for f in history.filings] == [
+    # One filing date throughout, so this is the accession-number tie-break.
+    assert [(f.accession_no, f.form_type, f.report_date) for f in history.filings] == [
+        ("A-0", "13F-HR", date(1998, 12, 31)),
         ("A-1", "13F-HR", date(2026, 6, 30)),
         ("A-2", "4", None),
-        ("A-0", "13F-HR", date(1998, 12, 31)),
     ]
 
 

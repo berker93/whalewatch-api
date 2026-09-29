@@ -59,11 +59,26 @@ minutes) before its next attempt. That is deliberate — coming back sooner mean
 knocking on a door we know is shut — but it means a task hitting a 403 is parked,
 not failed, and a caller that would rather abandon the unit of work should catch
 :class:`EdgarRateLimited` and decide for itself rather than await it blindly.
+
+A disk cache, for development
+-----------------------------
+With ``EDGAR_CACHE_DIR`` set, every body fetched is written under that directory
+and read back from it on the next request for the same URL, without touching the
+network or the limiter. It exists so that iterating on a parser does not refetch
+a filer's whole submissions history on every run. It never expires anything,
+which is right for an archived filing and wrong for a submissions index, and is
+why :class:`~app.core.config.Settings` refuses it outside development. Delete the
+directory to see what EDGAR says today.
 """
 
+import asyncio
+import hashlib
+import json
+import os
 import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Final, Self
 
@@ -342,6 +357,7 @@ class EdgarClient:
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
             transport=transport,
         )
+        self._cache_dir = settings.edgar_cache_dir
 
     async def __aenter__(self) -> Self:
         return self
@@ -367,8 +383,7 @@ class EdgarClient:
         served them, and decoding on the way in would mean the copy we keep is
         not the copy we were given.
         """
-        response = await self._get(url)
-        return response.content
+        return await self._body(url)
 
     async def get_json(self, url: str) -> Any:
         """Fetch ``url`` and parse it as JSON.
@@ -377,8 +392,23 @@ class EdgarClient:
         EDGAR's business, and validating it belongs to the parser that knows
         which document this is, not to the transport.
         """
-        response = await self._get(url)
-        return response.json()
+        return json.loads(await self._body(url))
+
+    async def _body(self, url: str) -> bytes:
+        """The body at ``url``, from the disk cache when there is one."""
+        if self._cache_dir is None:
+            return (await self._get(url)).content
+
+        path = _cache_path(self._cache_dir, url)
+        cached = await asyncio.to_thread(_read_cached, path)
+        if cached is not None:
+            # Info, not debug: an answer that did not come from EDGAR should
+            # never be mistaken for one that did.
+            logger.info("edgar.cache_hit", url=url, path=str(path))
+            return cached
+        body = (await self._get(url)).content
+        await asyncio.to_thread(_write_cached, path, body)
+        return body
 
     @_EDGAR_RETRY.wraps
     async def _get(self, url: str) -> httpx.Response:
@@ -455,6 +485,40 @@ class EdgarClient:
             f"{SEC_ARCHIVES_BASE}/data/{_unpadded_cik(cik)}/"
             f"{accession_no.replace('-', '')}/index.json"
         )
+
+
+def _cache_path(root: Path, url: str) -> Path:
+    """Where ``url`` lives in the cache: its host and path, readable on disk.
+
+    ``https://data.sec.gov/submissions/CIK0001067983.json`` is
+    ``<root>/data.sec.gov/submissions/CIK0001067983.json``, so finding (and
+    deleting) one cached answer is an ``ls`` away. A directory URL gets an
+    ``index`` file; a query string, which no EDGAR URL here carries today, a
+    hash suffix rather than a character a filesystem might refuse.
+    """
+    parsed = httpx.URL(url)
+    relative = parsed.path.lstrip("/")
+    if not relative or relative.endswith("/"):
+        relative += "index"
+    if parsed.query:
+        relative += "@" + hashlib.sha256(parsed.query).hexdigest()[:16]
+    return root / parsed.host / relative
+
+
+def _read_cached(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _write_cached(path: Path, body: bytes) -> None:
+    """Write via a temporary file and a rename, so an interrupted run leaves no
+    half-written body to be served as complete next time."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
+    partial.write_bytes(body)
+    partial.replace(path)
 
 
 def _padded_cik(cik: int | str) -> str:

@@ -23,6 +23,7 @@ import io
 import json
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -563,6 +564,26 @@ async def test_a_successful_first_attempt_logs_no_retry(
         await edgar.get_bytes(_URL)
 
     assert _events(log_stream, "edgar.retry") == []
+
+
+# --- disk cache -------------------------------------------------------------
+
+
+@respx.mock
+async def test_a_failed_request_is_not_cached(tmp_path: Path) -> None:
+    """Only bodies EDGAR actually served are kept. A cached 404 would make a
+    filing that EDGAR has since published look missing for good."""
+    route = respx.get(_URL).mock(
+        side_effect=[httpx.Response(404), httpx.Response(200, content=_BODY)]
+    )
+
+    async with EdgarClient(make_settings(edgar_cache_dir=tmp_path)) as edgar:
+        with pytest.raises(httpx.HTTPStatusError):
+            await edgar.get_json(_URL)
+        assert await edgar.get_json(_URL) == {"cik": "0000320193"}
+        assert await edgar.get_bytes(_URL) == _BODY
+
+    assert route.call_count == 2
 
 
 # --- URL construction -------------------------------------------------------

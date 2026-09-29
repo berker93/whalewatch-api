@@ -11,28 +11,35 @@ being guessed at, and the one that pins the cutover behaviour end to end.
 The other half is paging. ``filings.recent`` is capped at a thousand
 submissions, which for an old filer is about eight years, and a lookup that
 stopped there would report "no such filing" for documents sitting in the
-archive.
+archive. A listing that stopped there could miss every 13F a manager ever
+filed, if the manager also files enough Form 4s.
 
-``httpx.MockTransport`` answers every request, so nothing here reaches
-data.sec.gov.
+``httpx.MockTransport`` or ``respx`` answers every request, so nothing here
+reaches data.sec.gov.
 """
 
 import json
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any, Final
 
 import httpx
 import pytest
+import respx
 
 from app.core.config import Settings
 from app.core.rate_limit import AsyncTokenBucket
 from app.ingestion.edgar.client import EdgarClient
 from app.ingestion.edgar.submissions import (
+    FilingRef,
     SubmissionMalformedError,
     SubmissionNotFoundError,
+    fetch_all_filings,
+    filter_forms,
     find_submission,
 )
 from app.ingestion.normalisation import resolve_value_multiplier
+from tests.conftest import make_settings
 
 CIK: Final = "0001067983"
 ACCESSION: Final = "0001067983-24-000011"
@@ -284,3 +291,178 @@ async def test_a_document_that_is_not_a_submissions_index_is_an_error(
     the accession number will help."""
     with pytest.raises(SubmissionMalformedError):
         await _find(settings, {_RECENT_PATH: body})
+
+
+# --- listing every filing ----------------------------------------------------
+
+_RECENT_URL: Final = f"https://data.sec.gov{_RECENT_PATH}"
+_OLDER_URL: Final = f"https://data.sec.gov{_OLDER_PATH}"
+
+
+def _listing(*rows: dict[str, Any]) -> dict[str, list[Any]]:
+    return _columns(*rows)
+
+
+#: A manager whose recent thousand are all insider and event filings, so every
+#: 13F it ever filed is on the overflow page. The case a recent-only listing
+#: gets wrong without any error at all.
+_BUSY_RECENT: Final = _submissions(
+    _row("0001067983-24-000100", form="4", accepted="2024-06-03T21:01:00.000Z", report_date=""),
+    {
+        **_row("0001067983-24-000090", form="8-K", accepted="2024-02-26T16:30:00.000Z"),
+        "reportDate": "2024-02-24",
+        "isXBRL": 1,
+        "primaryDocument": "brka-20240224.htm",
+    },
+    older=[_OLDER_PAGE],
+)
+_BUSY_OLDER: Final = json.dumps(
+    _listing(
+        _row(
+            "0001067983-14-000007",
+            form="13F-HR/A",
+            accepted="2014-03-05T17:00:00.000Z",
+            report_date="2013-12-31",
+        ),
+        _row(
+            "0001067983-14-000003",
+            form="13F-HR",
+            accepted="2014-02-14T16:10:00.000Z",
+            report_date="2013-12-31",
+        ),
+        _row("0001067983-14-000004", form="4", accepted="2014-02-14T16:10:00.000Z", report_date=""),
+    )
+).encode()
+
+
+def _respx_client(settings: Settings) -> EdgarClient:
+    """httpx's real transport, which respx intercepts."""
+    return EdgarClient(settings, limiter=AsyncTokenBucket(_UNTHROTTLED))
+
+
+def _mock_busy_filer() -> tuple[respx.Route, respx.Route]:
+    recent = respx.get(_RECENT_URL).mock(return_value=httpx.Response(200, content=_BUSY_RECENT))
+    older = respx.get(_OLDER_URL).mock(return_value=httpx.Response(200, content=_BUSY_OLDER))
+    return recent, older
+
+
+@respx.mock
+async def test_every_page_is_merged_and_sorted_by_filing_date(settings: Settings) -> None:
+    recent, older = _mock_busy_filer()
+
+    async with _respx_client(settings) as edgar:
+        filings = await fetch_all_filings(edgar, cik="1067983")
+
+    assert recent.call_count == 1
+    assert older.call_count == 1
+    assert filings == [
+        FilingRef(
+            accession_no="0001067983-14-000003",
+            form_type="13F-HR",
+            filing_date=date(2014, 2, 14),
+            report_date=date(2013, 12, 31),
+            primary_document="primary_doc.xml",
+            is_xbrl=False,
+        ),
+        # Same day as the 13F-HR above: accession number breaks the tie.
+        FilingRef(
+            accession_no="0001067983-14-000004",
+            form_type="4",
+            filing_date=date(2014, 2, 14),
+            report_date=None,
+            primary_document="primary_doc.xml",
+            is_xbrl=False,
+        ),
+        FilingRef(
+            accession_no="0001067983-14-000007",
+            form_type="13F-HR/A",
+            filing_date=date(2014, 3, 5),
+            report_date=date(2013, 12, 31),
+            primary_document="primary_doc.xml",
+            is_xbrl=False,
+        ),
+        FilingRef(
+            accession_no="0001067983-24-000090",
+            form_type="8-K",
+            filing_date=date(2024, 2, 26),
+            report_date=date(2024, 2, 24),
+            primary_document="brka-20240224.htm",
+            is_xbrl=True,
+        ),
+        FilingRef(
+            accession_no="0001067983-24-000100",
+            form_type="4",
+            filing_date=date(2024, 6, 3),
+            report_date=None,
+            primary_document="primary_doc.xml",
+            is_xbrl=False,
+        ),
+    ]
+
+
+@respx.mock
+async def test_the_13fs_are_found_when_recent_has_none(settings: Settings) -> None:
+    """The ticket's case, end to end: filter the merged listing by form."""
+    _mock_busy_filer()
+
+    async with _respx_client(settings) as edgar:
+        thirteen_fs = filter_forms(await fetch_all_filings(edgar, cik=CIK), "13F-HR")
+
+    assert [f.accession_no for f in thirteen_fs] == [
+        "0001067983-14-000003",
+        "0001067983-14-000007",
+    ]
+
+
+@respx.mock
+async def test_a_second_run_is_served_from_the_disk_cache(tmp_path: Path) -> None:
+    """Both pages, second time round, without a request."""
+    recent, older = _mock_busy_filer()
+    cached = make_settings(edgar_cache_dir=tmp_path)
+
+    async with _respx_client(cached) as edgar:
+        first = await fetch_all_filings(edgar, cik=CIK)
+    async with _respx_client(cached) as edgar:
+        second = await fetch_all_filings(edgar, cik=CIK)
+
+    assert second == first
+    assert (recent.call_count, older.call_count) == (1, 1)
+    assert (tmp_path / "data.sec.gov" / "submissions" / _OLDER_PAGE).read_bytes() == _BUSY_OLDER
+
+
+@pytest.mark.parametrize(
+    ("form_type", "prefix", "matches"),
+    [
+        ("13F-HR", "13F-HR", True),
+        ("13F-HR/A", "13F-HR", True),
+        ("13F-NT", "13F-HR", False),
+        ("13F-NT", "13F", True),
+        ("4/A", "4", True),
+        # Shares leading characters with "4" but is a different form.
+        ("424B2", "4", False),
+        ("40-F", "4", False),
+        ("13F-HR", "13F-HR/A", False),
+    ],
+)
+def test_form_types_match_by_prefix_at_a_form_name_boundary(
+    form_type: str, prefix: str, matches: bool
+) -> None:
+    filing = FilingRef(
+        accession_no=ACCESSION,
+        form_type=form_type,
+        filing_date=date(2024, 5, 15),
+        report_date=None,
+        primary_document=None,
+        is_xbrl=False,
+    )
+    assert filter_forms([filing], prefix) == ([filing] if matches else [])
+
+
+async def test_a_row_without_a_filing_date_cannot_be_placed_in_order(
+    settings: Settings,
+) -> None:
+    row = _row()
+    row["filingDate"] = ""
+    async with _client(settings, {_RECENT_PATH: _submissions(row)}, []) as edgar:
+        with pytest.raises(SubmissionMalformedError, match="filingDate"):
+            await fetch_all_filings(edgar, cik=CIK)

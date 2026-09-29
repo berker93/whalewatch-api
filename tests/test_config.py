@@ -144,6 +144,21 @@ class TestValidation:
 
         assert settings.sec_user_agent == "WhaleWatch ops@whalewatch.io"
 
+    def test_edgar_cache_is_off_unless_asked_for(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert build(monkeypatch).edgar_cache_dir is None
+        assert build(monkeypatch, EDGAR_CACHE_DIR=".edgar-cache").edgar_cache_dir == Path(
+            ".edgar-cache"
+        )
+
+    @pytest.mark.parametrize("environment", ["staging", "production"])
+    def test_edgar_cache_is_refused_in_a_deployed_environment(
+        self, monkeypatch: pytest.MonkeyPatch, environment: str
+    ) -> None:
+        """A cached submissions index is a stale one; a deployed ingester that
+        read it would never see a new filing."""
+        with pytest.raises(ValidationError, match="EDGAR_CACHE_DIR"):
+            build(monkeypatch, ENVIRONMENT=environment, EDGAR_CACHE_DIR=".edgar-cache")
+
 
 class TestEnvFile:
     def test_env_file_is_read_when_present(

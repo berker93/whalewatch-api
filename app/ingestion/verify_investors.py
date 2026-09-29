@@ -158,9 +158,9 @@ def judge(
 ) -> CikCheck:
     """The checks themselves, over a history already fetched."""
     periods = sorted(
-        filing.period_of_report
+        filing.report_date
         for filing in history.filings
-        if filing.form_type == THIRTEEN_F_HR and filing.period_of_report is not None
+        if filing.form_type == THIRTEEN_F_HR and filing.report_date is not None
     )
     count = sum(1 for filing in history.filings if filing.form_type == THIRTEEN_F_HR)
     similarity = (

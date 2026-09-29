@@ -11,10 +11,11 @@ and a secret manager inject it in production, with the same code.
 """
 
 from functools import lru_cache
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Self
 from urllib.parse import quote
 
-from pydantic import EmailStr, Field, SecretStr
+from pydantic import EmailStr, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -73,6 +74,21 @@ class Settings(BaseSettings):
     # SEC publishes a 10 req/s ceiling. Bounded so a fat-fingered `80.0` cannot
     # quietly turn the ingester into something that gets our IP banned.
     sec_rate_limit_per_second: float = Field(default=8.0, gt=0, le=10)
+
+    # Development only. When set, every EDGAR body is kept on disk under this
+    # directory and served from there next time, so iterating on a parser does
+    # not refetch a filer's twenty years of submissions. Never in a deployed
+    # environment: a submissions index changes every time the filer files, and
+    # a cached one is a quietly out-of-date answer.
+    edgar_cache_dir: Path | None = None
+
+    @model_validator(mode="after")
+    def _edgar_cache_is_for_development(self) -> Self:
+        if self.edgar_cache_dir is not None and self.environment in ("staging", "production"):
+            raise ValueError(
+                f"EDGAR_CACHE_DIR is for development and must be unset in {self.environment}"
+            )
+        return self
 
     def _postgres_dsn(self, database: str) -> str:
         """Assemble an asyncpg DSN for ``database`` from the parts above.

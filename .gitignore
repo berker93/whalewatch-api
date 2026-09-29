@@ -14,3 +14,6 @@ wheels/
 
 # graphify knowledge-graph outputs — regenerate with /graphify
 graphify-out/
+
+# EDGAR_CACHE_DIR's conventional home: bodies fetched from sec.gov in development
+.edgar-cache/
