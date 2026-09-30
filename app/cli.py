@@ -1,5 +1,5 @@
-"""Typer CLI: ingest-filing, seed-investors, verify-investors, audit-overlaps, backfill, recompute,
-refresh-views.
+"""Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
+backfill, recompute, refresh-views.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -11,6 +11,7 @@ the incident where throwaway scripts are least trustworthy.
 
 ::
 
+    uv run python -m app.cli discover-filings --filer berkshire-hathaway
     uv run python -m app.cli ingest-filing 0001067983-24-000011 --cik 1067983
     uv run python -m app.cli ingest-filing 0001067983-24-000011 --dry-run
     uv run python -m app.cli seed-investors
@@ -60,15 +61,28 @@ import httpx
 import structlog
 import typer
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.models.filer import OverlapPolicy
-from app.db.models.filing import Filing, ParseStatus
+from app.db.models.filing import LOADED_STATUSES, Filing
+from app.db.models.pending_filing import PendingStatus
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
-from app.db.session import session_scope
+from app.db.session import create_engine, create_session_factory, session_scope
 from app.ingestion.archive import archive_13f_documents
+from app.ingestion.discovery import (
+    FilerDiscovery,
+    QueuedFiling,
+    UnknownFilerError,
+    default_since,
+    discover_filings,
+    mark_ingested,
+    queued_filing,
+    record_failure,
+    tracked_filer_ids,
+)
 from app.ingestion.edgar.client import EdgarClient, EdgarRateLimited, EdgarServerError
 from app.ingestion.edgar.documents import (
     FilingDocuments,
@@ -103,14 +117,6 @@ from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_invest
 from app.storage.raw import RawStoreError, open_raw_store
 
 logger = get_logger(__name__)
-
-#: Statuses that mean the filing is in the database with its holdings, so a
-#: second run has nothing to add. ``pending`` is absent on purpose — it is what
-#: a row discovered by the daily index looks like before anything fetched its
-#: documents, and finishing that job is the most ordinary reason to run this
-#: command. ``failed`` is absent for the same reason in reverse: re-running is
-#: the fix.
-_ALREADY_LOADED: Final = frozenset({ParseStatus.OK.value, ParseStatus.SUSPECT.value})
 
 #: The form types this command knows how to parse. Checked against EDGAR's own
 #: word for what the submission is, before anything is fetched from the filing
@@ -233,6 +239,10 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
     minutes waiting out a rate-limit block and a Postgres connection held idle
     in a transaction for that long is one that blocks a migration and shows up
     in someone else's incident. The write opens its own scope at the end.
+
+    A filing in ``pending_filing`` has each attempt written back to its row:
+    ``done`` in the loader's own transaction, or a failure counted with its
+    message. A dry run writes neither.
     """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
@@ -240,17 +250,35 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
     accession = _normalise_accession(accession_no)
     structlog.contextvars.bind_contextvars(job_name="ingest-filing", accession_no=accession)
 
-    known = await _known_filing(settings, accession)
-    resolved_cik = _resolve_cik(cik, known=known, accession_no=accession)
+    known, queued = await _known_filing(settings, accession)
+    resolved_cik = _resolve_cik(cik, known=known, queued=queued, accession_no=accession)
 
-    if known is not None and known.parse_status in _ALREADY_LOADED and not force:
+    if known is not None and known.parse_status in LOADED_STATUSES and not force:
+        if queued is not None and queued.status != PendingStatus.DONE and not dry_run:
+            async with session_scope(settings) as session:
+                await mark_ingested(session, accession)
         _echo_skip(accession, known)
         return
 
+    try:
+        report = await _fetch_and_load(
+            settings, accession, cik=resolved_cik, force=force, dry_run=dry_run
+        )
+    except Exception as failure:
+        if queued is not None and not dry_run:
+            await _record_failure(settings, accession, failure)
+        raise
+    _echo_report(report)
+
+
+async def _fetch_and_load(
+    settings: Settings, accession: str, *, cik: str, force: bool, dry_run: bool
+) -> _Report:
+    """Everything after the decision that there is work to do."""
     async with EdgarClient(settings) as edgar:
-        submission = await find_submission(edgar, cik=resolved_cik, accession_no=accession)
+        submission = await find_submission(edgar, cik=cik, accession_no=accession)
         _require_thirteen_f(submission)
-        documents = await fetch_13f_documents(edgar, cik=resolved_cik, accession_no=accession)
+        documents = await fetch_13f_documents(edgar, cik=cik, accession_no=accession)
 
     # Archived before parsed, always: a parser that raises below has nothing
     # left to lose, and the fix is a re-parse of these bytes instead of a
@@ -258,7 +286,7 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
     raw_prefix = (
         None
         if dry_run
-        else await _archive(settings, documents, cik=resolved_cik, accession=accession, force=force)
+        else await _archive(settings, documents, cik=cik, accession=accession, force=force)
     )
 
     # Parsing happens after the client is closed: it is pure CPU over bytes we
@@ -286,19 +314,31 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
         )
     )
 
-    _echo_report(
-        _Report(
-            accession_no=accession,
-            submission=submission,
-            cover=cover,
-            table=table,
-            normalised=normalised,
-            documents=documents,
-            raw_prefix=raw_prefix,
-            result=result,
-            dry_run=dry_run,
-        )
+    return _Report(
+        accession_no=accession,
+        submission=submission,
+        cover=cover,
+        table=table,
+        normalised=normalised,
+        documents=documents,
+        raw_prefix=raw_prefix,
+        result=result,
+        dry_run=dry_run,
     )
+
+
+async def _record_failure(settings: Settings, accession: str, failure: Exception) -> None:
+    """Count the attempt on the queue row, without hiding why it failed.
+
+    Best effort, and deliberately so: the likeliest reason this write fails is
+    the one the ingest failed for — the database is gone — and an exception
+    from here would replace the real error on stderr with a second-hand one.
+    """
+    try:
+        async with session_scope(settings) as session:
+            await record_failure(session, accession, f"{type(failure).__name__}: {failure}")
+    except Exception as unrecorded:
+        logger.warning("pending_filing.record_failed", error=str(unrecorded))
 
 
 async def _archive(
@@ -347,6 +387,7 @@ async def _load(
             raw_key=raw_prefix,
             source_url=documents.primary_doc_url,
         )
+        await mark_ingested(session, accession)
     logger.info(
         "filing.ingested",
         cik=cover.cik,
@@ -369,27 +410,38 @@ class _KnownFiling:
     parse_status: str
 
 
-async def _known_filing(settings: Settings, accession_no: str) -> _KnownFiling | None:
-    """Look the accession number up in our own database.
+async def _known_filing(
+    settings: Settings, accession_no: str
+) -> tuple[_KnownFiling | None, QueuedFiling | None]:
+    """Look the accession number up in our own database: ``filing``, then the queue.
 
-    Two answers come out of this one query and both are load-bearing. The CIK is
-    what makes ``--cik`` optional — a filing discovered through the daily index
-    already has one, and re-running it should not require the operator to go and
-    find it again. The status is what makes the command idempotent without
-    re-fetching: "already loaded" is decided here, before a single EDGAR
-    request, which is the difference between resuming a backfill and re-running
-    it.
+    The answers are load-bearing. The CIK is what makes ``--cik`` optional — a
+    filing already loaded or queued by ``discover-filings`` has one, and
+    re-running it should not require the operator to go and find it again. The
+    status is what makes the command idempotent without re-fetching: "already
+    loaded" is decided here, before a single EDGAR request, which is the
+    difference between resuming a backfill and re-running it.
     """
     async with session_scope(settings) as session:
-        row = (
-            await session.execute(
-                select(Filing.cik, Filing.parse_status).where(Filing.accession_no == accession_no)
-            )
-        ).first()
+        return await _loaded_row(session, accession_no), await queued_filing(session, accession_no)
+
+
+async def _loaded_row(session: AsyncSession, accession_no: str) -> _KnownFiling | None:
+    row = (
+        await session.execute(
+            select(Filing.cik, Filing.parse_status).where(Filing.accession_no == accession_no)
+        )
+    ).first()
     return None if row is None else _KnownFiling(cik=row.cik, parse_status=row.parse_status)
 
 
-def _resolve_cik(given: str | None, *, known: _KnownFiling | None, accession_no: str) -> str:
+def _resolve_cik(
+    given: str | None,
+    *,
+    known: _KnownFiling | None,
+    queued: QueuedFiling | None,
+    accession_no: str,
+) -> str:
     """The CIK whose archive directory holds this filing.
 
     Required, and not derivable from the accession number, which is the thing
@@ -402,6 +454,8 @@ def _resolve_cik(given: str | None, *, known: _KnownFiling | None, accession_no:
         return _padded_cik(given)
     if known is not None:
         return known.cik
+    if queued is not None:
+        return queued.cik
     raise CommandError(
         f"{accession_no} is not in the database, so its CIK is unknown: pass --cik. "
         "It cannot be read off the accession number — the leading digits belong to "
@@ -702,6 +756,103 @@ def _instant(moment: datetime) -> str:
     show why a filing near it got the multiplier it did.
     """
     return moment.isoformat(sep=" ", timespec="seconds")
+
+
+# --- discover-filings --------------------------------------------------------
+
+
+@app.command("discover-filings")
+def discover_filings_command(
+    filer: Annotated[
+        str | None,
+        typer.Option("--filer", metavar="SLUG", help="Discover for one filer instead of all."),
+    ] = None,
+    since: Annotated[
+        datetime | None,
+        typer.Option(
+            "--since",
+            formats=["%Y-%m-%d"],
+            help="Earliest filing date to look at.",
+            show_default="five years ago",
+        ),
+    ] = None,
+    full_history: Annotated[
+        bool,
+        typer.Option("--all", help="Look at every filing EDGAR lists, however old."),
+    ] = False,
+) -> None:
+    """Queue every 13F-HR and 13F-HR/A a tracked filer has filed and we have not loaded.
+
+    Lists each of the filer's CIKs in EDGAR's submissions index and subtracts
+    the filings already loaded; what is left goes into pending_filing, from
+    which ingest-filing takes its CIK. Idempotent. A filing that failed to load
+    is found again on the next run, with no special handling.
+
+    Exits 1 if any CIK could not be read. The others are still queued.
+    """
+    if since is not None and full_history:
+        typer.secho("error: --since and --all contradict each other", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    cutoff = None if full_history else since.date() if since else default_since(date.today())
+    try:
+        failed = asyncio.run(_discover_filings(filer, since=cutoff))
+    except (UnknownFilerError, EdgarRateLimited) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+    if failed:
+        raise typer.Exit(code=1)
+
+
+async def _discover_filings(slug: str | None, *, since: date | None) -> bool:
+    """Discover filer by filer, each committed on its own. Returns whether any CIK failed.
+
+    One engine for the run rather than a ``session_scope`` per filer: each of
+    those builds and disposes an engine, and this opens two sessions per filer
+    across a hundred filers.
+    """
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    structlog.contextvars.bind_contextvars(job_name="discover-filings")
+
+    engine = create_engine(settings)
+    sessions = create_session_factory(engine)
+    try:
+        async with sessions() as session:
+            filer_ids = await tracked_filer_ids(session, slug=slug)
+        async with EdgarClient(settings) as edgar:
+            results = [
+                await discover_filings(sessions, edgar, filer_id, since=since)
+                for filer_id in filer_ids
+            ]
+    finally:
+        await engine.dispose()
+
+    _echo_discovery(results, since=since)
+    return any(result.failures for result in results)
+
+
+def _echo_discovery(results: list[FilerDiscovery], *, since: date | None) -> None:
+    window = "full history" if since is None else f"filed since {since.isoformat()}"
+    typer.echo(f"discover-filings  13F-HR and 13F-HR/A, {window}")
+    slug_width = max((len(result.filer.slug) for result in results), default=4)
+    typer.echo(f"  {'slug':<{slug_width}}  {'found':>6}  {'ingested':>8}  {'new':>6}")
+    for result in results:
+        typer.echo(
+            f"  {result.filer.slug:<{slug_width}}  {len(result.found):>6}  "
+            f"{len(result.already_ingested):>8}  {len(result.new):>6}"
+            + ("  FAILED" if result.failures else "")
+        )
+
+    found = sum(len(result.found) for result in results)
+    ingested = sum(len(result.already_ingested) for result in results)
+    new = sum(len(result.new) for result in results)
+    typer.echo(
+        f"  {len(results)} filers: {found} found, {ingested} already ingested, "
+        f"{new} new in pending_filing"
+    )
+    for result in results:
+        for failure in result.failures:
+            _line("error", f"{result.filer.slug} CIK {failure.cik}: {failure.error}")
 
 
 # --- seed-investors ----------------------------------------------------------

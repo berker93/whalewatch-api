@@ -56,7 +56,17 @@ re-crawling.
 
 **13F** is pull-based, per filer. We keep a list of tracked filer CIKs; for each,
 fetch the submissions JSON, take every `13F-HR` and `13F-HR/A`, and enqueue any
-accession number not already in `filing`.
+accession number not already loaded (`filing.parse_status` `ok` or `suspect`)
+into `pending_filing`. That is `discover-filings`
+([app/ingestion/discovery.py](../app/ingestion/discovery.py)); `ingest-filing`
+drains the queue one accession number at a time.
+
+It is a set difference against what is loaded, never "everything since the
+newest filing we hold". The latter forgets: a filing that failed to load three
+weeks ago is older than yesterday's, so it is never asked about again. The set
+difference finds it on the next run with no special case. It also finds a
+deleted row and an amendment filed late for a closed period. The window defaults
+to five years of filing dates; `--all` reads a CIK's whole history.
 
 **Form 4** is push-based, per day. There is no useful "all insiders" list, so we
 walk the daily index for each business day, filter to form type `4`, and enqueue.

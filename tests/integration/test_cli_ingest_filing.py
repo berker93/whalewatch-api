@@ -37,7 +37,7 @@ from app.cli import app
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.core.rate_limit import AsyncTokenBucket
-from app.db.models import Filer, FilerCik, Filing, Holding, Security
+from app.db.models import Filer, FilerCik, Filing, Holding, PendingFiling, Security
 from app.storage.raw import LocalRawStore
 from tests.conftest import make_settings
 
@@ -212,7 +212,10 @@ def clean_tables(migrated_engine: AsyncEngine) -> Iterator[None]:
 def _truncate(engine: AsyncEngine) -> None:
     _execute(
         engine,
-        text("TRUNCATE holding, filing, security, filer_cik, filer RESTART IDENTITY CASCADE"),
+        text(
+            "TRUNCATE pending_filing, holding, filing, security, filer_cik, filer "
+            "RESTART IDENTITY CASCADE"
+        ),
     )
 
 
@@ -574,6 +577,103 @@ def test_an_unknown_filing_with_no_cik_fails_before_touching_edgar(
     assert "--cik" in result.stderr
     assert not respx.calls
     assert _fetch(migrated_engine, select(Filing.id)) == []
+
+
+# --- the pending_filing queue ------------------------------------------------
+
+
+def _enqueue(engine: AsyncEngine, **columns: Any) -> None:
+    """Queue the filing as ``discover-filings`` would."""
+    _execute(
+        engine,
+        insert(PendingFiling).values(
+            accession_no=ACCESSION,
+            cik=CIK,
+            form_type="13F-HR",
+            filing_date=PERIOD,
+            **columns,
+        ),
+    )
+
+
+def _queue_row(engine: AsyncEngine) -> list[tuple[Any, ...]]:
+    return _fetch(
+        engine,
+        select(PendingFiling.status, PendingFiling.attempts, PendingFiling.last_error),
+    )
+
+
+@respx.mock
+def test_a_queued_filing_needs_no_cik_and_is_marked_done(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """Draining the queue is ``ingest-filing ACCESSION`` per row, and nothing else."""
+    _edgar()
+    _register_filer(migrated_engine)
+    _enqueue(migrated_engine)
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION])
+
+    assert result.exit_code == 0, result.output
+    assert _fetch(migrated_engine, select(Filing.parse_status)) == [("ok",)]
+    assert _queue_row(migrated_engine) == [("done", 0, None)]
+
+
+@respx.mock
+def test_a_failed_ingest_is_counted_on_the_queue_row(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """What a replay reads: how often, and why the last time."""
+    _edgar(form="4")
+    _enqueue(migrated_engine)
+
+    for _ in range(2):
+        assert runner.invoke(app, ["ingest-filing", ACCESSION]).exit_code == 1
+
+    [(status, attempts, last_error)] = _queue_row(migrated_engine)
+    assert (status, attempts) == ("failed", 2)
+    assert last_error.startswith("CommandError: ")
+    assert "13F" in last_error
+
+
+@respx.mock
+def test_a_retry_that_succeeds_marks_it_done_and_keeps_the_history(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    _edgar()
+    _register_filer(migrated_engine)
+    _enqueue(migrated_engine, status="failed", attempts=1, last_error="EdgarServerError: 503")
+
+    assert runner.invoke(app, ["ingest-filing", ACCESSION]).exit_code == 0
+
+    assert _queue_row(migrated_engine) == [("done", 1, "EdgarServerError: 503")]
+
+
+@respx.mock
+def test_skipping_a_loaded_filing_still_marks_its_queue_row_done(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    _edgar()
+    _register_filer(migrated_engine)
+    assert runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK]).exit_code == 0
+    _enqueue(migrated_engine)
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION])
+
+    assert "already loaded" in result.stdout
+    assert _queue_row(migrated_engine) == [("done", 0, None)]
+
+
+@respx.mock
+def test_a_dry_run_leaves_the_queue_row_alone(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    _edgar(form="4")
+    _enqueue(migrated_engine)
+
+    assert runner.invoke(app, ["ingest-filing", ACCESSION, "--dry-run"]).exit_code == 1
+
+    assert _queue_row(migrated_engine) == [("pending", 0, None)]
 
 
 # --- --dry-run ---------------------------------------------------------------

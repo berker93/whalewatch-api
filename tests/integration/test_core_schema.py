@@ -34,6 +34,8 @@ from app.db.models import (
     Filing,
     Holding,
     ParseStatus,
+    PendingFiling,
+    PendingStatus,
     Security,
 )
 from app.ingestion.normalisation import normalise_filing
@@ -580,6 +582,46 @@ async def test_a_suspect_filing_must_say_why(db_session: AsyncSession) -> None:
         async with db_session.begin_nested():
             filing.parse_status = ParseStatus.SUSPECT
             await db_session.flush()
+
+
+async def test_a_queued_filing_starts_pending_with_no_attempts(db_session: AsyncSession) -> None:
+    queued = PendingFiling(
+        accession_no="0001193125-24-000002",
+        cik="0001067983",
+        form_type="13F-HR",
+        filing_date=date(2024, 8, 14),
+    )
+    db_session.add(queued)
+    await db_session.flush()
+    await db_session.refresh(queued)
+
+    assert (queued.status, queued.attempts, queued.last_error) == (PendingStatus.PENDING, 0, None)
+    assert queued.discovered_at is not None
+
+
+@pytest.mark.parametrize(
+    ("assignment", "constraint"),
+    [
+        ("status = 'retrying'", "status_is_known"),
+        ("attempts = -1", "attempts_is_not_negative"),
+    ],
+)
+async def test_the_queue_refuses_a_state_nothing_writes(
+    db_session: AsyncSession, assignment: str, constraint: str
+) -> None:
+    db_session.add(
+        PendingFiling(
+            accession_no="0001193125-24-000002",
+            cik="0001067983",
+            form_type="13F-HR",
+            filing_date=date(2024, 8, 14),
+        )
+    )
+    await db_session.flush()
+
+    with pytest.raises(IntegrityError, match=constraint):
+        async with db_session.begin_nested():
+            await db_session.execute(text(f"UPDATE pending_filing SET {assignment}"))
 
 
 async def test_the_guards_findings_land_in_a_column_that_can_be_queried(

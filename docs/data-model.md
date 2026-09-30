@@ -398,7 +398,28 @@ lossy and is how a vesting event becomes a headline.
 plan was decided months before the date on the form, which is the whole reason
 the flag is on the row rather than left to the reader.
 
-### `raw_document`
+### `pending_filing`
+
+```
+accession_no   char(20)     pk
+cik            char(10)     not null            -- whose archive holds it
+form_type      text         not null            -- 13F-HR | 13F-HR/A
+filing_date    date         not null
+report_date    date
+discovered_at  timestamptz  not null default now()
+status         text         not null default 'pending'  -- pending | failed | done
+attempts       integer      not null default 0
+last_error     text
+```
+
+The ingestion work queue. `discover-filings` writes every 13F it finds that is
+not loaded; `ingest-filing` reads the CIK from here and writes back each attempt
+(`done` in the loader's transaction, or `attempts + 1` and the error). Separate
+from `filing` because a discovered filing has no `filed_at` or
+`value_multiplier` yet, and inventing either is the 1000x error. No foreign key
+to `filing` for the same reason. Rows are kept after `done`, so a filing that
+took three tries keeps its history.
+
 
 ```
 id            bigint pk
@@ -453,6 +474,8 @@ they concern.
 - **enforced** — `holding.sshprnamt_type IN ('SH','PRN')`.
 - **enforced** — `filing.value_multiplier IN (1, 1000)`.
 - **enforced** — `filing.parse_status IN ('pending','ok','suspect','failed')`.
+- **enforced** — `pending_filing.status IN ('pending','failed','done')` and
+  `attempts >= 0` (`0007_pending_filing`).
 - **enforced** — a `suspect` filing has non-null `parse_notes`. A filing we do not
   fully believe has to say why; the status exists to send a person to a specific
   row of a specific document, which a bare flag cannot do.

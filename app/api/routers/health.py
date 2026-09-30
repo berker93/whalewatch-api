@@ -58,9 +58,7 @@ async def _run_check(name: str, probe: Callable[[], Awaitable[Any]]) -> str:
         async with asyncio.timeout(CHECK_TIMEOUT_SECONDS):
             await probe()
     except TimeoutError:
-        logger.warning(
-            "readiness.check_timeout", dependency=name, timeout_s=CHECK_TIMEOUT_SECONDS
-        )
+        logger.warning("readiness.check_timeout", dependency=name, timeout_s=CHECK_TIMEOUT_SECONDS)
         return "error: timeout"
     except Exception as exc:
         # The exception type, not str(exc): a connection error from asyncpg

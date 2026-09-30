@@ -110,6 +110,53 @@ or, from a shell that can reach the database directly:
 uv run python -m app.cli ingest-filing 0001067983-24-000011 --cik 1067983
 ```
 
+### `discover-filings [--filer SLUG] [--since DATE | --all]`
+
+Finds the work. For every tracked filer, or only `--filer`, it lists each of the
+filer's CIKs in EDGAR's submissions index and takes the `13F-HR`s and
+`13F-HR/A`s. It subtracts the ones already loaded and queues the rest in
+`pending_filing`, where `ingest-filing` finds their CIK. Per filer it reports
+what it found, how much of that is already ingested, and what is new:
+
+```
+discover-filings  13F-HR and 13F-HR/A, filed since 2021-09-30
+  slug                       found  ingested     new
+  berkshire-hathaway            21        20       1
+  pershing-square               20         0      20  FAILED
+  renaissance-technologies      20        20       0
+  3 filers: 61 found, 40 already ingested, 21 new in pending_filing
+  error       pershing-square CIK 0001336528: EDGAR has no submissions index for CIK 0001336528
+```
+
+| Flag | |
+| --- | --- |
+| `--filer` | One filer, by slug, instead of all of them |
+| `--since` | Earliest filing date to look at. Defaults to five years ago |
+| `--all` | Every filing EDGAR lists, however old. Not with `--since` |
+
+**It is a set difference, so it heals itself.** Nothing records where the last
+run stopped. A filing that failed to load weeks ago is still "new" on the next
+run. A queued filing that is already loaded (say, by hand) is marked `done`.
+Re-running is always safe. It never duplicates a queue row, and a row keeps its
+`discovered_at`, `attempts` and `last_error`. "Loaded" means `parse_status` `ok`
+or `suspect`, the same test `ingest-filing` uses to skip.
+
+**Draining the queue** is `ingest-filing ACCESSION_NO` per row, with no `--cik`:
+
+```bash
+psql -Atc "SELECT accession_no FROM pending_filing WHERE status <> 'done' ORDER BY filing_date" \
+  | xargs -n1 uv run python -m app.cli ingest-filing
+```
+
+Each attempt is written back to the row: `done` on a load, or `failed` with
+`attempts` incremented and `last_error` set.
+
+**Exit codes.** Non-zero if any CIK could not be listed. The filer is marked
+`FAILED` and the error is printed, but the filer's other CIKs and every other
+filer are still queued. A rate-limit block from EDGAR stops the run, because
+every request after it would fail the same way. Filers finished before the block
+are already committed.
+
 ### `ingest-filing ACCESSION_NO [--cik] [--force] [--dry-run]`
 
 Fetches, parses and loads one 13F. It looks the accession number up in EDGAR's
@@ -143,9 +190,9 @@ not the ten digits at the front of the accession number, which identify whoever
 transmitted the submission and are usually a filing agent. Berkshire's own 13F
 lives under `data/1067983/` with an accession number beginning `0001193125`, and
 the path built from the latter does not exist. So the CIK has to come from
-somewhere, and the command will take it from an existing `filing` row — which is
-the common case, because discovery writes that row before anything fetches the
-documents — or from this flag.
+somewhere. The command takes it from this flag, or from an existing `filing`
+row, or from the filing's `pending_filing` row. The last is the common case,
+because `discover-filings` records the CIK it listed the filing under.
 
 **Re-running is safe and cheap.** A filing that is already loaded is left alone
 and reported as such, at exit 0, without a single EDGAR request; `--force`

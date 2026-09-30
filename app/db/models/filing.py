@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import (
     CHAR,
@@ -96,6 +96,14 @@ class ParseStatus(StrEnum):
     SUSPECT = "suspect"
     FAILED = "failed"
 
+
+#: Statuses that mean the filing is in the database with its holdings, so
+#: ingesting it again has nothing to add. ``pending`` is absent on purpose — a
+#: row that exists but was never parsed is exactly what still needs ingesting —
+#: and ``failed`` for the same reason in reverse: re-running is the fix. Shared
+#: by ``ingest-filing``'s skip and by discovery's "already ingested", which
+#: must agree or discovery queues filings the command then refuses to touch.
+LOADED_STATUSES: Final = frozenset({ParseStatus.OK.value, ParseStatus.SUSPECT.value})
 
 # The vocabulary above as a SQL predicate, built from the enum so that adding a
 # member cannot leave the constraint behind. Imported by the migration for the
