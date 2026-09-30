@@ -11,9 +11,9 @@ from typing import Final
 
 import pytest
 
-from app.ingestion.archive import archive_13f_documents
-from app.ingestion.edgar.documents import FilingDocuments
-from app.storage.raw import LocalRawStore, RawStoreError
+from app.ingestion.archive import archive_13f_documents, read_13f_documents
+from app.ingestion.edgar.documents import FilingDocuments, FilingDocumentsError
+from app.storage.raw import LocalRawStore, RawObjectNotFoundError, RawStoreError
 
 ACCESSION: Final = "0001067983-24-000011"
 CIK: Final = "0001067983"
@@ -102,3 +102,74 @@ async def test_a_store_failure_is_raised_as_itself(tmp_path: Path) -> None:
         await archive_13f_documents(
             LocalRawStore(tmp_path), _documents(), cik=CIK, accession_no=ACCESSION
         )
+
+
+# --- reading it back ---------------------------------------------------------
+
+
+async def test_what_is_archived_reads_back_as_it_was_fetched(tmp_path: Path) -> None:
+    """The round trip ``backfill --force`` depends on: the same bytes and the
+    same URLs, with nothing fetched."""
+    store = LocalRawStore(tmp_path)
+    await archive_13f_documents(store, _documents(), cik=CIK, accession_no=ACCESSION)
+
+    assert await read_13f_documents(store, PREFIX, directory_url=DIRECTORY) == _documents()
+
+
+async def test_a_notice_reads_back_with_no_information_table(tmp_path: Path) -> None:
+    store = LocalRawStore(tmp_path)
+    await archive_13f_documents(store, _documents(info_table=None), cik=CIK, accession_no=ACCESSION)
+
+    documents = await read_13f_documents(store, PREFIX, directory_url=DIRECTORY)
+
+    assert documents.info_table is None
+    assert documents.info_table_url is None
+    assert documents.primary_doc == PRIMARY_DOC
+
+
+async def test_the_documents_are_told_apart_by_root_element_not_by_name(tmp_path: Path) -> None:
+    """The information table's name is the filing agent's choice, and the
+    cover page is ``primary_doc.xml`` only by convention."""
+    store = LocalRawStore(tmp_path)
+    await store.put(f"{PREFIX}index.json", INDEX)
+    await store.put(f"{PREFIX}a-cover.xml", PRIMARY_DOC)
+    await store.put(f"{PREFIX}b-holdings.xml", INFO_TABLE)
+
+    documents = await read_13f_documents(store, PREFIX, directory_url=DIRECTORY)
+
+    assert documents.primary_doc_url == f"{DIRECTORY}/a-cover.xml"
+    assert documents.info_table_url == f"{DIRECTORY}/b-holdings.xml"
+
+
+async def test_a_filing_never_archived_is_not_found(tmp_path: Path) -> None:
+    with pytest.raises(RawObjectNotFoundError, match=PREFIX):
+        await read_13f_documents(LocalRawStore(tmp_path), PREFIX, directory_url=DIRECTORY)
+
+
+async def test_an_archive_without_its_listing_is_not_found(tmp_path: Path) -> None:
+    store = LocalRawStore(tmp_path)
+    await store.put(f"{PREFIX}primary_doc.xml", PRIMARY_DOC)
+
+    with pytest.raises(RawObjectNotFoundError, match=r"index\.json"):
+        await read_13f_documents(store, PREFIX, directory_url=DIRECTORY)
+
+
+async def test_an_archive_without_a_cover_page_is_refused(tmp_path: Path) -> None:
+    store = LocalRawStore(tmp_path)
+    await store.put(f"{PREFIX}index.json", INDEX)
+    await store.put(f"{PREFIX}56757.xml", INFO_TABLE)
+
+    with pytest.raises(FilingDocumentsError, match="cover page"):
+        await read_13f_documents(store, PREFIX, directory_url=DIRECTORY)
+
+
+async def test_two_archived_information_tables_are_refused_rather_than_guessed(
+    tmp_path: Path,
+) -> None:
+    """Picking the wrong one parses to a different portfolio without raising."""
+    store = LocalRawStore(tmp_path)
+    await archive_13f_documents(store, _documents(), cik=CIK, accession_no=ACCESSION)
+    await store.put(f"{PREFIX}infotable.xml", INFO_TABLE)
+
+    with pytest.raises(FilingDocumentsError, match="more than one"):
+        await read_13f_documents(store, PREFIX, directory_url=DIRECTORY)

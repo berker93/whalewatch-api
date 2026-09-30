@@ -69,6 +69,21 @@ _INFORMATION_TABLE_ROOT: Final = re.compile(rb"<(?:[A-Za-z_][\w.\-]*:)?informati
 _EDGAR_SUBMISSION_ROOT: Final = re.compile(rb"<(?:[A-Za-z_][\w.\-]*:)?edgarSubmission\b")
 
 
+def is_cover_page(document: bytes) -> bool:
+    """Whether ``document`` is a 13F cover page, by its root element."""
+    return _EDGAR_SUBMISSION_ROOT.search(document[:_SNIFF_BYTES]) is not None
+
+
+def is_information_table(document: bytes) -> bool:
+    """Whether ``document`` is a 13F information table, by its root element.
+
+    Public, with :func:`is_cover_page`, for reading an archived filing back:
+    the archive keeps EDGAR's filenames, and the information table's name is
+    no more predictable there than it was in the directory it came from.
+    """
+    return _INFORMATION_TABLE_ROOT.search(document[:_SNIFF_BYTES]) is not None
+
+
 class FilingDocumentsError(Exception):
     """A filing directory did not contain the documents a 13F is made of.
 
@@ -231,7 +246,7 @@ async def _fetch_primary_doc(
     for name in candidates:
         url = f"{base_url}/{name}"
         document = await edgar.get_bytes(url)
-        if _EDGAR_SUBMISSION_ROOT.search(document[:_SNIFF_BYTES]) is not None:
+        if is_cover_page(document):
             logger.warning(
                 "filing.primary_doc_renamed",
                 accession_no=accession_no,
@@ -261,7 +276,7 @@ async def _fetch_information_table(
     for name in candidates:
         url = f"{base_url}/{name}"
         document = await edgar.get_bytes(url)
-        if _INFORMATION_TABLE_ROOT.search(document[:_SNIFF_BYTES]) is not None:
+        if is_information_table(document):
             return url, document
         logger.warning("filing.not_an_information_table", accession_no=accession_no, url=url)
 

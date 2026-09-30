@@ -141,14 +141,9 @@ Re-running is always safe. It never duplicates a queue row, and a row keeps its
 `discovered_at`, `attempts` and `last_error`. "Loaded" means `parse_status` `ok`
 or `suspect`, the same test `ingest-filing` uses to skip.
 
-**Draining the queue** is `ingest-filing ACCESSION_NO` per row, with no `--cik`:
-
-```bash
-psql -Atc "SELECT accession_no FROM pending_filing WHERE status <> 'done' ORDER BY filing_date" \
-  | xargs -n1 uv run python -m app.cli ingest-filing
-```
-
-Each attempt is written back to the row: `done` on a load, or `failed` with
+**Draining the queue** is [`backfill`](#backfill---filer-slug---since-date---concurrency-n---limit-n---force),
+or `ingest-filing ACCESSION_NO` for one row, with no `--cik`. Either way each
+attempt is written back to the row: `done` on a load, or `failed` with
 `attempts` incremented and `last_error` set.
 
 **Exit codes.** Non-zero if any CIK could not be listed. The filer is marked
@@ -156,6 +151,63 @@ Each attempt is written back to the row: `done` on a load, or `failed` with
 filer are still queued. A rate-limit block from EDGAR stops the run, because
 every request after it would fail the same way. Filers finished before the block
 are already committed.
+
+### `backfill [--filer SLUG] [--since DATE] [--concurrency N] [--limit N] [--force]`
+
+Drains the queue. It takes every filing in `pending_filing` and every 13F
+already in `filing`, skips the loaded ones, and ingests the rest several at a
+time. Each filing goes through `ingest-filing`'s steps in the same order:
+archive, parse, load. It prints one line per filing as it finishes, then a
+summary:
+
+```
+backfill  every filer: 2103 filings, 1756 already loaded, 347 to ingest · 5 at a time
+[1/347] berkshire-hathaway 2022Q3 · 41 rows · ok
+[2/347] pershing-square 2022Q3 · FAILED · 0001193125-22-000123 · FilingDocumentsError: ...
+...
+backfill  done: succeeded 340 · skipped 1756 · failed 3 · suspect 4 · elapsed 3m12s
+  failed      0001193125-22-000123  pershing-square 2022Q3  FilingDocumentsError: ...
+```
+
+| Flag | |
+| --- | --- |
+| `--filer` | One filer, by slug, instead of all of them |
+| `--since` | Only filings filed on or after this date |
+| `--concurrency` | Filings in flight at once, default 5, at most 15. They all share the one EDGAR rate limiter, so more than about 5 does not make it faster |
+| `--limit` | Work on at most N filings, oldest first. Skipped filings do not count |
+| `--force` | Also reprocess the loaded filings, from the raw store |
+
+**Resuming is running it again.** The work is planned from the database before
+any worker starts. A filing that is already loaded (`ok` or `suspect`) is
+skipped there, with no EDGAR request. A run that died on filing 1,347 is resumed
+by running the same command, and the first 1,346 cost one query.
+
+**`--force` reprocesses from the raw store, with no EDGAR request.** A loaded
+filing's archived documents are parsed again and reloaded. `filed_at` comes from
+its `filing` row, because neither document carries it and it decides the units.
+This is how a parser fix reaches filings already loaded: a reparse of local
+bytes, not a recrawl. A filing loaded before the archive existed fails with a
+message saying so. `ingest-filing ACCESSION_NO --force` fetches it again.
+Filings that are not loaded are ingested from EDGAR as usual, with or without
+`--force`. That includes one whose last parse failed, because the fix reaches
+it on the next plain run anyway.
+
+**One filing failing does not stop the run.** The failure is logged with its
+traceback on stderr and recorded on the queue row. It is also printed in the
+progress output and listed again under the summary. The one exception is a
+rate-limit block from EDGAR, which stops the run. SEC blocks by IP, so every
+filing after it would fail the same way.
+
+**Ctrl-C finishes what is in flight.** The first Ctrl-C starts no new filings
+and lets the ones already running load, then prints the summary with a
+`not started` count. A second Ctrl-C abandons the in-flight filings. Their loads
+roll back, and each document is either archived whole or not at all, so the
+next run picks them up.
+
+**Exit codes.** 0 when everything planned was loaded or skipped. 1 if any
+filing failed or EDGAR blocked the run. 130 if it was interrupted with nothing
+failed. Every line from one run carries the same `run_id` in the log, and every
+line about one filing carries its `accession_no`.
 
 ### `ingest-filing ACCESSION_NO [--cik] [--force] [--dry-run]`
 

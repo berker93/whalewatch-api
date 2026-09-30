@@ -58,8 +58,9 @@ re-crawling.
 fetch the submissions JSON, take every `13F-HR` and `13F-HR/A`, and enqueue any
 accession number not already loaded (`filing.parse_status` `ok` or `suspect`)
 into `pending_filing`. That is `discover-filings`
-([app/ingestion/discovery.py](../app/ingestion/discovery.py)); `ingest-filing`
-drains the queue one accession number at a time.
+([app/ingestion/discovery.py](../app/ingestion/discovery.py)). `backfill`
+drains the queue several filings at a time (see [Orchestration](#orchestration)),
+and `ingest-filing` does one accession number.
 
 It is a set difference against what is loaded, never "everything since the
 newest filing we hold". The latter forgets: a filing that failed to load three
@@ -273,6 +274,17 @@ a broker in the loop.
 Re-running a filing re-parses stored bytes and upserts; it does not duplicate and
 does not re-fetch unless asked.
 
+**Backfill.** `backfill` ([app/ingestion/backfill.py](../app/ingestion/backfill.py))
+plans from the database, never from EDGAR. The plan covers every queued filing
+and every loaded 13F, and it skips the loaded ones before any worker starts. So
+resuming a run that died is running it again, at no network cost. Workers share
+one `asyncio.Semaphore` (default 5) and the process-wide EDGAR limiter. Each
+filing is archived, then parsed, then loaded. One filing's failure is caught,
+logged, recorded on its queue row and reported, and the run carries on. A
+rate-limit block is the exception, and it stops the run. `--force` reparses
+loaded filings from the raw store, with `filed_at` taken from their `filing`
+row. The first SIGINT lets in-flight filings finish and starts no new ones.
+
 **Logging.** Every backfill binds `job_name` and `run_id`, and every filing binds
 `accession_no` and `cik`, per the vocabulary in
 [the README](../README.md#logging). A backfill of 2,000 filings that dies on
@@ -282,4 +294,7 @@ filing.
 **When a backfill goes wrong**, the recovery is
 [`make reset-db`](../README.md#everyday-commands) plus a re-parse from
 `raw_document` — which is why the raw layer exists and why nothing downstream of
-it is load-bearing.
+it is load-bearing. Not yet fully offline: `backfill --force` takes each
+filing's `filed_at` from its `filing` row, which a reset deletes, so until the
+acceptance timestamp is archived with the documents a post-reset reload goes
+back to EDGAR.

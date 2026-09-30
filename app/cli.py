@@ -12,6 +12,8 @@ the incident where throwaway scripts are least trustworthy.
 ::
 
     uv run python -m app.cli discover-filings --filer berkshire-hathaway
+    uv run python -m app.cli backfill --concurrency 5
+    uv run python -m app.cli backfill --filer berkshire-hathaway --force
     uv run python -m app.cli ingest-filing 0001067983-24-000011 --cik 1067983
     uv run python -m app.cli ingest-filing 0001067983-24-000011 --dry-run
     uv run python -m app.cli seed-investors
@@ -50,10 +52,14 @@ from __future__ import annotations
 import asyncio
 import csv
 import sys
+import time
+import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Final, TextIO
 
@@ -61,17 +67,28 @@ import httpx
 import structlog
 import typer
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.models.filer import OverlapPolicy
-from app.db.models.filing import LOADED_STATUSES, Filing
+from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.session import create_engine, create_session_factory, session_scope
-from app.ingestion.archive import archive_13f_documents
+from app.ingestion.archive import archive_13f_documents, read_13f_documents
+from app.ingestion.backfill import (
+    BackfillPlan,
+    BackfillRun,
+    FilingResult,
+    Outcome,
+    PlannedFiling,
+    plan_backfill,
+    record_attempt,
+    run_backfill,
+    stop_on_interrupt,
+)
 from app.ingestion.discovery import (
     FilerDiscovery,
     QueuedFiling,
@@ -114,7 +131,7 @@ from app.ingestion.parsers.thirteen_f import (
     parse_primary_doc,
 )
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
-from app.storage.raw import RawStoreError, open_raw_store
+from app.storage.raw import RawStore, RawStoreError, open_raw_store
 
 logger = get_logger(__name__)
 
@@ -276,9 +293,7 @@ async def _fetch_and_load(
 ) -> _Report:
     """Everything after the decision that there is work to do."""
     async with EdgarClient(settings) as edgar:
-        submission = await find_submission(edgar, cik=cik, accession_no=accession)
-        _require_thirteen_f(submission)
-        documents = await fetch_13f_documents(edgar, cik=cik, accession_no=accession)
+        submission, documents = await _fetch(edgar, accession, cik=cik)
 
     # Archived before parsed, always: a parser that raises below has nothing
     # left to lose, and the fix is a re-parse of these bytes instead of a
@@ -292,13 +307,7 @@ async def _fetch_and_load(
     # Parsing happens after the client is closed: it is pure CPU over bytes we
     # already hold, and holding a connection pool open across it keeps a socket
     # to sec.gov alive for no reason.
-    cover = parse_primary_doc(documents.primary_doc)
-    table = (
-        parse_information_table(documents.info_table)
-        if documents.info_table is not None
-        else InformationTable(rows=(), warnings=())
-    )
-    normalised = normalise_filing(filed_at=submission.filed_at, cover=cover, table=table)
+    parsed = _parse(documents, filed_at=submission.filed_at)
 
     result = (
         None
@@ -306,20 +315,19 @@ async def _fetch_and_load(
         else await _load(
             settings,
             accession=accession,
-            submission=submission,
-            cover=cover,
-            normalised=normalised,
-            documents=documents,
+            filed_at=submission.filed_at,
+            parsed=parsed,
             raw_prefix=raw_prefix,
+            source_url=documents.primary_doc_url,
         )
     )
 
     return _Report(
         accession_no=accession,
         submission=submission,
-        cover=cover,
-        table=table,
-        normalised=normalised,
+        cover=parsed.cover,
+        table=parsed.table,
+        normalised=parsed.normalised,
         documents=documents,
         raw_prefix=raw_prefix,
         result=result,
@@ -365,38 +373,96 @@ async def _load(
     settings: Settings,
     *,
     accession: str,
-    submission: Submission,
-    cover: PrimaryDoc,
-    normalised: NormalisedFiling,
-    documents: FilingDocuments,
+    filed_at: datetime,
+    parsed: _Parsed,
     raw_prefix: str | None,
+    source_url: str,
 ) -> LoadResult:
-    """Write the parsed filing, in one transaction that ``session_scope`` commits.
+    """Write the parsed filing, in one transaction that ``session_scope`` commits."""
+    async with session_scope(settings) as session:
+        result = await _write(
+            session,
+            accession=accession,
+            filed_at=filed_at,
+            parsed=parsed,
+            raw_prefix=raw_prefix,
+            source_url=source_url,
+        )
+    _log_ingested(parsed, result)
+    return result
+
+
+# --- the steps ingest-filing and backfill share ------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Parsed:
+    """Both documents parsed, and the verdict of the guards on them."""
+
+    cover: PrimaryDoc
+    table: InformationTable
+    normalised: NormalisedFiling
+
+
+async def _fetch(
+    edgar: EdgarClient, accession: str, *, cik: str
+) -> tuple[Submission, FilingDocuments]:
+    """EDGAR's account of the submission, then its documents — unless it is not a 13F."""
+    submission = await find_submission(edgar, cik=cik, accession_no=accession)
+    _require_thirteen_f(submission)
+    return submission, await fetch_13f_documents(edgar, cik=cik, accession_no=accession)
+
+
+def _parse(documents: FilingDocuments, *, filed_at: datetime) -> _Parsed:
+    """Parse and normalise. Pure: the same bytes and ``filed_at`` give the same rows."""
+    cover = parse_primary_doc(documents.primary_doc)
+    table = (
+        parse_information_table(documents.info_table)
+        if documents.info_table is not None
+        else InformationTable(rows=(), warnings=())
+    )
+    normalised = normalise_filing(filed_at=filed_at, cover=cover, table=table)
+    return _Parsed(cover=cover, table=table, normalised=normalised)
+
+
+async def _write(
+    session: AsyncSession,
+    *,
+    accession: str,
+    filed_at: datetime,
+    parsed: _Parsed,
+    raw_prefix: str | None,
+    source_url: str,
+) -> LoadResult:
+    """Load the filing and mark its queue row ``done``, in the caller's transaction.
 
     ``raw_key`` is the filing's archive *prefix*, not one document's key: a
     13F is several documents, and the prefix is what lists all of them. It is
     only ever ``None`` on a dry run, which never gets here.
     """
-    async with session_scope(settings) as session:
-        result = await load_filing(
-            session,
-            accession_no=accession,
-            filed_at=submission.filed_at,
-            primary_doc=cover,
-            normalised=normalised,
-            raw_key=raw_prefix,
-            source_url=documents.primary_doc_url,
-        )
-        await mark_ingested(session, accession)
+    result = await load_filing(
+        session,
+        accession_no=accession,
+        filed_at=filed_at,
+        primary_doc=parsed.cover,
+        normalised=parsed.normalised,
+        raw_key=raw_prefix,
+        source_url=source_url,
+    )
+    await mark_ingested(session, accession)
+    return result
+
+
+def _log_ingested(parsed: _Parsed, result: LoadResult) -> None:
+    """After the commit, so the line never reports a load that rolled back."""
     logger.info(
         "filing.ingested",
-        cik=cover.cik,
-        period=cover.period_of_report.isoformat(),
+        cik=parsed.cover.cik,
+        period=parsed.cover.period_of_report.isoformat(),
         filing_id=result.filing_id,
         rows=result.holdings_loaded,
-        status=normalised.parse_status.value,
+        status=parsed.normalised.parse_status.value,
     )
-    return result
 
 
 # --- what we already know ----------------------------------------------------
@@ -672,20 +738,25 @@ def _rows_line(report: _Report) -> str:
     if result is None:
         return ", ".join(parts)
 
-    # Deferred holdings are counted rather than reported as the zero the loader
-    # returns, because "0 positions loaded" is what a 13F-NT looks like and this
-    # is the opposite: the positions exist, they are waiting on a filer. The
-    # arithmetic is the loader's own — rows minus the ones it folded — so the
-    # two branches print the same number for the same filing either way.
-    positions = (
-        len(report.table.rows) - result.rows_collapsed
-        if result.holdings_deferred
-        else result.holdings_loaded
-    )
+    positions = _positions(report.table, result)
     parts.append(f"{positions} positions {'deferred' if result.holdings_deferred else 'loaded'}")
     if result.rows_collapsed:
         parts.append(f"{result.rows_collapsed} folded into another line")
     return ", ".join(parts)
+
+
+def _positions(table: InformationTable, result: LoadResult) -> int:
+    """Positions loaded, or waiting to be.
+
+    Deferred holdings are counted rather than reported as the zero the loader
+    returns, because "0 positions loaded" is what a 13F-NT looks like and this
+    is the opposite: the positions exist, they are waiting on a filer. The
+    arithmetic is the loader's own — rows minus the ones it folded — so the
+    two branches give the same number for the same filing either way.
+    """
+    if result.holdings_deferred:
+        return len(table.rows) - result.rows_collapsed
+    return result.holdings_loaded
 
 
 def _written_line(result: LoadResult) -> str:
@@ -853,6 +924,320 @@ def _echo_discovery(results: list[FilerDiscovery], *, since: date | None) -> Non
     for result in results:
         for failure in result.failures:
             _line("error", f"{result.filer.slug} CIK {failure.cik}: {failure.error}")
+
+
+# --- backfill ----------------------------------------------------------------
+
+#: The most filings in flight at once. Bounded by the database rather than by
+#: EDGAR: every worker writes through the run's one engine, whose pool is five
+#: connections plus ten overflow, and a worker past that waits out
+#: ``pool_timeout`` and fails its filing. EDGAR stopped rewarding concurrency
+#: well before this, since every worker draws on the one rate limiter.
+_MAX_CONCURRENCY: Final = 15
+
+#: 128 + SIGINT: what a shell reports for a process Ctrl-C stopped, so that a
+#: wrapper can tell "interrupted, resume me" from "something failed, look".
+_INTERRUPTED: Final = 130
+
+
+@app.command("backfill")
+def backfill_command(
+    filer: Annotated[
+        str | None,
+        typer.Option("--filer", metavar="SLUG", help="Backfill one filer instead of all."),
+    ] = None,
+    since: Annotated[
+        datetime | None,
+        typer.Option(
+            "--since", formats=["%Y-%m-%d"], help="Only filings filed on or after this date."
+        ),
+    ] = None,
+    concurrency: Annotated[
+        int,
+        typer.Option(
+            "--concurrency",
+            metavar="N",
+            min=1,
+            max=_MAX_CONCURRENCY,
+            help="Filings in flight at once. All of them share one EDGAR rate limit.",
+        ),
+    ] = 5,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            metavar="N",
+            min=1,
+            help="Work on at most N filings. Skipped ones do not count.",
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Also reprocess filings already loaded, from their archived documents. "
+                "Makes no EDGAR request for them."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Ingest every queued 13F, several at a time. Re-run it to resume.
+
+    Works through pending_filing, which discover-filings fills. A filing
+    already loaded is skipped without an EDGAR request; with --force it is
+    re-parsed from the raw store instead, also without one. A filing that fails
+    is reported and recorded on its queue row, and the run carries on.
+
+    Ctrl-C lets the filings in flight finish and starts no more; a second
+    Ctrl-C abandons them. Exits 1 if any filing failed or EDGAR blocked the
+    run, and 130 if it was interrupted.
+    """
+    try:
+        code = asyncio.run(
+            _backfill(
+                filer,
+                since=since.date() if since else None,
+                concurrency=concurrency,
+                limit=limit,
+                force=force,
+            )
+        )
+    except UnknownFilerError as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+    except KeyboardInterrupt:
+        typer.secho(
+            "aborted: the filings in flight were rolled back; re-run to resume",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=_INTERRUPTED) from None
+    if code:
+        raise typer.Exit(code=code)
+
+
+async def _backfill(
+    slug: str | None, *, since: date | None, concurrency: int, limit: int | None, force: bool
+) -> int:
+    """Plan from the database, work through the plan, summarise. Returns the exit code.
+
+    One engine, one raw store and one EDGAR client for the whole run, shared by
+    every worker. The client is opened even for a run that will only reprocess,
+    because opening it sends nothing; the plan is what keeps such a run off
+    the network, by giving the workers nothing to fetch.
+    """
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    structlog.contextvars.bind_contextvars(job_name="backfill_13f", run_id=uuid.uuid4().hex)
+    started = time.monotonic()
+
+    engine = create_engine(settings)
+    sessions = create_session_factory(engine)
+    run = BackfillRun(results=(), rate_limited=None)
+    try:
+        async with sessions.begin() as session:
+            plan = await plan_backfill(session, slug=slug, since=since, force=force, limit=limit)
+        _echo_plan(plan, slug=slug, since=since, concurrency=concurrency)
+
+        if plan.work:
+            async with open_raw_store(settings) as store, EdgarClient(settings) as edgar:
+                shared = _Shared(sessions=sessions, store=store, edgar=edgar)
+                with stop_on_interrupt(notify=_echo_stopping) as stop:
+                    run = await run_backfill(
+                        plan.work,
+                        process=partial(_backfill_filing, shared),
+                        on_failure=partial(record_attempt, sessions),
+                        on_result=_progress(len(plan.work)),
+                        concurrency=concurrency,
+                        stop=stop,
+                    )
+    finally:
+        await engine.dispose()
+
+    _echo_backfill_summary(plan, run, elapsed=time.monotonic() - started)
+    if run.rate_limited is not None or run.count(Outcome.FAILED):
+        return 1
+    return _INTERRUPTED if run.count(Outcome.NOT_STARTED) else 0
+
+
+@dataclass(frozen=True, slots=True)
+class _Shared:
+    """What every worker in a run shares."""
+
+    sessions: async_sessionmaker[AsyncSession]
+    store: RawStore
+    edgar: EdgarClient
+
+
+async def _backfill_filing(shared: _Shared, filing: PlannedFiling) -> FilingResult:
+    """One filing, archived before it is parsed and parsed before it is loaded.
+
+    A filing the plan has as loaded is in the work only because of ``--force``,
+    and is reprocessed: its archived documents, parsed again with the
+    ``filed_at`` its row already holds. That branch makes no EDGAR request. The
+    other is ``ingest-filing``'s, except that it never overwrites an archived
+    document — backfill does not replace what it has with what EDGAR serves
+    today, and ``ingest-filing --force`` is there for the filing that should.
+    """
+    accession = filing.accession_no
+    if filing.loaded is None:
+        submission, documents = await _fetch(shared.edgar, accession, cik=filing.cik)
+        raw_prefix = await archive_13f_documents(
+            shared.store, documents, cik=filing.cik, accession_no=accession
+        )
+        filed_at = submission.filed_at
+    else:
+        if filing.loaded.raw_key is None:
+            raise CommandError(
+                f"{accession} was loaded before its documents were archived, so there is "
+                f"nothing to reprocess: ingest-filing {accession} --force fetches them again"
+            )
+        raw_prefix = filing.loaded.raw_key
+        documents = await read_13f_documents(
+            shared.store, raw_prefix, directory_url=_directory_url(filing)
+        )
+        filed_at = filing.loaded.filed_at
+
+    parsed = _parse(documents, filed_at=filed_at)
+    async with shared.sessions.begin() as session:
+        result = await _write(
+            session,
+            accession=accession,
+            filed_at=filed_at,
+            parsed=parsed,
+            raw_prefix=raw_prefix,
+            source_url=documents.primary_doc_url,
+        )
+    _log_ingested(parsed, result)
+
+    return FilingResult(
+        filing=filing,
+        outcome=(
+            Outcome.SUSPECT if parsed.normalised.parse_status is ParseStatus.SUSPECT else Outcome.OK
+        ),
+        period=parsed.cover.period_of_report,
+        rows=_positions(parsed.table, result),
+        deferred=result.holdings_deferred,
+    )
+
+
+def _directory_url(filing: PlannedFiling) -> str:
+    """The EDGAR directory an archived filing was fetched from.
+
+    Taken from the URL recorded when it was, rather than rebuilt from today's
+    archive convention, which is the reason ``filing.source_url`` is kept.
+    """
+    if filing.loaded is not None and filing.loaded.source_url is not None:
+        return filing.loaded.source_url.rsplit("/", 1)[0]
+    return EdgarClient.filing_index_url(filing.cik, filing.accession_no).rsplit("/", 1)[0]
+
+
+def _echo_plan(
+    plan: BackfillPlan, *, slug: str | None, since: date | None, concurrency: int
+) -> None:
+    scope = (slug or "every filer") + (f", filed since {since.isoformat()}" if since else "")
+    total = len(plan.work) + len(plan.skipped) + plan.held_back
+    parts = [f"{total} filings"]
+    if plan.skipped:
+        parts.append(f"{len(plan.skipped)} already loaded")
+    if plan.to_reprocess:
+        parts.append(f"{plan.to_reprocess} to reprocess from the raw store")
+    if plan.to_ingest:
+        parts.append(f"{plan.to_ingest} to ingest")
+    if plan.held_back:
+        parts.append(f"{plan.held_back} held back by --limit")
+    typer.echo(
+        f"backfill  {scope}: {', '.join(parts)}"
+        + (f" · {concurrency} at a time" if plan.work else "")
+    )
+    if not total:
+        _line("hint", "nothing is queued or loaded; discover-filings finds the work")
+
+
+def _progress(total: int) -> Callable[[FilingResult], None]:
+    """A printer for ``[347/2103] berkshire-hathaway 2022Q3 · 41 rows · ok``.
+
+    Numbered in the order filings finish, which with several in flight is not
+    quite the order they started, so the count always reads as how far along
+    the run is.
+    """
+    finished = 0
+
+    def echo(result: FilingResult) -> None:
+        nonlocal finished
+        finished += 1
+        typer.echo(f"[{finished}/{total}] {_describe(result)}")
+
+    return echo
+
+
+def _describe(result: FilingResult) -> str:
+    """One filing's line. A failure names its accession number, which is what
+    ``ingest-filing`` and every log line about it are keyed on."""
+    if result.outcome is Outcome.FAILED:
+        return f"{_which(result)} · FAILED · {result.filing.accession_no} · {result.error}"
+    rows = f"{result.rows} rows deferred" if result.deferred else f"{result.rows} rows"
+    return f"{_which(result)} · {rows} · {result.outcome.value}"
+
+
+def _which(result: FilingResult) -> str:
+    """``berkshire-hathaway 2022Q3``: the filer and quarter, which is how a person
+    thinks of a filing, where the accession number is how everything else does."""
+    quarter = _quarter(result.period) if result.period is not None else "—"
+    return f"{result.filing.label} {quarter}"
+
+
+def _echo_stopping() -> None:
+    typer.secho(
+        "stopping: finishing the filings in flight and starting no more; "
+        "Ctrl-C again to abandon them",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
+
+
+def _echo_backfill_summary(plan: BackfillPlan, run: BackfillRun, *, elapsed: float) -> None:
+    """The five numbers the run comes down to, then whatever needs a person."""
+    not_started = run.count(Outcome.NOT_STARTED)
+    counts = [
+        f"succeeded {run.count(Outcome.OK)}",
+        f"skipped {len(plan.skipped)}",
+        f"failed {run.count(Outcome.FAILED)}",
+        f"suspect {run.count(Outcome.SUSPECT)}",
+    ]
+    if not_started:
+        counts.append(f"not started {not_started}")
+    counts.append(f"elapsed {_duration(elapsed)}")
+    typer.echo(f"backfill  {'stopped' if not_started else 'done'}: {' · '.join(counts)}")
+
+    # Repeated from the progress lines, which a run of two thousand has long
+    # since scrolled away.
+    for result in run.results:
+        if result.outcome is Outcome.FAILED:
+            _line("failed", f"{result.filing.accession_no}  {_which(result)}  {result.error}")
+    deferred = sum(1 for result in run.results if result.deferred)
+    if deferred:
+        _line(
+            "deferred",
+            f"{deferred} loaded without holdings: the CIK is not a known filer yet. "
+            "Seed it, then re-run with --force",
+        )
+    if run.rate_limited is not None:
+        _line("error", f"EDGAR blocked the run: {run.rate_limited}. Re-run once it lifts")
+    elif not_started:
+        _line("interrupted", f"{not_started} not started. Re-run to resume")
+
+
+def _duration(seconds: float) -> str:
+    """``12.4s``, ``3m12s``, ``1h04m``: as precise as a run that long deserves."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, whole_seconds = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m{whole_seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
 
 
 # --- seed-investors ----------------------------------------------------------
