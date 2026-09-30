@@ -251,6 +251,22 @@ class Filing(Base):
     and the order matters.
     """
 
+    amendment_no: Mapped[int | None] = mapped_column(SmallInteger)
+    """The cover page's ``<amendmentNo>``: which amendment to the period this is.
+
+    The filer's own count, stored as filed and **not** what decides the order in
+    which amendments apply. That is :attr:`filed_at`, in the
+    ``effective_filing`` views: a sequence number typed by a filing agent is a
+    claim about the order, and the acceptance timestamp is the order. Kept
+    because it is the number EDGAR's own index and the filer's cover letter
+    refer to ("Amendment No. 2"), and because a gap in it is the first sign
+    that an amendment in the chain has not been loaded.
+
+    No check constraint, for the reason :attr:`report_type` has none: a
+    surprising value should land in the table for someone to look at, not fail
+    the ingest of an otherwise readable filing. Null on an original filing.
+    """
+
     amendment_kind: Mapped[AmendmentKind | None] = mapped_column(
         Enum(
             AmendmentKind,

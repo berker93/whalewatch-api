@@ -1,6 +1,6 @@
 """The golden 13F fixtures: what they are, and how their snapshots are built.
 
-``tests/fixtures/13f`` holds six real filings, downloaded once and committed.
+``tests/fixtures/13f`` holds nine real filings, downloaded once and committed.
 Next to each pair of documents sits ``snapshot.json``, the parsers' output over
 exactly those bytes. :func:`snapshot` is the one function that builds one, and
 both the test suite and ``make fixtures`` call it — a snapshot the tests compare
@@ -11,7 +11,7 @@ Why snapshots rather than field assertions
 ------------------------------------------
 The hand-written fixtures in ``tests/fixtures/thirteen_f`` assert field by
 field, which is right for them: each is a document constructed to be broken in
-one specific way, and the assertion names the break. These six are the opposite
+one specific way, and the assertion names the break. These nine are the opposite
 kind of test. They are messy real documents nobody designed, and the regression
 worth catching in them is the one nobody predicted — a row that stops parsing,
 a value that gains a digit, a warning that appears. An exact comparison against
@@ -57,6 +57,21 @@ README: Final = FIXTURES / "README.md"
 #: property of the fixture set — replace either filing and the guard it exists
 #: for stops meaning anything.
 CUTOVER_PAIR: Final = ("berkshire-2022q3-thousands", "berkshire-2022q4-dollars")
+
+#: Every 13F one manager filed for one period, in the order EDGAR accepted
+#: them: an original, a restatement of it, and a new-holdings amendment after
+#: the restatement. Named for the same reason as the pair above — the
+#: amendment tests resolve the period from these, and drop any one of them and
+#: the period they resolve is not the one the manager reported.
+RESTATED_PERIOD: Final = (
+    "berkshire-2023q3-original",
+    "berkshire-2023q3-restatement",
+    "berkshire-2023q3-new-holdings",
+)
+
+#: The next period from the same manager: an original, and one new-holdings
+#: amendment adding the position its confidential treatment request withheld.
+ADDED_TO_PERIOD: Final = ("berkshire-2023q4-original", "berkshire-2023q4-new-holdings")
 
 
 @dataclass(frozen=True, slots=True)

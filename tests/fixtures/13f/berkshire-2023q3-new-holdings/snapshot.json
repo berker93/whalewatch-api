@@ -1,0 +1,27 @@
+{
+  "fixture": "berkshire-2023q3-new-holdings",
+  "accession_no": "0000950123-24-005653",
+  "cover": {
+    "cik": "0001067983",
+    "filer_name": "Berkshire Hathaway Inc",
+    "form_type": "13F-HR/A",
+    "period_of_report": "2023-09-30",
+    "signature_date": "2024-05-15",
+    "amendment_no": 2,
+    "amendment_kind": "new_holdings",
+    "report_type": "13F HOLDINGS REPORT",
+    "table_entry_total": 1,
+    "table_value_total": 1695320075,
+    "other_included_managers_count": 2,
+    "confidential_omitted": false
+  },
+  "information_table": {
+    "row_count": 1,
+    "value_total": "1695320075",
+    "warning_count": 0,
+    "rows": [
+      {"name_of_issuer": "CHUBB LIMITED", "title_of_class": "COM", "cusip": "H1467J104", "figi": null, "value": "1695320075", "shares": "8143530", "sh_prn_type": "SH", "put_call": null, "investment_discretion": "DFND", "other_managers": "4,11", "voting_sole": "8143530", "voting_shared": "0", "voting_none": "0"}
+    ],
+    "warnings": []
+  }
+}

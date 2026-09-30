@@ -25,6 +25,30 @@
       "information_table_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012323002585/20651.xml"
     },
     {
+      "slug": "berkshire-2023q3-new-holdings",
+      "cik": "0001067983",
+      "accession_no": "0000950123-24-005653",
+      "filer_name": "BERKSHIRE HATHAWAY INC",
+      "form_type": "13F-HR/A",
+      "period_of_report": "2023-09-30",
+      "filed_at": "2024-05-15T20:11:06.000+00:00",
+      "note": "Amendment No. 2 to the 2023Q3 period: NEW HOLDINGS, one row released from confidential treatment six months after the restatement. Filed after the restatement, so it adds to it rather than being covered by it.",
+      "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324005653/primary_doc.xml",
+      "information_table_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324005653/32497.xml"
+    },
+    {
+      "slug": "berkshire-2023q3-original",
+      "cik": "0001067983",
+      "accession_no": "0000950123-23-010898",
+      "filer_name": "BERKSHIRE HATHAWAY INC",
+      "form_type": "13F-HR",
+      "period_of_report": "2023-09-30",
+      "filed_at": "2023-11-14T21:05:04.000+00:00",
+      "note": "The 13F-HR that berkshire-2023q3-restatement replaces: the same 152 rows and the same total, with the Other Manager column left blank. Loaded next to its restatement it doubles the quarter to the dollar.",
+      "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012323010898/primary_doc.xml",
+      "information_table_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012323010898/27893.xml"
+    },
+    {
       "slug": "berkshire-2023q3-restatement",
       "cik": "0001067983",
       "accession_no": "0000950123-23-011029",
@@ -47,6 +71,18 @@
       "note": "13F-HR/A with amendmentType NEW HOLDINGS: one row, released when confidential treatment expired. Loading it as a restatement would delete the rest of the quarter.",
       "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324005664/primary_doc.xml",
       "information_table_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324005664/32498.xml"
+    },
+    {
+      "slug": "berkshire-2023q4-original",
+      "cik": "0001067983",
+      "accession_no": "0000950123-24-002518",
+      "filer_name": "BERKSHIRE HATHAWAY INC",
+      "form_type": "13F-HR",
+      "period_of_report": "2023-12-31",
+      "filed_at": "2024-02-14T21:02:18.000+00:00",
+      "note": "The 13F-HR that berkshire-2023q4-new-holdings adds to: 138 rows, filed with isConfidentialOmitted=true. Treating the amendment as a restatement would replace all 138 with its one.",
+      "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324002518/primary_doc.xml",
+      "information_table_url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324002518/30197.xml"
     },
     {
       "slug": "point72-2025q3-large",

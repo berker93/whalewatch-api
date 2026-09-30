@@ -109,6 +109,14 @@ class FilingRead(BaseModel):
         ),
         examples=[1],
     )
+    amendment_no: int | None = Field(
+        default=None,
+        description=(
+            "The cover page's amendment number, as the filer wrote it. Null on an "
+            "original. Amendments apply in `filed_at` order, not in this order."
+        ),
+        examples=[1],
+    )
     amendment_kind: AmendmentKind | None = Field(
         default=None,
         description="`restatement` replaces the original period; `new_holdings` adds to it.",

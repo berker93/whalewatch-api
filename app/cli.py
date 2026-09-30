@@ -1,5 +1,5 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
-backfill, recompute, refresh-views.
+audit-amendments, backfill, recompute, refresh-views.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -19,6 +19,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli seed-investors
     uv run python -m app.cli verify-investors --csv verify-investors.csv
     uv run python -m app.cli audit-overlaps --filer pershing-square
+    uv run python -m app.cli audit-amendments --filer berkshire-hathaway
 
 Exit codes
 ----------
@@ -75,6 +76,7 @@ from app.core.logging import configure_logging, get_logger
 from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
+from app.db.queries.amendments import PeriodFiling, PeriodResolution, audit_amendments
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.session import create_engine, create_session_factory, session_scope
 from app.ingestion.archive import archive_13f_documents, read_13f_documents
@@ -1387,6 +1389,74 @@ def _echo_overlap(finding: OverlapFinding) -> None:
     )
     verdict = finding.conflict or "agrees"
     typer.echo(f"  {'':<{_LABEL_WIDTH}}policy {finding.policy.value}: {verdict}")
+
+
+# --- audit-amendments --------------------------------------------------------
+
+
+@app.command("audit-amendments")
+def audit_amendments_command(
+    filer: Annotated[
+        str | None,
+        typer.Option("--filer", metavar="SLUG", help="Audit one filer instead of all of them."),
+    ] = None,
+) -> None:
+    """List every filer-period with more than one filing, and how it resolved.
+
+    For each: which filings count toward the period's holdings, which do not,
+    and why — replaced by a restatement, added by a new-holdings amendment, left
+    out as an amendment of unknown kind. Periods whose resolution deserves a
+    look before publishing are marked. Writes nothing; exits 0 whatever it finds.
+    """
+    asyncio.run(_audit_amendments(filer))
+
+
+async def _audit_amendments(slug: str | None) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    structlog.contextvars.bind_contextvars(job_name="audit-amendments")
+
+    async with session_scope(settings) as session:
+        periods = await audit_amendments(session, slug=slug)
+
+    if not periods:
+        typer.echo("audit-amendments  no filer has more than one filing for any period")
+        return
+
+    flagged = [period for period in periods if period.concerns]
+    filers = len({period.slug for period in periods})
+    typer.echo(
+        f"audit-amendments  {len(periods)} periods with more than one filing across "
+        f"{filers} filers, {len(flagged)} to look at"
+    )
+    for period in periods:
+        _echo_period(period)
+
+
+def _echo_period(period: PeriodResolution) -> None:
+    """A line for the period's outcome, one per filing in filed order, then concerns."""
+    typer.echo(
+        f"  {period.slug}  {_quarter(period.period)}  {period.resolution}: "
+        f"{period.positions} positions, ${period.value_usd:,.0f}"
+    )
+    for filing in period.filings:
+        typer.echo(
+            f"    {filing.filed_at.date().isoformat()}  {filing.accession_no}  "
+            f"{_form(filing):<28}{filing.positions:>6}  ${filing.value_usd:>19,.0f}  "
+            f"{filing.reason}"
+        )
+    for concern in period.concerns:
+        typer.secho(f"    ! {concern}", fg=typer.colors.YELLOW)
+
+
+def _form(filing: PeriodFiling) -> str:
+    """``13F-HR/A no.2 new holdings``: the form, and what an amendment claims to be."""
+    parts = [filing.form_type]
+    if filing.amendment_no is not None:
+        parts.append(f"no.{filing.amendment_no}")
+    if filing.amendment_kind is not None:
+        parts.append(filing.amendment_kind.value.replace("_", " "))
+    return " ".join(parts)
 
 
 # --- verify-investors --------------------------------------------------------

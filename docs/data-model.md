@@ -211,6 +211,7 @@ quarter           text         GENERATED STORED   -- '2024Q1', from period_of_re
 filed_at          timestamptz  not null
 value_multiplier  smallint     not null           -- 1 or 1000; see below
 amends_id         bigint       fk -> filing       -- self-ref, set on /A forms
+amendment_no      smallint                        -- cover page's amendmentNo; null on an original
 amendment_kind    amendment_kind                  -- enum; null when not an amendment
 report_type       text                            -- 13F cover page: HOLDINGS | NOTICE | COMBINATION
 parsed_at         timestamptz                     -- null = fetched but not yet parsed
@@ -266,6 +267,13 @@ EDGAR's `<amendmentType>`. It is the most consequential field on an amendment: a
 restatement replaces the period's holdings wholesale and a new-holdings
 amendment adds to them, so getting it backwards either doubles every position or
 discards the ones the original reported. Both outcomes look plausible.
+
+`amendment_no` is the filer's own sequence number, stored as filed. It does not
+decide the order amendments apply in — `filed_at` does, in `effective_filing` —
+because a number typed by a filing agent is a claim about the order and the
+acceptance timestamp is the order. It is kept because it is how everyone else
+names an amendment, and because a gap in it is how a missing amendment shows up
+(`audit-amendments` flags one).
 
 `filed_at` matters more than it looks: it is what decides whether a 13F's dollar
 values are in thousands or whole dollars. See the

@@ -1,4 +1,4 @@
-"""The golden fixture suite: six real 13Fs, parsed and compared to snapshots.
+"""The golden fixture suite: nine real 13Fs, parsed and compared to snapshots.
 
 These are documents nobody designed. The hand-written fixtures next door —
 ``tests/fixtures/thirteen_f`` — are each broken in one specific way and asserted
@@ -11,7 +11,7 @@ the diff of a snapshot is the diagnosis.
 Nothing here touches the network. The filings were downloaded once and
 committed; a unit test that fetched its own input would be testing EDGAR's
 uptime and would fail on a plane. See ``scripts/fetch_13f_fixture.py`` for how a
-seventh fixture gets added, and ``tests/fixtures_13f.py`` for the snapshot
+tenth fixture gets added, and ``tests/fixtures_13f.py`` for the snapshot
 format and why regeneration is a separate, deliberate command.
 
 **A failing snapshot test is not fixed by running ``make fixtures``.** It is
@@ -25,7 +25,16 @@ import pytest
 
 from app.db.models.enums import AmendmentKind
 from app.ingestion.normalisation import normalise_filing
-from tests.fixtures_13f import CUTOVER_PAIR, README, Fixture, by_slug, load_fixtures, snapshot
+from tests.fixtures_13f import (
+    ADDED_TO_PERIOD,
+    CUTOVER_PAIR,
+    README,
+    RESTATED_PERIOD,
+    Fixture,
+    by_slug,
+    load_fixtures,
+    snapshot,
+)
 
 FIXTURES = load_fixtures()
 SLUGS = [target.slug for target in FIXTURES]
@@ -38,7 +47,7 @@ REGENERATE = (
 
 @pytest.fixture(params=FIXTURES, ids=SLUGS)
 def filing(request: pytest.FixtureRequest) -> Fixture:
-    """Each committed filing in turn, so every test below runs over all six."""
+    """Each committed filing in turn, so every test below runs over all nine."""
     target: Fixture = request.param
     return target
 
@@ -82,7 +91,7 @@ def test_every_row_the_filer_declared_is_a_row_we_parsed(filing: Fixture) -> Non
 
     A parser that silently skips a malformed ``<infoTable>`` returns a portfolio
     that is merely smaller than the real one, and a fund that is smaller than it
-    was looks exactly like a fund that sold. All six of these filings are clean,
+    was looks exactly like a fund that sold. All nine of these filings are clean,
     so the count is exact: dropped rows would show up here as a shortfall.
     """
     cover, table = filing.parse()
@@ -158,6 +167,33 @@ def test_the_cutover_pair_is_one_manager_in_consecutive_quarters() -> None:
     assert before.filed_at.year == 2022 and after.filed_at.year == 2023
 
 
+@pytest.mark.parametrize(
+    ("slugs", "kinds"),
+    [
+        (RESTATED_PERIOD, [None, AmendmentKind.RESTATEMENT, AmendmentKind.NEW_HOLDINGS]),
+        (ADDED_TO_PERIOD, [None, AmendmentKind.NEW_HOLDINGS]),
+    ],
+    ids=["restated", "added-to"],
+)
+def test_each_amended_period_is_one_managers_whole_period_in_filing_order(
+    slugs: tuple[str, ...], kinds: list[AmendmentKind | None]
+) -> None:
+    """What the amendment integration tests resolve, asserted so it cannot lapse.
+
+    Resolution is by acceptance order within one CIK and one period. A set that
+    mixed managers or periods, or listed its filings out of order, would still
+    load and resolve — to an answer about nothing the manager reported.
+    """
+    period = [by_slug(slug) for slug in slugs]
+    covers = [target.parse()[0] for target in period]
+
+    assert len({target.cik for target in period}) == 1
+    assert len({target.period_of_report for target in period}) == 1
+    assert [target.filed_at for target in period] == sorted(target.filed_at for target in period)
+    assert [cover.amendment_kind for cover in covers] == kinds
+    assert [cover.amendment_no for cover in covers] == [None, *range(1, len(slugs))]
+
+
 # --- the fixtures stay interesting -------------------------------------------
 
 
@@ -166,8 +202,8 @@ def test_the_amendment_fixtures_cover_both_kinds() -> None:
 
     Reading one as the other is the most expensive mistake in the pipeline: a
     NEW HOLDINGS amendment carries the positions that were withheld under
-    confidential treatment, and loading its single row as a restatement deletes
-    the other 150 the quarter actually had.
+    confidential treatment, and loading its single row as a restatement replaces
+    the 138 rows the quarter's original reported.
     """
     restatement, _ = by_slug("berkshire-2023q3-restatement").parse()
     assert restatement.amendment_kind is AmendmentKind.RESTATEMENT

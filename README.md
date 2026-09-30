@@ -383,6 +383,33 @@ number of shares of each. It only sees periods that have been ingested, so run
 it after loading a filer's overlap quarters. When it disagrees with a policy,
 change `overlap` in the YAML and re-seed.
 
+### `audit-amendments [--filer SLUG]`
+
+Every `(filer, period)` with more than one 13F, each filing listed in the
+order EDGAR accepted it, with whether it counts toward the period and why.
+Whether it counts is read from the `effective_filing` view, so the totals are
+the ones the read path sums. Read-only, exit 0. Output over the Berkshire
+fixtures:
+
+```
+audit-amendments  2 periods with more than one filing across 1 filers, 0 to look at
+  berkshire-hathaway  2023Q3  restated, plus 1 addition: 46 positions, $314,952,628,264
+    2023-11-14  0000950123-23-010898  13F-HR                          45  $    313,257,308,189  replaced by 0000950123-23-011029
+    2023-11-16  0000950123-23-011029  13F-HR/A no.1 restatement       45  $    313,257,308,189  counts: the whole period
+    2024-05-15  0000950123-24-005653  13F-HR/A no.2 new holdings       1  $      1,695,320,075  counts: adds to 0000950123-23-011029
+  berkshire-hathaway  2023Q4  original, plus 1 addition: 42 positions, $351,900,674,461
+    2024-02-14  0000950123-24-002518  13F-HR                          41  $    347,358,074,461  counts: the whole period
+    2024-05-15  0000950123-24-005664  13F-HR/A no.1 new holdings       1  $      4,542,600,000  counts: adds to 0000950123-24-002518
+```
+
+A period that resolves by the rules but may still be wrong gets a `!` line:
+an amendment with no `amendmentType`, which is left out rather than guessed
+at; new-holdings amendments counting with no original or restatement loaded
+under them; two originals from one CIK; a gap in the amendment numbers, which
+usually means an amendment has not been discovered or loaded. Run it before
+publishing a backfill. Filings loaded before migration `0008` have no
+`amendment_no` until `backfill --force` reparses them from the archive.
+
 ## The API
 
 One read endpoint so far, and it is the one everything else gets debugged

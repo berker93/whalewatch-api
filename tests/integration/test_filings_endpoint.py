@@ -486,5 +486,6 @@ async def test_an_amendment_names_the_filing_it_amends(
     payload = (await client.get(f"/filings/{amendment}")).json()
 
     assert payload["form_type"] == "13F-HR/A"
+    assert payload["amendment_no"] == 1
     assert payload["amendment_kind"] == AmendmentKind.RESTATEMENT.value
     assert payload["amends_accession_no"] == ACCESSION

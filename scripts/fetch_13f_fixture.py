@@ -3,8 +3,8 @@
 Run by hand, never by a test and never by ``make fixtures``. The fixtures are
 committed documents: the suite's whole premise is that a parser change is the
 only thing that can move a snapshot, and a suite that re-downloaded its inputs
-would lose that. This script exists to *add* a seventh fixture, not to refresh
-the six that are already here.
+would lose that. This script exists to *add* a tenth fixture, not to refresh
+the nine that are already here.
 
     make fixtures-fetch a=0000950123-22-012275 cik=1067983 slug=berkshire-2022q3-thousands
 
