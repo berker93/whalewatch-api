@@ -38,6 +38,7 @@ from app.ingestion.normalisation import (
     NormalisedFiling,
     NoteKind,
     ParseNote,
+    Severity,
     normalise_filing,
     resolve_value_multiplier,
 )
@@ -410,6 +411,48 @@ def test_an_options_notional_value_is_still_checked_against_its_underlying() -> 
     assert notes_of(NoteKind.IMPLIED_PRICE, filing)[0].observed == Decimal(190_000)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [Decimal(5_000), Decimal(200_000_000_000)],
+    ids=["half-a-cent-on-the-dollar", "two-hundred-thousand-per-dollar"],
+)
+def test_a_principal_amount_is_not_judged_as_a_share_price(value: Decimal) -> None:
+    """A ``PRN`` row's quantity is face value in dollars, so ``value / shares``
+    is a price per dollar of principal — about 1 near par. Neither end of a
+    share-price range means anything against that: a defaulted convertible
+    quoted at half a cent is real, and a bond read 1000x high lands inside it.
+    Both of these would have been flagged when the guard read every row."""
+    filing = normalise_filing(
+        filed_at=AFTER_CUTOVER,
+        cover=cover(entry_total=1),
+        table=table(row(value=value, shares=Decimal(1_000_000), sh_prn_type="PRN")),
+    )
+
+    assert notes_of(NoteKind.IMPLIED_PRICE, filing) == []
+    assert filing.parse_status is ParseStatus.OK
+
+
+def test_a_note_names_the_document_row_even_after_a_dropped_one() -> None:
+    """Row 2 was dropped, so the third ``<infoTable>`` is the second row kept.
+    The note has to say 3: it is how someone finds the element in the raw XML,
+    and counting kept rows sends them to the line above the one at fault."""
+    dropped = InfoTableWarning(
+        row=2, field="value", reason="expected a number", value="N/A", cusip=None, dropped=True
+    )
+    rows = (
+        row(value=Decimal(170_000_000), shares=Decimal(1_000_000)),
+        row(cusip="82968B103", value=Decimal(5_000), shares=Decimal(1_000_000)),
+    )
+
+    filing = normalise_filing(
+        filed_at=AFTER_CUTOVER, cover=cover(entry_total=3), table=table(*rows, warnings=(dropped,))
+    )
+
+    (flagged,) = notes_of(NoteKind.IMPLIED_PRICE, filing)
+    assert (flagged.row, flagged.cusip) == (3, "82968B103")
+    assert notes_of(NoteKind.DROPPED_ROW, filing)[0].row == 2
+
+
 # --- the checksum guards -----------------------------------------------------
 
 
@@ -482,6 +525,120 @@ def test_a_cover_page_with_no_summary_totals_is_no_check_rather_than_a_failure()
 
     assert filing.parse_status is ParseStatus.OK
     assert filing.parse_notes == ()
+
+
+# --- the row guards: negative quantities and CUSIPs --------------------------
+
+
+def dropped(*, field: str, value: str | None, reason: str, row: int = 5) -> InfoTableWarning:
+    """A row the parser refused, as it reports one."""
+    return InfoTableWarning(
+        row=row, field=field, reason=reason, value=value, cusip="911312106", dropped=True
+    )
+
+
+@pytest.mark.parametrize("field", ["value", "sshPrnamt", "Sole"])
+def test_a_row_dropped_for_a_negative_quantity_makes_the_filing_suspect(
+    dollars: InformationTable, field: str
+) -> None:
+    """Even with no declared count to fall short of. 13F is long-only, so the
+    minus sign is a sign error in someone's export and the position it was on is
+    missing — on a cover page with no ``tableEntryTotal``, this is the only
+    finding that says so."""
+    negative = dropped(field=field, value="-1,200", reason="expected a non-negative number")
+
+    filing = normalise_filing(
+        filed_at=AFTER_CUTOVER,
+        cover=cover(entry_total=None),
+        table=table(*dollars.rows, warnings=(negative,)),
+    )
+
+    assert filing.parse_status is ParseStatus.SUSPECT
+    (note,) = filing.parse_notes
+    assert (note.kind, note.row, note.cusip) == (NoteKind.NEGATIVE_QUANTITY, 5, "911312106")
+    assert "'-1,200'" in note.detail
+    assert note.detail.endswith("row not loaded")
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        ("0378331000", "expected at most 9 characters"),
+        ("037833!00", "expected an alphanumeric CUSIP"),
+        (None, "is required but was missing or empty"),
+    ],
+    ids=["too-long", "not-a-cusip-character", "missing"],
+)
+def test_a_row_dropped_for_its_cusip_is_a_cusip_finding(
+    dollars: InformationTable, value: str | None, reason: str
+) -> None:
+    unreadable = dropped(field="cusip", value=value, reason=reason)
+
+    filing = normalise_filing(
+        filed_at=AFTER_CUTOVER,
+        cover=cover(entry_total=None),
+        table=table(*dollars.rows, warnings=(unreadable,)),
+    )
+
+    assert filing.parse_status is ParseStatus.SUSPECT
+    assert [note.kind for note in filing.parse_notes] == [NoteKind.CUSIP_FORMAT]
+
+
+def test_a_private_placement_cusip_is_loaded_as_filed_and_flagged() -> None:
+    """``*``, ``@`` and ``#`` are CUSIP characters, so the parser keeps the row.
+    They mark private placements, which are not Section 13(f) securities, so the
+    filing is flagged — and, flagged not rejected, the position still loads."""
+    placement = row(cusip="03783310*", value=Decimal(170_000_000), shares=Decimal(1_000_000))
+
+    filing = normalise_filing(
+        filed_at=AFTER_CUTOVER, cover=cover(entry_total=1), table=table(placement)
+    )
+
+    assert filing.parse_status is ParseStatus.SUSPECT
+    (note,) = notes_of(NoteKind.CUSIP_FORMAT, filing)
+    assert (note.row, note.cusip) == (1, "03783310*")
+    assert [holding.row.cusip for holding in filing.holdings] == ["03783310*"]
+
+
+def test_a_row_dropped_for_another_reason_is_a_warning_not_a_verdict(
+    dollars: InformationTable,
+) -> None:
+    """A value of ``N/A`` names no guard. With no declared count the filing has
+    nothing to fall short of, so it stays ``ok``; the note is kept for whoever
+    goes looking, marked as the evidence it is. (With a count, the entry-count
+    guard fires over it — see the dropped-row test below.)"""
+    unreadable = dropped(field="value", value="N/A", reason="expected a number")
+
+    filing = normalise_filing(
+        filed_at=AFTER_CUTOVER,
+        cover=cover(entry_total=None),
+        table=table(*dollars.rows, warnings=(unreadable,)),
+    )
+
+    assert filing.parse_status is ParseStatus.OK
+    (note,) = filing.parse_notes
+    assert (note.kind, note.severity) == (NoteKind.DROPPED_ROW, Severity.WARNING)
+
+
+def test_every_note_says_how_severe_it_is(thousands: InformationTable) -> None:
+    """Written into the column, so that a query — or the API's reader — can tell
+    the findings that made a filing suspect from the evidence beside them
+    without knowing which kinds are which."""
+    unreadable = dropped(field="value", value="N/A", reason="expected a number")
+
+    filing = normalise_filing(
+        filed_at=AFTER_CUTOVER,  # the units bug: one implied price under a cent
+        cover=cover(entry_total=len(thousands.rows) + 1),
+        table=table(*thousands.rows, warnings=(unreadable,)),
+    )
+
+    notes = filing.parse_notes_json
+    assert notes is not None
+    assert [(note["kind"], note["severity"]) for note in notes] == [
+        ("implied_price", "error"),
+        ("entry_count", "error"),
+        ("dropped_row", "warning"),
+    ]
 
 
 # --- suspect means flagged, not rejected -------------------------------------

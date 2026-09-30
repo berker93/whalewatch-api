@@ -17,7 +17,8 @@ as three layers rather than one is what makes a parser bug survivable.
   filing / holding / insider_transaction      normalised, one row per fact
         |
         v
-  holding_change / mv_market_flows            derived, recomputable, droppable
+  position_snapshot / holding_change /        derived, recomputable, droppable
+  mv_market_flows
 ```
 
 **The raw layer is the source of truth.** A parser bug found in Epic 3 is
@@ -285,10 +286,12 @@ the default and means fetched but not parsed; `failed` means the document could
 not be read at all and `parse_error` says why; `ok` means every guard passed.
 The one that earns the column is `suspect`: parsed, **loaded**, and believed with
 reservations, because some guard fired — a row count that disagrees with the
-cover page, a total that does not sum, or a position implying a share price no
-security has. A suspect filing is flagged rather than rejected. Withholding it
+cover page, a total that does not sum, a position implying a share price no
+security has, a negative quantity, or a CUSIP that is not nine letters and
+digits. A suspect filing is flagged rather than rejected. Deleting it
 leaves a gap that reads, to every query downstream, exactly like a manager who
-filed nothing.
+filed nothing. What waits instead is publication: `position_snapshot`, below,
+leaves out the periods a suspect filing counts toward.
 
 `parse_status` is `text` with a `CHECK` rather than a native enum, per the rule
 in `app/db/models/enums.py`: the vocabulary is ours and will grow, and
@@ -298,6 +301,24 @@ row — `WHERE parse_notes @> '[{"kind": "implied_price"}]'` — and against a t
 column that is a grep. Its `Decimal`s are stored as **strings**: a JSON number is
 an IEEE 754 double, and a column recording a suspected 1000x error is a poor
 place to round the figure a second time.
+
+It is an array of findings, one object each:
+
+```json
+[
+  {"kind": "entry_count", "severity": "error", "detail": "parsed 40 rows, cover page declares 41",
+   "observed": "40", "expected": "41"},
+  {"kind": "dropped_row", "severity": "warning", "row": 17, "cusip": "037833100",
+   "detail": "value: expected a number (got 'N/A'); row not loaded"}
+]
+```
+
+`kind` is the guard, and `severity` is what the finding means for the filing: any
+`error` makes it `suspect`, and a `warning` — today only a row the parser dropped
+for a reason no guard names — is evidence kept beside it.
+`WHERE parse_notes @> '[{"severity": "error"}]'` is every filing a guard failed
+on. Notes written before `severity` existed lack it until `backfill --force`
+re-parses them from the archive.
 
 `report_type` is on the filing, not derived at query time, because a `13F NOTICE`
 contains no holdings and a `13F COMBINATION REPORT` contains only the subset the
@@ -350,6 +371,46 @@ the column to compare against.
 principal amount, and fractional share counts appear after some corporate
 actions. Rows with `PRN` are never summed with `SH` rows — they are different
 units, and a `CHECK` will not save you from that, only the query will.
+
+### `position_snapshot`
+
+Derived (`0009_position_snapshot`). The published portfolio: one row per
+position per `(filer, period)`, summed over the filings `effective_filing` says
+count, and what the per-filer read path serves.
+
+```
+filer_id          bigint    fk -> filer, on delete cascade
+period_of_report  date      not null
+security_id       bigint    fk -> security, on delete restrict
+cusip             char(9)   not null
+put_call          text
+sshprnamt_type    text      not null
+shares            numeric(20,4)  not null
+value_usd         numeric(20,2)  not null
+weight            numeric(7,6)              -- of the period's value, options left out
+suspect           boolean   not null        -- a suspect filing counts toward the period
+computed_at       timestamptz  not null default now()
+unique (filer_id, period_of_report, cusip, put_call, sshprnamt_type) nulls not distinct
+```
+
+Rebuilt wholesale by `whalewatch recompute`, for every filer or one, inside one
+transaction. Not refreshed on ingest, because publishing is a separate step:
+load, run `check-data`, then `recompute`.
+
+**A period a suspect filing counts toward is withheld**, the whole period and
+not just that filing. The rest of it is not a smaller correct answer: an
+original without the addition that followed it is the portfolio before
+confidential treatment expired, and one CIK of two under `sum` is half the book.
+Either reads, a quarter later, as a manager who bought. Nor does a suspect
+restatement fall back to the original it replaced — that was restated because
+it was wrong. `recompute --include-suspect` publishes such periods anyway, with
+`suspect` true on every row, so what went out unchecked is never
+indistinguishable from what did not. A suspect filing that a later restatement
+replaced counts toward nothing and withholds nothing.
+
+`weight` is null on option lines, whose value is the underlying's notional, and
+option lines are left out of the total the other weights divide by — otherwise a
+hedge shrinks every real position.
 
 ### `holding_change`
 
@@ -472,9 +533,9 @@ with a real `downgrade`, like everything else in
 ## Invariants
 
 The ones worth a constraint rather than a convention. Everything marked
-**enforced** is a real constraint in `0002_core_schema` or `0003_parse_status`,
-with a test in `tests/integration/test_core_schema.py`; the rest await the tables
-they concern.
+**enforced** is a real constraint in the migration named beside it, or in
+`0002_core_schema` or `0003_parse_status` where none is named, with a test in
+`tests/integration/test_core_schema.py`; the rest await the tables they concern.
 
 - **enforced** — `holding.value_usd >= 0` and `holding.shares >= 0`. 13F is
   long-only; a negative is a parse error, not a short position.
@@ -500,3 +561,5 @@ they concern.
 - **enforced** — every `holding` row's `period_of_report` equals its `filing`'s,
   by the composite FK above rather than by a trigger, because the
   denormalisation is otherwise a lie waiting to happen.
+- **enforced** — `position_snapshot.weight` is between 0 and 1, and null on an
+  option line (`0009_position_snapshot`).

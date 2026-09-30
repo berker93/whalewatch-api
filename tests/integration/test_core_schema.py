@@ -36,6 +36,7 @@ from app.db.models import (
     ParseStatus,
     PendingFiling,
     PendingStatus,
+    PositionSnapshot,
     Security,
 )
 from app.ingestion.normalisation import normalise_filing
@@ -622,6 +623,43 @@ async def test_the_queue_refuses_a_state_nothing_writes(
     with pytest.raises(IntegrityError, match=constraint):
         async with db_session.begin_nested():
             await db_session.execute(text(f"UPDATE pending_filing SET {assignment}"))
+
+
+@pytest.mark.parametrize(
+    ("assignment", "constraint"),
+    [
+        ("weight = 1.5", "weight_is_a_fraction"),
+        ("weight = -0.1", "weight_is_a_fraction"),
+        ("put_call = 'Call'", "an_option_has_no_weight"),
+    ],
+)
+async def test_a_snapshot_weight_is_a_fraction_and_an_option_has_none(
+    db_session: AsyncSession, assignment: str, constraint: str
+) -> None:
+    """An option line's value is the notional of its underlying, so a weight on
+    one would be a share of the portfolio that the portfolio does not hold."""
+    filer = await _a_filer(db_session)
+    security = Security(cusip=APPLE, name="APPLE INC")
+    db_session.add(security)
+    await db_session.flush()
+    db_session.add(
+        PositionSnapshot(
+            filer_id=filer.id,
+            period_of_report=date(2024, 3, 31),
+            security_id=security.id,
+            cusip=APPLE,
+            sshprnamt_type="SH",
+            shares=Decimal(100),
+            value_usd=Decimal(17_000),
+            weight=Decimal("0.5"),
+            suspect=False,
+        )
+    )
+    await db_session.flush()
+
+    with pytest.raises(IntegrityError, match=constraint):
+        async with db_session.begin_nested():
+            await db_session.execute(text(f"UPDATE position_snapshot SET {assignment}"))
 
 
 async def test_the_guards_findings_land_in_a_column_that_can_be_queried(

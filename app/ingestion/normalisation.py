@@ -27,15 +27,15 @@ leaves a hole that looks exactly like a manager who filed nothing. So the guards
 mark, and the loader writes anyway — see
 :class:`~app.db.models.filing.ParseStatus`.
 
-The three guards, and what each one actually catches
-----------------------------------------------------
-**Implied price.** ``value_usd / shares`` outside $0.01-$100,000. The only guard
-that checks our arithmetic against the world rather than against the filer's own
-arithmetic, and so the only one that catches a units error the filer made
-*consistently* — a manager who kept filing in thousands after the cutover
-produces a document whose every internal total agrees with itself and whose
-every share price is off by 1000. Several did exactly that in 2023 and had to
-amend.
+The five guards, and what each one actually catches
+---------------------------------------------------
+**Implied price.** ``value_usd / shares`` outside $0.01-$100,000, on ``SH``
+rows. The only guard that checks our arithmetic against the world rather than
+against the filer's own arithmetic, and so the only one that catches a units
+error the filer made *consistently* — a manager who kept filing in thousands
+after the cutover produces a document whose every internal total agrees with
+itself and whose every share price is off by 1000. Several did exactly that in
+2023 and had to amend.
 
 **Entry count.** ``len(rows)`` against ``tableEntryTotal``. Catches a truncated
 download and a parser that skipped a malformed row, both of which produce a
@@ -47,23 +47,43 @@ Catches the same two failures when they land on a large position rather than a
 small one, and catches a value column misread in a way that preserves the row
 count.
 
-None of the three is redundant with the others, and the first is the one that
-would survive if only one could be kept.
+**Negative quantity.** A value, share count or voting figure below zero. 13F is
+long-only and ``holding`` refuses a negative, so the parser drops the row. This
+guard turns that drop into a verdict of its own rather than one line among the
+parser's warnings. The entry count usually catches the shortfall too, but only
+when the cover page declares one.
+
+**CUSIP format.** Nine letters and digits. The parser drops a row whose CUSIP it
+cannot read, and keeps one written with ``*``, ``@`` or ``#``: characters the
+CUSIP standard reserves for private placements, which are not Section 13(f)
+securities. A holding reaches its security through this string, so a wrong one
+is a position attributed to nothing, or to the wrong thing.
+
+None of the first three is redundant with the others, and the first is the one
+that would survive if only one could be kept. The last two mostly name a
+*cause*. Where the count says a filing lost a row, they say which row, and why.
+
+Every finding carries a :class:`Severity`. An ``error`` makes the filing
+``suspect``; a ``warning`` is kept for whoever investigates and is never a
+verdict on its own.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from itertools import count, islice
 from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, computed_field
 
 from app.db.models.filing import ParseStatus
 from app.ingestion.parsers.thirteen_f import (
     InformationTable,
     InfoTableRow,
+    InfoTableWarning,
     PrimaryDoc,
 )
 
@@ -118,6 +138,11 @@ MAX_NOTED_ROWS: Final = 25
 #: column holds, to the cent.
 _CENTS: Final = Decimal("0.01")
 
+#: The fields the parser reads as quantities, spelled as its warnings report
+#: them. A negative in any one of them costs the row: the voting figures are
+#: share counts too, and the parser refuses them on the same rule.
+_QUANTITY_FIELDS: Final = frozenset({"value", "sshPrnamt", "Sole", "Shared", "None"})
+
 
 def resolve_value_multiplier(filed_at: datetime) -> int:
     """What the filing's ``value`` column must be multiplied by: 1 or 1000.
@@ -145,6 +170,23 @@ def resolve_value_multiplier(filed_at: datetime) -> int:
     return 1 if filed_at >= _CUTOVER_INSTANT else 1000
 
 
+class Severity(StrEnum):
+    """What a :class:`ParseNote` means for the filing it is on.
+
+    Two levels, because the notes do two jobs. Most are verdicts: the filing
+    failed a guard. The rest are evidence. A row the parser could not read is
+    recorded so that the entry-count finding it almost always comes with can
+    name the row. Flagging a filing on evidence alone would make ``suspect``
+    mean "the parser said something", and that is how a flag gets ignored.
+    """
+
+    ERROR = "error"
+    """A guard failed. One is enough to make the filing ``suspect``."""
+
+    WARNING = "warning"
+    """Stored for whoever investigates, and never a verdict on its own."""
+
+
 class NoteKind(StrEnum):
     """Which guard produced a :class:`ParseNote`.
 
@@ -157,7 +199,23 @@ class NoteKind(StrEnum):
     IMPLIED_PRICE = "implied_price"
     ENTRY_COUNT = "entry_count"
     VALUE_TOTAL = "value_total"
+    NEGATIVE_QUANTITY = "negative_quantity"
+    CUSIP_FORMAT = "cusip_format"
     DROPPED_ROW = "dropped_row"
+    """A row the parser dropped for a reason no guard above names — a value that
+    is not a number, an ``sshPrnamtType`` that is neither ``SH`` nor ``PRN``."""
+
+    @property
+    def severity(self) -> Severity:
+        """Every guard's finding is an error; a row dropped for no named reason is a warning.
+
+        A dropped row is a lost position, but not a verdict of its own: when the
+        cover page declares a count, the entry-count guard has already fired over
+        it, and this note is how that finding names the row. The two dropped-row
+        causes that *are* verdicts, a negative quantity and an unreadable CUSIP,
+        have kinds of their own.
+        """
+        return Severity.WARNING if self is NoteKind.DROPPED_ROW else Severity.ERROR
 
 
 class ParseNote(BaseModel):
@@ -199,6 +257,20 @@ class ParseNote(BaseModel):
     range rather than a number and lives in :attr:`detail`.
     """
 
+    # mypy does not follow a decorator stacked on @property; pydantic's
+    # documented workaround.
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def severity(self) -> Severity:
+        """The kind's :attr:`NoteKind.severity`, stored with the rest of the note.
+
+        Derived, so that a note cannot disagree with its own kind. Stored, so
+        that nothing reading the column has to import this module to learn which
+        findings made the filing suspect: ``WHERE parse_notes @>
+        '[{"severity": "error"}]'`` is every filing a guard failed on.
+        """
+        return self.kind.severity
+
 
 class NormalisedHolding(BaseModel):
     """One parsed row, plus the dollar value derived from it.
@@ -235,11 +307,10 @@ class NormalisedHolding(BaseModel):
           ignore the flag.
 
         For a ``PRN`` row this is dollars per dollar of face value rather than a
-        share price — around 1 for a note near par, and comfortably inside the
-        same bounds. For an option it is the underlying's price, because the
-        value is notional and the quantity is the underlying shares. Both stay
-        in the check: a 1000x error moves them out of range exactly as it moves
-        a common-stock row out of range.
+        share price — around 1 for a note near par — which is why the guard
+        only reads ``SH`` rows: see :func:`_implied_price_notes`. For an option
+        it is the underlying's price, because the value is notional and the
+        quantity is the underlying shares, so option lines stay in the check.
         """
         if self.row.shares == 0 or self.value_usd == 0:
             return None
@@ -281,9 +352,9 @@ class NormalisedFiling(BaseModel):
     parse_notes: tuple[ParseNote, ...]
     """What the guards found, in guard order. Empty when nothing fired.
 
-    Non-empty does not imply ``SUSPECT``: a dropped row is recorded here for
-    whoever has to find it, and on a filing with no declared totals to check it
-    against there is nothing to be suspicious *of*.
+    Non-empty does not imply ``SUSPECT``; an :attr:`Severity.ERROR` does. A row
+    dropped for a reason no guard names is a warning, recorded for whoever has
+    to find it: the entry count is the verdict on the filing it came from.
     """
 
     @property
@@ -328,16 +399,20 @@ def normalise_filing(
         NormalisedHolding(row=row, value_usd=(row.value * multiplier).quantize(_CENTS))
         for row in table.rows
     )
+    placed = tuple(zip(_document_rows(table), holdings, strict=True))
 
-    price_notes = _implied_price_notes(holdings)
-    checksum_notes = _checksum_notes(cover=cover, holdings=holdings, multiplier=multiplier)
-
-    # Dropped rows are diagnostics, not a verdict. They are almost always
-    # accompanied by an entry-count finding — a row the parser could not read is
-    # a row missing from the count — and this is what turns that finding from
+    # The parser's dropped rows come last. Each is filed under the guard it
+    # failed — a negative quantity, an unreadable CUSIP — or, failing both, as
+    # a warning; either way this is what turns an entry-count finding from
     # "two rows short" into "these two rows, this CUSIP, this field".
-    notes = (*price_notes, *checksum_notes, *_dropped_row_notes(table))
-    suspect = bool(price_notes or checksum_notes)
+    notes = (
+        *_implied_price_notes(placed),
+        *_checksum_notes(cover=cover, holdings=holdings, multiplier=multiplier),
+        *_negative_quantity_notes(table),
+        *_cusip_notes(table, placed),
+        *_dropped_row_notes(table),
+    )
+    suspect = any(note.severity is Severity.ERROR for note in notes)
 
     return NormalisedFiling(
         value_multiplier=multiplier,
@@ -347,29 +422,51 @@ def normalise_filing(
     )
 
 
-def _implied_price_notes(holdings: tuple[NormalisedHolding, ...]) -> tuple[ParseNote, ...]:
-    """One note per row whose ``value_usd / shares`` is not a plausible price."""
+#: A parsed row, with the 1-based position of the ``<infoTable>`` it came from.
+_Placed = tuple[int, NormalisedHolding]
+
+
+def _document_rows(table: InformationTable) -> Iterable[int]:
+    """The document position of each parsed row, in order.
+
+    Not ``enumerate(table.rows)``. That counts the rows the parser *kept*, so
+    one dropped row shifts every row after it, and a note would send someone
+    to the ``<infoTable>`` before the one it is about. The parser reads every
+    element in order and either keeps it or reports it dropped, so the kept
+    rows occupy exactly the positions the dropped ones do not.
+    """
+    dropped = {warning.row for warning in table.warnings if warning.dropped}
+    kept = (position for position in count(1) if position not in dropped)
+    return islice(kept, len(table.rows))
+
+
+def _implied_price_notes(placed: tuple[_Placed, ...]) -> tuple[ParseNote, ...]:
+    """One note per ``SH`` row whose ``value_usd / shares`` is not a plausible price.
+
+    ``SH`` only, because a share-price range can only judge a share. A ``PRN``
+    row's quantity is a face value in dollars, so its ratio is a price per
+    dollar of principal: around 1 for a bond near par. A bond written up 1000x
+    by mistake lands at $1,000 and passes, and a defaulted one quoted at half a
+    cent fails. Neither result tells us anything.
+    """
     notes = [
         ParseNote(
             kind=NoteKind.IMPLIED_PRICE,
-            # No "a share": on a PRN row the quantity is a face value in
-            # dollars, so this ratio is a price per dollar of principal, and
-            # calling it a share price in the note would send whoever reads it
-            # looking for a stock that does not exist.
             detail=(
                 f"{holding.row.cusip}: ${holding.value_usd} over {holding.row.shares} "
-                f"{holding.row.sh_prn_type} implies ${price}, outside "
+                f"shares implies ${price} a share, outside "
                 f"${MIN_IMPLIED_PRICE}-${MAX_IMPLIED_PRICE}"
             ),
             row=position,
             cusip=holding.row.cusip,
             observed=price,
         )
-        for position, holding in enumerate(holdings, start=1)
-        if (price := holding.implied_price) is not None
+        for position, holding in placed
+        if holding.row.sh_prn_type == "SH"
+        and (price := holding.implied_price) is not None
         and not (MIN_IMPLIED_PRICE <= price <= MAX_IMPLIED_PRICE)
     ]
-    return _capped(notes, kind=NoteKind.IMPLIED_PRICE, of=len(holdings))
+    return _capped(notes, kind=NoteKind.IMPLIED_PRICE, of=len(placed))
 
 
 def _checksum_notes(
@@ -419,26 +516,128 @@ def _checksum_notes(
     return tuple(notes)
 
 
+def _negative_quantity_notes(table: InformationTable) -> tuple[ParseNote, ...]:
+    """Rows the parser dropped for a value, share count or voting figure below zero.
+
+    Read off the parser's warnings because that is the only place a negative can
+    be seen. The parser refuses one, and ``holding``'s check constraints would
+    refuse the insert if it did not, so no row that reaches this module can
+    carry a minus sign. The document can. 13F is long-only, so a minus sign is a
+    sign error in someone's export, and the position it was on is missing.
+    """
+    notes = [
+        _dropped_note(warning, NoteKind.NEGATIVE_QUANTITY)
+        for warning in _dropped(table, NoteKind.NEGATIVE_QUANTITY)
+    ]
+    return _capped(notes, kind=NoteKind.NEGATIVE_QUANTITY, of=_row_count(table))
+
+
+def _cusip_notes(table: InformationTable, placed: tuple[_Placed, ...]) -> tuple[ParseNote, ...]:
+    """Every CUSIP that is not nine letters and digits, kept or dropped, in row order.
+
+    The parser keeps a row whose CUSIP uses ``*``, ``@`` or ``#``: those are
+    real CUSIP characters, reserved for private placements, so the row loads
+    as filed. Private placements are not Section 13(f) securities, though, so
+    the filing is flagged. The parser drops a row whose CUSIP it cannot read at
+    all, because it is missing, longer than nine characters, or in characters
+    no CUSIP uses.
+
+    A CUSIP the parser left-padded is not a finding. ``37833100`` is
+    ``037833100`` with its leading zero eaten by a spreadsheet, and the padding
+    cannot be wrong. Flagging it would make every filing from that agent
+    suspect over a repair nobody needs to review.
+    """
+    kept = [
+        ParseNote(
+            kind=NoteKind.CUSIP_FORMAT,
+            detail=f"{holding.row.cusip}: not nine letters and digits; loaded as filed",
+            row=position,
+            cusip=holding.row.cusip,
+        )
+        for position, holding in placed
+        if not _is_cusip(holding.row.cusip)
+    ]
+    dropped = [
+        _dropped_note(warning, NoteKind.CUSIP_FORMAT)
+        for warning in _dropped(table, NoteKind.CUSIP_FORMAT)
+    ]
+    notes = sorted([*kept, *dropped], key=lambda note: note.row or 0)
+    return _capped(notes, kind=NoteKind.CUSIP_FORMAT, of=_row_count(table))
+
+
 def _dropped_row_notes(table: InformationTable) -> tuple[ParseNote, ...]:
-    """The parser's own account of rows it could not read.
+    """Rows the parser dropped for a reason neither guard above names. Warnings.
 
     Only the dropped ones. A tolerated warning — today a malformed ``<figi>``,
     which is nulled while the position it belongs to is kept — costs no value
     and no share count, and putting it here would fill the column that exists
     for missing money with findings about enrichment.
     """
-    dropped = [warning for warning in table.warnings if warning.dropped]
     notes = [
-        ParseNote(
-            kind=NoteKind.DROPPED_ROW,
-            detail=f"{warning.field}: {warning.reason}"
-            + (f" (got {warning.value!r})" if warning.value is not None else ""),
-            row=warning.row,
-            cusip=warning.cusip,
-        )
-        for warning in dropped
+        _dropped_note(warning, NoteKind.DROPPED_ROW)
+        for warning in _dropped(table, NoteKind.DROPPED_ROW)
     ]
-    return _capped(notes, kind=NoteKind.DROPPED_ROW, of=len(table.rows) + len(dropped))
+    return _capped(notes, kind=NoteKind.DROPPED_ROW, of=_row_count(table))
+
+
+def _dropped(table: InformationTable, kind: NoteKind) -> list[InfoTableWarning]:
+    """The parser's dropped rows that belong under ``kind``. Each belongs under one."""
+    return [
+        warning
+        for warning in table.warnings
+        if warning.dropped and _dropped_row_kind(warning) is kind
+    ]
+
+
+def _dropped_row_kind(warning: InfoTableWarning) -> NoteKind:
+    """Which guard a dropped row failed, from the field and value the parser reported.
+
+    Decided on the value rather than by matching the parser's sentence, so that
+    rewording a message cannot quietly move a finding from an error to a
+    warning. A row whose CUSIP is missing fails the CUSIP guard like any other
+    unreadable one: an empty string is not nine characters either.
+    """
+    if warning.field == "cusip":
+        return NoteKind.CUSIP_FORMAT
+    if warning.field in _QUANTITY_FIELDS and _is_negative(warning.value):
+        return NoteKind.NEGATIVE_QUANTITY
+    return NoteKind.DROPPED_ROW
+
+
+def _dropped_note(warning: InfoTableWarning, kind: NoteKind) -> ParseNote:
+    """A dropped row as a note: the parser's own sentence, and the row's absence."""
+    got = f" (got {warning.value!r})" if warning.value is not None else ""
+    return ParseNote(
+        kind=kind,
+        detail=f"{warning.field}: {warning.reason}{got}; row not loaded",
+        row=warning.row,
+        cusip=warning.cusip,
+    )
+
+
+def _is_negative(text: str | None) -> bool:
+    """Whether a quantity the parser refused was a number below zero.
+
+    Tolerates thousands separators, as the parser's own read does. A value that
+    is not a finite number at all was refused for that instead.
+    """
+    if text is None:
+        return False
+    try:
+        number = Decimal(text.replace(",", ""))
+    except InvalidOperation:
+        return False
+    return number.is_finite() and number < 0
+
+
+def _is_cusip(value: str) -> bool:
+    """Nine ASCII letters and digits. ``str.isalnum`` alone would pass ``É``."""
+    return len(value) == 9 and value.isascii() and value.isalnum()
+
+
+def _row_count(table: InformationTable) -> int:
+    """``<infoTable>`` elements in the document: the rows kept and the ones dropped."""
+    return len(table.rows) + sum(warning.dropped for warning in table.warnings)
 
 
 def _capped(notes: list[ParseNote], *, kind: NoteKind, of: int) -> tuple[ParseNote, ...]:

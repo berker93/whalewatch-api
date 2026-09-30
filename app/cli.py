@@ -1,5 +1,5 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
-audit-amendments, backfill, recompute, refresh-views.
+audit-amendments, check-data, recompute, backfill, refresh-views.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -20,6 +20,8 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli verify-investors --csv verify-investors.csv
     uv run python -m app.cli audit-overlaps --filer pershing-square
     uv run python -m app.cli audit-amendments --filer berkshire-hathaway
+    uv run python -m app.cli check-data
+    uv run python -m app.cli recompute --filer berkshire-hathaway
 
 Exit codes
 ----------
@@ -30,6 +32,9 @@ finished. Non-zero for everything else: a filing that could not be found,
 fetched, parsed or written. That is the contract the shell loop around this
 command depends on, and it is why the failure paths below all funnel through
 :class:`CommandError` rather than tracebacks.
+
+``check-data`` is the exception, because finding something is its job: 1 means
+it ran and found something to look at, and 2 means it could not run as asked.
 
 Logs to stderr, summary to stdout
 ---------------------------------
@@ -77,8 +82,10 @@ from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
 from app.db.queries.amendments import PeriodFiling, PeriodResolution, audit_amendments
+from app.db.queries.checks import DataCheckReport, check_data
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.session import create_engine, create_session_factory, session_scope
+from app.derived.position_snapshot import SnapshotRebuild, recompute_position_snapshot
 from app.ingestion.archive import archive_13f_documents, read_13f_documents
 from app.ingestion.backfill import (
     BackfillPlan,
@@ -124,7 +131,7 @@ from app.ingestion.investors import (
     seed_investors,
 )
 from app.ingestion.loaders import LoadResult, load_filing
-from app.ingestion.normalisation import NormalisedFiling, normalise_filing
+from app.ingestion.normalisation import NormalisedFiling, NoteKind, normalise_filing
 from app.ingestion.parsers.errors import FilingParseError
 from app.ingestion.parsers.thirteen_f import (
     InformationTable,
@@ -151,6 +158,9 @@ _LABEL_WIDTH: Final = 12
 #: are wrong has one note per position, and three thousand lines of them is not
 #: a summary. ``filing.parse_notes`` has all of them.
 _MAX_ECHOED_WARNINGS: Final = 10
+
+#: Wide enough for every guard's name, so the details line up in one column.
+_NOTE_KIND_WIDTH: Final = max(len(kind) for kind in NoteKind)
 
 
 class CommandError(Exception):
@@ -682,9 +692,12 @@ def _warning_lines(report: _Report) -> list[str]:
     deliberately kept out of the column that exists for missing money. It still
     belongs in front of whoever is watching this run, which is here.
     """
-    lines = [f"{note.kind.value:<14} {note.detail}" for note in report.normalised.parse_notes]
+    lines = [
+        f"{note.kind.value:<{_NOTE_KIND_WIDTH}} {note.detail}"
+        for note in report.normalised.parse_notes
+    ]
     lines += [
-        f"{'tolerated':<14} row {warning.row} {warning.field}: {warning.reason}"
+        f"{'tolerated':<{_NOTE_KIND_WIDTH}} row {warning.row} {warning.field}: {warning.reason}"
         for warning in report.table.warnings
         if not warning.dropped
     ]
@@ -1457,6 +1470,228 @@ def _form(filing: PeriodFiling) -> str:
     if filing.amendment_kind is not None:
         parts.append(filing.amendment_kind.value.replace("_", " "))
     return " ".join(parts)
+
+
+# --- check-data --------------------------------------------------------------
+
+#: check-data's exit code when the checks ran and found something. Not 1 for
+#: everything: a job that gates a publish on this command has to tell "someone
+#: should look at the data" from "the command never looked", and Typer already
+#: exits 2 on a bad option.
+_FOUND_SOMETHING: Final = 1
+_USAGE_ERROR: Final = 2
+
+
+@app.command("check-data")
+def check_data_command(
+    filer: Annotated[
+        str | None,
+        typer.Option("--filer", metavar="SLUG", help="Check one filer instead of all of them."),
+    ] = None,
+    include_suspect: Annotated[
+        bool,
+        typer.Option(
+            "--include-suspect",
+            help="Also check suspect periods' positions, as recompute --include-suspect "
+            "would publish them.",
+        ),
+    ] = False,
+) -> None:
+    """Check the loaded filings against each other before publishing them.
+
+    Lists periods withheld from position_snapshot because a suspect filing
+    counts toward them, periods whose top position is over 90% of the
+    portfolio, positions whose share count grew more than 10,000% in a quarter,
+    and quarters with no 13F between a filer's first and last. Most of these
+    fire legitimately — a big enough stock split is a 10,000% jump until you
+    look at the price — and each is there to be looked at. Writes nothing.
+    Exits 1 if anything was found, 2 if --filer names no filer.
+    """
+    try:
+        report = asyncio.run(_check_data(filer, include_suspect=include_suspect))
+    except UnknownFilerError as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=_USAGE_ERROR) from failure
+    if not report.clean:
+        raise typer.Exit(code=_FOUND_SOMETHING)
+
+
+async def _check_data(slug: str | None, *, include_suspect: bool) -> DataCheckReport:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    structlog.contextvars.bind_contextvars(job_name="check-data")
+
+    async with session_scope(settings) as session:
+        filer_id = await _filer_id(session, slug)
+        report = await check_data(session, filer_id=filer_id, include_suspect=include_suspect)
+
+    _echo_check_data(report, scope=slug or "every filer")
+    return report
+
+
+async def _filer_id(session: AsyncSession, slug: str | None) -> int | None:
+    """The filer ``--filer`` names, or ``None`` for every filer.
+
+    :raises UnknownFilerError: No filer has the slug. Raised, not treated as a
+        filer with nothing loaded: for a command whose clean result means "safe
+        to publish", a typo would otherwise pass every check.
+    """
+    if slug is None:
+        return None
+    (filer_id,) = await tracked_filer_ids(session, slug=slug)
+    return filer_id
+
+
+def _echo_check_data(report: DataCheckReport, *, scope: str) -> None:
+    """A headline with every count, then each check's findings, in the order they ran."""
+    counts = [
+        _count(len(report.suspect_periods), "suspect period"),
+        _count(len(report.concentrated), "concentrated period"),
+        _count(len(report.jumps), "position jump"),
+        _count(len(report.gaps), "filing gap"),
+    ]
+    if report.clean:
+        typer.echo(f"check-data  {scope}: nothing to look at — {', '.join(counts)}")
+        return
+    typer.echo(f"check-data  {scope}: {_count(report.findings, 'finding')} — {', '.join(counts)}")
+
+    if report.suspect_periods:
+        published = (
+            "checked below as recompute --include-suspect would publish them"
+            if report.include_suspect
+            else "withheld from position_snapshot"
+        )
+        typer.echo(f"  suspect periods: {published}")
+        for period in report.suspect_periods:
+            for filing in period.filings:
+                typer.echo(
+                    f"    {period.slug}  {_quarter(period.period)}  {filing.accession_no}  "
+                    f"{filing.form_type}  failed {', '.join(filing.failed) or 'no recorded guard'}"
+                )
+
+    if report.concentrated:
+        typer.echo("  concentrated periods: one position over 90% of the period's value")
+        for found in report.concentrated:
+            typer.echo(
+                f"    {found.slug}  {_quarter(found.period)}  "
+                f"{_security(found.cusip, found.name)}  {found.weight:.1%} of "
+                f"${found.period_value:,.0f} across {_count(found.positions, 'position')}"
+            )
+
+    if report.jumps:
+        typer.echo("  position jumps: shares up more than 10,000% on the quarter before")
+        for jump in report.jumps:
+            instrument = " ".join(filter(None, (jump.sshprnamt_type, jump.put_call)))
+            typer.echo(
+                f"    {jump.slug}  {_quarter(jump.period)}  "
+                f"{_security(jump.cusip, jump.name)} {instrument}"
+            )
+            typer.echo(
+                f"    {'':<{_LABEL_WIDTH}}{jump.shares_before:,.0f} -> {jump.shares_after:,.0f} "
+                f"(+{jump.change:,.0%}), price {_dollars(jump.price_before)} -> "
+                f"{_dollars(jump.price_after)}"
+            )
+
+    if report.gaps:
+        typer.echo("  filing gaps: quarters with no 13F loaded")
+        for gap in report.gaps:
+            missing = (
+                gap.missing[0] if len(gap.missing) == 1 else f"{gap.missing[0]}-{gap.missing[-1]}"
+            )
+            on_file = (
+                f"{_count(gap.unloaded, 'filing')} on file did not load: run backfill"
+                if gap.unloaded
+                else "nothing on file: check EDGAR, then discover-filings"
+            )
+            typer.echo(
+                f"    {gap.slug}  {missing}  between {gap.after} and {gap.before}; {on_file}"
+            )
+
+
+def _security(cusip: str, name: str | None) -> str:
+    return f"{cusip} {name}" if name else cusip
+
+
+def _dollars(price: Decimal | None) -> str:
+    return "n/a" if price is None else f"${price:,.2f}"
+
+
+def _count(number: int, noun: str) -> str:
+    return f"{number:,} {noun}" if number == 1 else f"{number:,} {noun}s"
+
+
+# --- recompute ---------------------------------------------------------------
+
+
+@app.command("recompute")
+def recompute_command(
+    filer: Annotated[
+        str | None,
+        typer.Option("--filer", metavar="SLUG", help="Rebuild one filer's rows instead of all."),
+    ] = None,
+    include_suspect: Annotated[
+        bool,
+        typer.Option(
+            "--include-suspect",
+            help="Publish the periods a suspect filing counts toward, every row marked "
+            "suspect, instead of withholding them.",
+        ),
+    ] = False,
+) -> None:
+    """Rebuild position_snapshot, the published portfolio, from the loaded holdings.
+
+    One row per position per filer and period, summed over the filings that
+    count once amendments and overlapping CIKs are resolved. A period that a
+    suspect filing counts toward is withheld unless --include-suspect, which
+    publishes it with every row marked suspect. Run check-data first. Exits 1
+    if --filer names no filer.
+    """
+    try:
+        asyncio.run(_recompute(filer, include_suspect=include_suspect))
+    except UnknownFilerError as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+async def _recompute(slug: str | None, *, include_suspect: bool) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    structlog.contextvars.bind_contextvars(job_name="recompute")
+
+    async with session_scope(settings) as session:
+        filer_id = await _filer_id(session, slug)
+        rebuild = await recompute_position_snapshot(
+            session, filer_id=filer_id, include_suspect=include_suspect
+        )
+
+    logger.info(
+        "position_snapshot.recomputed",
+        filer=slug,
+        positions=rebuild.positions,
+        periods=rebuild.periods,
+        suspect_periods=rebuild.suspect_periods,
+        include_suspect=include_suspect,
+    )
+    _echo_rebuild(rebuild, scope=slug or "every filer")
+
+
+def _echo_rebuild(rebuild: SnapshotRebuild, *, scope: str) -> None:
+    """What was published, then what was not — or was, without a check."""
+    typer.echo(
+        f"recompute  position_snapshot for {scope}: {_count(rebuild.positions, 'position')} "
+        f"in {_count(rebuild.periods, 'period')} of {_count(rebuild.filers, 'filer')}"
+    )
+    if not rebuild.suspect_periods:
+        return
+    periods = _count(rebuild.suspect_periods, "period")
+    if rebuild.include_suspect:
+        _line("suspect", f"{periods} with a suspect filing published, every row marked suspect")
+    else:
+        _line(
+            "withheld",
+            f"{periods} with a suspect filing — check-data lists them; "
+            "--include-suspect publishes them",
+        )
 
 
 # --- verify-investors --------------------------------------------------------

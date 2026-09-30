@@ -76,11 +76,14 @@ class ParseStatus(StrEnum):
     ``suspect``
         Parsed, loaded, and *believed with reservations*. Some guard fired:
         the row count disagrees with the cover page, the values do not sum to
-        ``tableValueTotal``, or a position implies a share price no security
-        has. The holdings are in the table — a suspect filing is flagged, not
-        rejected, because withholding a portfolio that is 99% right is its own
-        kind of wrong answer — and :attr:`Filing.parse_notes` says which rows
-        provoked it.
+        ``tableValueTotal``, a position implies a share price no security has,
+        a row carried a negative quantity, or a CUSIP is not nine letters and
+        digits. The holdings are in the table — a suspect filing is flagged,
+        not rejected, because withholding a portfolio that is 99% right is its
+        own kind of wrong answer — and :attr:`Filing.parse_notes` says which
+        rows provoked it. What *is* withheld by default is the derived
+        ``position_snapshot``, which is what gets published; see
+        :mod:`app.derived.position_snapshot`.
     ``failed``
         The document could not be parsed at all. :attr:`Filing.parse_error`
         says why, and no holdings exist for this filing.
@@ -351,6 +354,12 @@ class Filing(Base):
     JSON number. Deliberate: JSON numbers are IEEE 754 doubles, and a column
     that exists to record a suspected 1000x error is a poor place to introduce
     a second rounding of the same figure.
+
+    Each note carries a ``severity``: ``error`` for a guard that failed, which
+    is what made the filing ``suspect``, and ``warning`` for evidence kept
+    beside it. Notes written before severity existed have none, and were
+    written by fewer guards; ``backfill --force`` re-parses them from the
+    archive.
 
     Null and ``[]`` are not made to mean the same thing by anything here, but
     nothing writes ``[]``: :meth:`~app.ingestion.normalisation.NormalisedFiling.parse_notes_json`

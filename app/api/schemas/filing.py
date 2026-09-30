@@ -143,8 +143,21 @@ class FilingRead(BaseModel):
     )
     parse_notes: list[dict[str, Any]] | None = Field(
         default=None,
-        description="Why a filing is `suspect`: one object per finding, with the row and CUSIP.",
-        examples=[[{"kind": "implied_price", "cusip": "037833100", "detail": "..."}]],
+        description=(
+            "Why a filing is `suspect`: one object per finding, with the row and CUSIP. "
+            "`severity` is `error` for a guard that failed, which is what makes the filing "
+            "`suspect`, or `warning` for evidence beside it."
+        ),
+        examples=[
+            [
+                {
+                    "kind": "implied_price",
+                    "severity": "error",
+                    "cusip": "037833100",
+                    "detail": "...",
+                }
+            ]
+        ],
     )
     parse_error: str | None = Field(
         default=None, description="Set only alongside `parse_status: failed`."

@@ -25,6 +25,7 @@ from app.db.models.filing import (
 )
 from app.db.models.holding import MONEY, QUANTITY, Holding
 from app.db.models.pending_filing import PENDING_STATUS_CHECK, PendingFiling, PendingStatus
+from app.db.models.position_snapshot import WEIGHT, PositionSnapshot
 from app.db.models.security import Security
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "QUANTITY",
     "QUARTER_EXPRESSION",
     "SUSPECT_HAS_NOTES_CHECK",
+    "WEIGHT",
     "AmendmentKind",
     "Base",
     "Filer",
@@ -48,5 +50,6 @@ __all__ = [
     "ParseStatus",
     "PendingFiling",
     "PendingStatus",
+    "PositionSnapshot",
     "Security",
 ]

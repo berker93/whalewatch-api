@@ -264,8 +264,9 @@ CIK is not yet a known filer, whose positions are waiting on `holding.filer_id`
 being `NOT NULL`. The second prints `DEFERRED` and tells you to re-run it once
 the filer is resolved. Likewise a `suspect` status means every guard's finding
 is printed here and stored on `filing.parse_notes`; the filing is still loaded,
-because withholding a portfolio that is 99% right leaves a hole shaped exactly
-like a manager who filed nothing.
+because deleting a portfolio that is 99% right leaves a hole shaped exactly
+like a manager who filed nothing. What waits is publishing it: see
+[`recompute`](#recompute---filer-slug---include-suspect).
 
 ### The raw archive
 
@@ -410,6 +411,61 @@ usually means an amendment has not been discovered or loaded. Run it before
 publishing a backfill. Filings loaded before migration `0008` have no
 `amendment_no` until `backfill --force` reparses them from the archive.
 
+### `check-data [--filer SLUG] [--include-suspect]`
+
+The checks that need more than one filing, run before publishing. The guards
+judge each filing against its own cover page at ingest; these judge filings
+against each other. Read-only. Output over the seven Berkshire fixtures, with
+2023Q4's cover page edited to declare one row more than its table has:
+
+```
+check-data  every filer: 2 findings — 1 suspect period, 0 concentrated periods, 0 position jumps, 1 filing gap
+  suspect periods: withheld from position_snapshot
+    berkshire-hathaway  2023Q4  0000950123-24-002518  13F-HR  failed entry_count
+  filing gaps: quarters with no 13F loaded
+    berkshire-hathaway  2023Q1-2023Q2  between 2022Q4 and 2023Q3; nothing on file: check EDGAR, then discover-filings
+```
+
+| Check | Finds |
+| --- | --- |
+| suspect periods | Every `(filer, period)` a suspect filing counts toward — exactly what `recompute` withholds. A suspect filing a later restatement replaced is not listed: nothing reads it |
+| concentrated periods | A period whose largest position is over 90% of its value, option lines left out |
+| position jumps | A position whose share count grew more than 10,000% on the calendar quarter before, like for like on `(cusip, put_call, sshprnamt_type)`. Printed with the implied price on both sides |
+| filing gaps | Quarters with no loaded 13F between a filer's first and last. A `13F-NT` fills its quarter. Says whether filings for the gap are on file and did not load (run `backfill`) or were never found (check EDGAR) |
+
+**Most of these fire legitimately, and that is the point.** The jump check
+exists for stock splits: shares multiply and the price divides, so a split
+looks exactly like a manager buying many times over until you read the price.
+Only an extreme split crosses 10,000% — 20-for-1 is +1,900% — and a share count
+read from the wrong column looks the same. A holding company does keep 95% of
+its book in one name. Each finding is there to be looked at.
+
+`--include-suspect` also checks suspect periods' positions, as `recompute
+--include-suspect` would publish them. **Exit codes.** 0 when every check comes
+back empty, 1 when anything is found, 2 when `--filer` names no filer — a typo
+that checked nothing must not read as a clean bill.
+
+### `recompute [--filer SLUG] [--include-suspect]`
+
+Rebuilds `position_snapshot`, the published portfolio: one row per position per
+`(filer, period)`, summed over the filings that count once amendments and
+overlapping CIKs are resolved, with each position's weight in its period.
+Wholesale and in one transaction, for every filer or just `--filer`'s rows. Same
+fixtures as above:
+
+```
+recompute  position_snapshot for every filer: 144 positions in 3 periods of 1 filer
+  withheld    1 period with a suspect filing — check-data lists them; --include-suspect publishes them
+```
+
+**A period a suspect filing counts toward is withheld, all of it.** Not just
+that filing: 2023Q4's addition was fine, but the original without it is the
+portfolio before confidential treatment expired, and would read next quarter as
+Berkshire buying Chubb. `--include-suspect` publishes those periods and marks
+every row `suspect`, so data published without a check never looks like data
+published with one. It is not run on ingest: publishing is load, then
+`check-data`, then `recompute`. Exit 1 only if `--filer` names no filer.
+
 ## The API
 
 One read endpoint so far, and it is the one everything else gets debugged
@@ -436,7 +492,7 @@ curl "localhost:8000/filings/0001067983-24-000011?include_options=false"
   "value_multiplier": 1,
   "parse_status": "suspect",
   "parse_notes": [
-    { "kind": "entry_count", "detail": "parsed 3 rows, cover page declares 99" }
+    { "kind": "entry_count", "severity": "error", "detail": "parsed 3 rows, cover page declares 99" }
   ],
   "holdings": [
     {
@@ -551,15 +607,18 @@ Three rules, and the middle one is the one people get backwards:
   submission. An amendment filed in 2024 for a 2019 period is in **whole
   dollars**, even though the original filing for that same period was in
   thousands — so a `period < 2023` test gets amendments exactly inverted.
-- **Verify, do not assume.** `app/ingestion/normalisation.py` runs three guards
-  over every normalised filing — the implied share price, the row count against
-  the cover page's `tableEntryTotal`, and the summed value against its
-  `tableValueTotal` — and records what fires in `filing.parse_status` and
-  `filing.parse_notes`. The price check is the one that matters most: it is the
-  only one that reaches outside the document, so it catches a filer who kept
-  using the old convention as well as a parser that did. Guards **flag, they do
-  not reject** — a suspect filing still loads, because the alternative is a hole
-  that looks exactly like a manager who filed nothing. Fixtures exist for both
+- **Verify, do not assume.** `app/ingestion/normalisation.py` runs five guards
+  over every normalised filing — the implied share price of every `SH` row, the
+  row count against the cover page's `tableEntryTotal`, the summed value
+  against its `tableValueTotal` within 1%, no negative quantities, and CUSIPs
+  that are nine letters and digits — and records what fires in
+  `filing.parse_status` and `filing.parse_notes`. The price check is the one
+  that matters most: it is the only one that reaches outside the document, so
+  it catches a filer who kept using the old convention as well as a parser that
+  did. Guards **flag, they do not reject** — a suspect filing still loads,
+  because the alternative is a hole that looks exactly like a manager who filed
+  nothing. What waits is publishing: `recompute` leaves its period out of
+  `position_snapshot`, and `check-data` lists it. Fixtures exist for both
   sides of the boundary *and* for a post-cutover amendment of a pre-cutover
   period; that third case is the one that regresses.
 

@@ -180,19 +180,33 @@ not.
 
 **3. Verify, do not assume.** The boundary above is what EDGAR's rules say; the
 filings are what you actually have. `app/ingestion/normalisation.py` applies the
-multiplier and then runs three guards over the result, writing what they find to
-`filing.parse_status` and `filing.parse_notes`:
+multiplier and then runs five guards over the result on every ingest, writing
+what they find to `filing.parse_status` and `filing.parse_notes`:
 
-- **Implied price.** `value_usd / shares` outside $0.01–$100,000. The only check
-  that reaches outside the document, and so the only one that catches a units
-  error the *filer* made consistently — several managers kept filing in thousands
-  after the cutover and had to amend, and every internal total in those documents
-  agrees with itself.
-- **Entry count.** Parsed rows against the cover page's `tableEntryTotal`.
-  Catches a truncated download and a silently skipped row, both of which produce
-  a portfolio that is merely *smaller* than the real one.
+- **Implied price.** `value_usd / shares` outside $0.01–$100,000, on `SH` rows.
+  The only check that reaches outside the document, and so the only one that
+  catches a units error the *filer* made consistently — several managers kept
+  filing in thousands after the cutover and had to amend, and every internal
+  total in those documents agrees with itself. Not on `PRN` rows, whose ratio
+  is a price per dollar of face value and means nothing against a share-price
+  range.
+- **Entry count.** Parsed rows against the cover page's `tableEntryTotal`,
+  exactly. Catches a truncated download and a silently skipped row, both of
+  which produce a portfolio that is merely *smaller* than the real one.
 - **Value total.** The summed value against `tableValueTotal`, within 1%.
   Filers round; nothing rounds by 1000.
+- **Negative quantity.** A value, share count or voting figure below zero. 13F
+  is long-only and `holding` refuses one, so the parser drops the row; this
+  makes that drop a verdict even on a cover page that declares no count.
+- **CUSIP format.** Nine letters and digits. The parser drops a row whose CUSIP
+  it cannot read and keeps one written with `*`, `@` or `#` — private-placement
+  characters, and private placements are not 13(f) securities. A CUSIP the
+  parser left-padded (`37833100`) is not a finding: the repair cannot be wrong.
+
+Each finding in `parse_notes` has a `severity`. Every guard's is `error`, and
+one `error` makes the filing `suspect`. A row the parser dropped for any other
+reason is a `warning`: evidence for the entry-count finding it almost always
+comes with, never a verdict on its own.
 
 Known limit of the price guard: dividing by 1000 in error only pushes an implied
 price under a cent for a stock trading below about $10, so an under-scaled
@@ -202,9 +216,19 @@ therefore an enrichment-step check rather than a parse-time one. `pytest
 tests/test_normalisation.py -k mega_cap` pins the blind spot so nobody assumes it
 away.
 
-**Guards flag, they do not reject.** A filing that fails all three still loads,
+**Guards flag, they do not reject.** A filing that fails every one still loads,
 marked `suspect`. It is the only disclosure that manager made for the quarter,
 and dropping it leaves a hole indistinguishable from a manager who filed nothing.
+
+What waits is *publishing*. `whalewatch recompute` builds `position_snapshot`,
+the portfolio the read path serves, and leaves out every `(filer, period)` a
+suspect filing counts toward unless it is run with `--include-suspect` — which
+marks every row it publishes that way. `whalewatch check-data` lists those
+periods, alongside the checks that need more than one filing to run: a top
+position over 90% of its period, a share count up more than 10,000% on the
+quarter before, and a quarter missing between two a filer did file. Those fire
+legitimately — a big enough stock split is a 10,000% jump until you look at the
+price — and the command exits 1 whenever one does, so that someone looks.
 
 Keep a fixture of one real filing from each side of the boundary, plus one
 post-cutover amendment of a pre-cutover period, in `tests/fixtures/`. That third
