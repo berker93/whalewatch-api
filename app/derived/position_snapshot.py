@@ -5,6 +5,27 @@ reads the same query live, so that it checks exactly what the next ``recompute``
 would publish. That shared query is the point of this module: a check run over
 a portfolio derived some other way would be checking something nobody reads.
 
+The query, in three steps
+-------------------------
+``holding`` is what was filed. ``position_snapshot`` is what is true. The
+difference between them is amendment resolution, and the query does it in
+three named CTEs:
+
+1. ``winning_filings``: for each ``(filer, period)``, the filings that count,
+   and whether any of them is suspect. Which filings count is read from
+   ``effective_filing``, where the rules live: the latest restatement alone, or
+   the original plus the new-holdings amendments filed after it, per CIK and
+   then by the filer's overlap policy. Restating those rules here would give a
+   second answer to which filings count, and the two could drift apart.
+2. ``agg``: their holdings summed per ``(filer, period, security)``, common
+   stock only, with the latest-filed filing behind each sum.
+3. The final select adds ``weight_pct`` with ``SUM(value_usd) OVER (PARTITION
+   BY filer_id, period_of_report)``, which puts each period's total on every
+   row of the period in the same pass that reads them. A self-join that does
+   the same, grouping ``agg`` again by period and joining the totals back on,
+   reads ``agg`` twice. It reads from a spooled copy when the CTE is
+   materialized, and computes ``agg`` all over again when it is not.
+
 What is withheld, and why the whole period
 ------------------------------------------
 A ``(filer, period)`` is published only when every filing that counts toward it
@@ -29,11 +50,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final
 
-from sqlalchemy import Select, case, delete, distinct, func, insert, select, tuple_
+from sqlalchemy import CTE, Select, delete, distinct, func, insert, select, tuple_
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.filing import Filing, ParseStatus
-from app.db.models.holding import MONEY, Holding
+from app.db.models.holding import Holding
 from app.db.models.position_snapshot import PositionSnapshot
 from app.db.queries.effective import EFFECTIVE_FILING
 
@@ -42,12 +64,10 @@ SNAPSHOT_COLUMNS: Final = (
     "filer_id",
     "period_of_report",
     "security_id",
-    "cusip",
-    "put_call",
-    "sshprnamt_type",
     "shares",
     "value_usd",
-    "weight",
+    "weight_pct",
+    "source_filing_id",
     "suspect",
 )
 
@@ -72,58 +92,33 @@ class SnapshotRebuild:
 def snapshot_positions(
     *, include_suspect: bool = False, filer_id: int | None = None
 ) -> Select[Any]:
-    """The rows ``position_snapshot`` holds: one per position per ``(filer, period)``.
+    """The rows ``position_snapshot`` holds: one per security per ``(filer, period)``.
 
     :param include_suspect: Keep the periods a suspect filing counts toward.
         Their rows come back with ``suspect`` true; without this they do not
         come back at all.
     :param filer_id: One filer's periods instead of every filer's.
-    :returns: A select of :data:`SNAPSHOT_COLUMNS`, unordered.
-
-    Positions are summed on ``holding``'s natural key minus the filing, over
-    the filings :data:`~app.db.queries.effective.EFFECTIVE_FILING` says count.
-    ``weight`` is a position's share of the period's value with option lines
-    left out. An option's value is the notional of the underlying, and adding
-    it to the total would shrink every real position's weight by the size of
-    the hedge.
+    :returns: A select of :data:`SNAPSHOT_COLUMNS`, unordered. ``weight_pct``
+        is unrounded here, and rounded to six places when stored.
     """
-    period = _periods(filer_id).subquery("period")
-    position = _positions(filer_id).subquery("position")
+    winning = _winning_filings(filer_id).cte("winning_filings")
+    agg = _agg(winning, include_suspect=include_suspect).cte("agg")
 
-    total = (
-        func.sum(position.c.value_usd)
-        .filter(position.c.put_call.is_(None))
-        .over(partition_by=(position.c.filer_id, position.c.period_of_report))
+    period_total = func.sum(agg.c.value_usd).over(
+        partition_by=(agg.c.filer_id, agg.c.period_of_report)
     )
-    weight = case(
-        (
-            position.c.put_call.is_(None),
-            position.c.value_usd / func.nullif(total, 0, type_=MONEY),
-        ),
-        else_=None,
+    return select(
+        agg.c.filer_id,
+        agg.c.period_of_report,
+        agg.c.security_id,
+        agg.c.shares,
+        agg.c.value_usd,
+        # Multiplied before dividing, which is exact in numeric. Null for a
+        # period worth nothing, the one period with no total to divide by.
+        (agg.c.value_usd * 100 / func.nullif(period_total, 0)).label("weight_pct"),
+        agg.c.source_filing_id,
+        agg.c.suspect,
     )
-
-    statement = select(
-        position.c.filer_id,
-        position.c.period_of_report,
-        position.c.security_id,
-        position.c.cusip,
-        position.c.put_call,
-        position.c.sshprnamt_type,
-        position.c.shares,
-        position.c.value_usd,
-        weight.label("weight"),
-        period.c.suspect,
-    ).join(
-        period,
-        (period.c.filer_id == position.c.filer_id)
-        & (period.c.period_of_report == position.c.period_of_report),
-    )
-    # A WHERE runs before the window, but it removes whole periods, and a
-    # period's total is summed within the period — so no other weight moves.
-    if not include_suspect:
-        statement = statement.where(period.c.suspect.is_(False))
-    return statement
 
 
 async def recompute_position_snapshot(
@@ -163,9 +158,11 @@ async def recompute_position_snapshot(
             ).where(*scope)
         )
     ).one()
-    period = _periods(filer_id).subquery()
+    winning = _winning_filings(filer_id).subquery()
     suspect_periods = await session.scalar(
-        select(func.count()).select_from(period).where(period.c.suspect)
+        select(func.count(distinct(tuple_(winning.c.filer_id, winning.c.period_of_report)))).where(
+            winning.c.suspect
+        )
     )
 
     return SnapshotRebuild(
@@ -177,41 +174,62 @@ async def recompute_position_snapshot(
     )
 
 
-def _periods(filer_id: int | None) -> Select[Any]:
-    """Every ``(filer, period)`` with a filing that counts, and whether one is suspect."""
+def _winning_filings(filer_id: int | None) -> Select[Any]:
+    """Each filing that counts toward its ``(filer, period)``, and whether the period is suspect.
+
+    ``suspect`` is the same on every filing of a period: true when any filing
+    that counts toward it is suspect. A window rather than a ``GROUP BY``, to
+    keep one row per filing for the holdings to join to. It is decided here,
+    before any holding is read, so a suspect filing withholds its period even
+    when none of its own lines is common stock.
+    """
     view = EFFECTIVE_FILING
     statement = (
         select(
+            view.c.filing_id,
             view.c.filer_id,
             view.c.period_of_report,
-            func.bool_or(Filing.parse_status == ParseStatus.SUSPECT.value).label("suspect"),
+            Filing.filed_at,
+            Filing.accession_no,
+            func.bool_or(Filing.parse_status == ParseStatus.SUSPECT.value)
+            .over(partition_by=(view.c.filer_id, view.c.period_of_report))
+            .label("suspect"),
         )
         .select_from(view)
         .join(Filing, Filing.id == view.c.filing_id)
-        .group_by(view.c.filer_id, view.c.period_of_report)
     )
     return statement if filer_id is None else statement.where(view.c.filer_id == filer_id)
 
 
-def _positions(filer_id: int | None) -> Select[Any]:
-    """The holdings of the filings that count, summed per position per period."""
-    view = EFFECTIVE_FILING
-    key = (
-        view.c.filer_id,
-        view.c.period_of_report,
-        Holding.security_id,
-        Holding.cusip,
-        Holding.put_call,
-        Holding.sshprnamt_type,
+def _agg(winning: CTE, *, include_suspect: bool) -> Select[Any]:
+    """The winning filings' common stock, summed per security per period.
+
+    A security held by several of the period's filings is one row: an original
+    and the amendment that added to it, or two CIKs under a ``sum`` policy.
+    ``source_filing_id`` is the latest filed of them, which is the one that last
+    changed the number. Within one filing, lines sharing a CUSIP were already
+    summed by the loader, on ``holding``'s natural key.
+    """
+    latest_filed_first = aggregate_order_by(
+        winning.c.filing_id, winning.c.filed_at.desc(), winning.c.accession_no.desc()
     )
     statement = (
         select(
-            *key,
+            winning.c.filer_id,
+            winning.c.period_of_report,
+            Holding.security_id,
             func.sum(Holding.shares).label("shares"),
             func.sum(Holding.value_usd).label("value_usd"),
+            func.array_agg(latest_filed_first)[1].label("source_filing_id"),
+            func.bool_or(winning.c.suspect).label("suspect"),
         )
-        .select_from(view)
-        .join(Holding, Holding.filing_id == view.c.filing_id)
-        .group_by(*key)
+        .select_from(winning)
+        .join(Holding, Holding.filing_id == winning.c.filing_id)
+        # Common stock. An option line's value is the notional of its
+        # underlying, and a PRN line counts principal, not shares.
+        .where(Holding.put_call.is_(None), Holding.sshprnamt_type == "SH")
+        .group_by(winning.c.filer_id, winning.c.period_of_report, Holding.security_id)
     )
-    return statement if filer_id is None else statement.where(view.c.filer_id == filer_id)
+    # A WHERE runs before the window, but it removes whole periods, and a
+    # period's total is summed within the period, so no other weight moves.
+    return statement if include_suspect else statement.where(winning.c.suspect.is_(False))

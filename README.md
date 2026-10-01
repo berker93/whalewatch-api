@@ -435,8 +435,8 @@ check-data  every filer: 2 findings — 1 suspect period, 0 concentrated periods
 | Check | Finds |
 | --- | --- |
 | suspect periods | Every `(filer, period)` a suspect filing counts toward — exactly what `recompute` withholds. A suspect filing a later restatement replaced is not listed: nothing reads it |
-| concentrated periods | A period whose largest position is over 90% of its value, option lines left out |
-| position jumps | A position whose share count grew more than 10,000% on the calendar quarter before, like for like on `(cusip, put_call, sshprnamt_type)`. Printed with the implied price on both sides |
+| concentrated periods | A period whose largest position is over 90% of its value |
+| position jumps | A security whose share count grew more than 10,000% on the calendar quarter before. Shares of stock only, as `position_snapshot` holds them. Printed with the implied price on both sides |
 | filing gaps | Quarters with no loaded 13F between a filer's first and last. A `13F-NT` fills its quarter. Says whether filings for the gap are on file and did not load (run `backfill`) or were never found (check EDGAR) |
 
 **Most of these fire legitimately, and that is the point.** The jump check
@@ -453,11 +453,12 @@ that checked nothing must not read as a clean bill.
 
 ### `recompute [--filer SLUG] [--include-suspect]`
 
-Rebuilds `position_snapshot`, the published portfolio: one row per position per
+Rebuilds `position_snapshot`, the published portfolio: one row per security per
 `(filer, period)`, summed over the filings that count once amendments and
-overlapping CIKs are resolved, with each position's weight in its period.
-Wholesale and in one transaction, for every filer or just `--filer`'s rows. Same
-fixtures as above:
+overlapping CIKs are resolved, with its `weight_pct` of the period and the
+`source_filing_id` it was read from. Common stock only: option lines and `PRN`
+principal amounts stay in `holding` and are not published. Wholesale and in one
+transaction, for every filer or just `--filer`'s rows. Same fixtures as above:
 
 ```
 recompute  position_snapshot for every filer: 144 positions in 3 periods of 1 filer
@@ -471,6 +472,9 @@ Berkshire buying Chubb. `--include-suspect` publishes those periods and marks
 every row `suspect`, so data published without a check never looks like data
 published with one. It is not run on ingest: publishing is load, then
 `check-data`, then `recompute`. Exit 1 only if `--filer` names no filer.
+
+Migration `0011` recreates the table empty, in its current shape, so run
+`recompute` once after upgrading past it.
 
 ### `runs [--job NAME] [--limit N]`
 

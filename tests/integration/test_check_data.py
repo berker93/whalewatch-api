@@ -209,7 +209,7 @@ async def test_an_addition_counting_alone_is_a_concentrated_period(
         date(2023, 9, 30),
         "H1467J104",
     )
-    assert (found.weight, found.positions) == (Decimal(1), 1)
+    assert (found.weight_pct, found.positions) == (Decimal(100), 1)
     assert found.period_value == Decimal(1_695_320_075)
 
 
@@ -525,7 +525,7 @@ def test_check_data_exits_one_and_lists_every_finding(committed: AsyncEngine) ->
         "  concentrated periods: one position over 90% of the period's value",
         "    a-fund  2024Q4  33333C303 CHARLIE CORP  100.0% of $50,000,000 across 1 position",
         "  position jumps: shares up more than 10,000% on the quarter before",
-        "    a-fund  2024Q2  11111A101 ALPHA CORP SH",
+        "    a-fund  2024Q2  11111A101 ALPHA CORP",
         "                1,000,000 -> 150,000,000 (+14,900%), price $300.00 -> $2.00",
         "  filing gaps: quarters with no 13F loaded",
         "    a-fund  2024Q3  between 2024Q2 and 2024Q4; nothing on file: check EDGAR, "

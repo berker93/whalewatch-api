@@ -374,28 +374,49 @@ units, and a `CHECK` will not save you from that, only the query will.
 
 ### `position_snapshot`
 
-Derived (`0009_position_snapshot`). The published portfolio: one row per
-position per `(filer, period)`, summed over the filings `effective_filing` says
-count, and what the per-filer read path serves.
+Derived (`0009_position_snapshot`, reshaped by
+`0011_position_snapshot_by_security`). The published portfolio: one row per
+security per `(filer, period)`, summed over the filings `effective_filing` says
+count, and what the per-filer read path serves. `holding` is what was filed;
+this is what is true, once amendments are resolved.
 
 ```
 filer_id          bigint    fk -> filer, on delete cascade
 period_of_report  date      not null
 security_id       bigint    fk -> security, on delete restrict
-cusip             char(9)   not null
-put_call          text
-sshprnamt_type    text      not null
 shares            numeric(20,4)  not null
 value_usd         numeric(20,2)  not null
-weight            numeric(7,6)              -- of the period's value, options left out
+weight_pct        numeric(9,6)              -- percent of the period's value
+source_filing_id  bigint    fk -> filing, on delete cascade, not null
 suspect           boolean   not null        -- a suspect filing counts toward the period
 computed_at       timestamptz  not null default now()
-unique (filer_id, period_of_report, cusip, put_call, sshprnamt_type) nulls not distinct
+primary key (filer_id, period_of_report, security_id)
 ```
 
 Rebuilt wholesale by `whalewatch recompute`, for every filer or one, inside one
 transaction. Not refreshed on ingest, because publishing is a separate step:
 load, run `check-data`, then `recompute`.
+
+**Common stock only.** Lines with a `put_call` and `PRN` principal amounts are
+not rows here. An option's value is the notional of its underlying and a
+principal amount is not a share count, so neither can be added to shares or be
+a share of the portfolio. Leaving them out is also what makes the security a
+key: one filing can report a CUSIP as stock, calls, puts and principal, but only
+once as stock. The key is the natural one, with no surrogate `id` beside it.
+Nothing refers to a snapshot row, and an `id` that every rebuild renumbers is no
+use as a cursor.
+
+The query that builds it is three CTEs. `winning_filings` reads which filings
+count from `effective_filing`, and whether any of them is suspect. `agg` sums
+their common stock per security. The final select adds `weight_pct` with
+`SUM(value_usd) OVER (PARTITION BY filer_id, period_of_report)`. A period's
+weights sum to 100, within rounding to six places, and are null only for a
+period whose positions are all worth nothing.
+
+`source_filing_id` is the filing a position was read from. When more than one
+of the period's filings holds the security, as with an original and the
+new-holdings amendment that added to it, or two CIKs under `sum`, it is the
+latest-filed of them, the one that last changed the number.
 
 **A period a suspect filing counts toward is withheld**, the whole period and
 not just that filing. The rest of it is not a smaller correct answer: an
@@ -407,10 +428,6 @@ it was wrong. `recompute --include-suspect` publishes such periods anyway, with
 `suspect` true on every row, so what went out unchecked is never
 indistinguishable from what did not. A suspect filing that a later restatement
 replaced counts toward nothing and withholds nothing.
-
-`weight` is null on option lines, whose value is the underlying's notional, and
-option lines are left out of the total the other weights divide by — otherwise a
-hedge shrinks every real position.
 
 ### `holding_change`
 
@@ -597,5 +614,6 @@ The ones worth a constraint rather than a convention. Everything marked
 - **enforced** — every `holding` row's `period_of_report` equals its `filing`'s,
   by the composite FK above rather than by a trigger, because the
   denormalisation is otherwise a lie waiting to happen.
-- **enforced** — `position_snapshot.weight` is between 0 and 1, and null on an
-  option line (`0009_position_snapshot`).
+- **enforced** — `position_snapshot` has one row per `(filer_id,
+  period_of_report, security_id)`, and `weight_pct` is between 0 and 100
+  (`0011_position_snapshot_by_security`).

@@ -20,7 +20,7 @@ from decimal import Decimal
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import text
+from sqlalchemy import insert, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -625,41 +625,50 @@ async def test_the_queue_refuses_a_state_nothing_writes(
             await db_session.execute(text(f"UPDATE pending_filing SET {assignment}"))
 
 
-@pytest.mark.parametrize(
-    ("assignment", "constraint"),
-    [
-        ("weight = 1.5", "weight_is_a_fraction"),
-        ("weight = -0.1", "weight_is_a_fraction"),
-        ("put_call = 'Call'", "an_option_has_no_weight"),
-    ],
-)
-async def test_a_snapshot_weight_is_a_fraction_and_an_option_has_none(
-    db_session: AsyncSession, assignment: str, constraint: str
-) -> None:
-    """An option line's value is the notional of its underlying, so a weight on
-    one would be a share of the portfolio that the portfolio does not hold."""
-    filer = await _a_filer(db_session)
+async def _a_snapshot_row(session: AsyncSession) -> dict[str, object]:
+    """One published position, inserted; its column values, to insert again."""
+    filer = await _a_filer(session)
+    filing = await _a_filing(session, filer)
     security = Security(cusip=APPLE, name="APPLE INC")
-    db_session.add(security)
-    await db_session.flush()
-    db_session.add(
-        PositionSnapshot(
-            filer_id=filer.id,
-            period_of_report=date(2024, 3, 31),
-            security_id=security.id,
-            cusip=APPLE,
-            sshprnamt_type="SH",
-            shares=Decimal(100),
-            value_usd=Decimal(17_000),
-            weight=Decimal("0.5"),
-            suspect=False,
-        )
-    )
-    await db_session.flush()
+    session.add(security)
+    await session.flush()
+    row: dict[str, object] = {
+        "filer_id": filer.id,
+        "period_of_report": date(2024, 3, 31),
+        "security_id": security.id,
+        "shares": Decimal(100),
+        "value_usd": Decimal(17_000),
+        "weight_pct": Decimal(50),
+        "source_filing_id": filing.id,
+        "suspect": False,
+    }
+    await session.execute(insert(PositionSnapshot).values(row))
+    return row
 
-    with pytest.raises(IntegrityError, match=constraint):
+
+@pytest.mark.parametrize("weight_pct", ["100.000001", "-0.000001"])
+async def test_a_snapshot_weight_is_a_percentage(db_session: AsyncSession, weight_pct: str) -> None:
+    """Over 100 is a position worth more than the portfolio it is part of,
+    which only a total that left something out can produce."""
+    await _a_snapshot_row(db_session)
+
+    with pytest.raises(IntegrityError, match="weight_pct_is_a_percentage"):
         async with db_session.begin_nested():
-            await db_session.execute(text(f"UPDATE position_snapshot SET {assignment}"))
+            await db_session.execute(
+                text("UPDATE position_snapshot SET weight_pct = :weight_pct"),
+                {"weight_pct": Decimal(weight_pct)},
+            )
+
+
+async def test_a_snapshot_holds_one_row_per_security_per_period(db_session: AsyncSession) -> None:
+    """The key is the position, not the filing it was read from. Two filings
+    holding one stock in one period are one row, summed — never two rows that
+    a reader would add up again."""
+    row = await _a_snapshot_row(db_session)
+
+    with pytest.raises(IntegrityError, match="pk_position_snapshot"):
+        async with db_session.begin_nested():
+            await db_session.execute(insert(PositionSnapshot).values(row))
 
 
 async def test_the_guards_findings_land_in_a_column_that_can_be_queried(

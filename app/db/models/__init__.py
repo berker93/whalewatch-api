@@ -32,7 +32,7 @@ from app.db.models.ingestion_run import (
     RunStatus,
 )
 from app.db.models.pending_filing import PENDING_STATUS_CHECK, PendingFiling, PendingStatus
-from app.db.models.position_snapshot import WEIGHT, PositionSnapshot
+from app.db.models.position_snapshot import WEIGHT_PCT, PositionSnapshot
 from app.db.models.security import Security
 
 __all__ = [
@@ -48,7 +48,7 @@ __all__ = [
     "QUARTER_EXPRESSION",
     "RUN_STATUS_CHECK",
     "SUSPECT_HAS_NOTES_CHECK",
-    "WEIGHT",
+    "WEIGHT_PCT",
     "AmendmentKind",
     "Base",
     "Filer",

@@ -42,10 +42,11 @@ from app.db.models.security import Security
 from app.db.queries.effective import EFFECTIVE_FILING
 from app.derived.position_snapshot import snapshot_positions
 
-#: Above this share of its period's value, one position is the period. Fires for
-#: a holding company, for a fund that reports one stake, and for a period in
-#: which most of the portfolio went missing — which is the one worth catching.
-CONCENTRATION_THRESHOLD: Final = Decimal("0.9")
+#: Above this share of its period's value, in percent, one position is the
+#: period. Fires for a holding company, for a fund that reports one stake, and
+#: for a period in which most of the portfolio went missing — which is the one
+#: worth catching.
+CONCENTRATION_THRESHOLD: Final = Decimal(90)
 
 #: A quarter-on-quarter change in shares above this — 10,000%, as a fraction —
 #: is a finding. Splits are why it exists: shares multiply and the price
@@ -89,11 +90,10 @@ class ConcentratedPeriod:
     period: date
     cusip: str
     name: str | None
-    sshprnamt_type: str
     value_usd: Decimal
-    weight: Decimal
+    weight_pct: Decimal
     period_value: Decimal
-    """The period's total, option lines left out, as the weight was computed."""
+    """The period's total, which the weight is a percentage of."""
     positions: int
 
 
@@ -106,8 +106,6 @@ class PositionJump:
     previous_period: date
     cusip: str
     name: str | None
-    sshprnamt_type: str
-    put_call: str | None
     shares_before: Decimal
     shares_after: Decimal
     value_before: Decimal
@@ -233,15 +231,15 @@ async def concentrated_periods(
     """Every ``(filer, period)`` whose largest position exceeds :data:`CONCENTRATION_THRESHOLD`.
 
     At most one position per period can, since the weights of a period sum to
-    one. Option lines carry no weight, so they are never the finding.
+    100. Option lines are not in the snapshot, so they are never the finding.
     """
     snapshot = snapshot_positions(include_suspect=include_suspect, filer_id=filer_id).subquery()
     totals = (
         select(
             snapshot.c.filer_id,
             snapshot.c.period_of_report,
-            func.sum(snapshot.c.value_usd).filter(snapshot.c.put_call.is_(None)).label("value"),
-            func.count().filter(snapshot.c.put_call.is_(None)).label("positions"),
+            func.sum(snapshot.c.value_usd).label("value"),
+            func.count().label("positions"),
         )
         .group_by(snapshot.c.filer_id, snapshot.c.period_of_report)
         .subquery()
@@ -250,11 +248,10 @@ async def concentrated_periods(
         select(
             Filer.slug,
             snapshot.c.period_of_report,
-            snapshot.c.cusip,
+            Security.cusip,
             Security.name,
-            snapshot.c.sshprnamt_type,
             snapshot.c.value_usd,
-            snapshot.c.weight,
+            snapshot.c.weight_pct,
             totals.c.value.label("period_value"),
             totals.c.positions,
         )
@@ -265,7 +262,7 @@ async def concentrated_periods(
         )
         .join(Filer, Filer.id == snapshot.c.filer_id)
         .join(Security, Security.id == snapshot.c.security_id)
-        .where(snapshot.c.weight > CONCENTRATION_THRESHOLD)
+        .where(snapshot.c.weight_pct > CONCENTRATION_THRESHOLD)
         .order_by(Filer.slug, snapshot.c.period_of_report)
     )
     return [
@@ -274,9 +271,8 @@ async def concentrated_periods(
             period=row.period_of_report,
             cusip=row.cusip,
             name=row.name,
-            sshprnamt_type=row.sshprnamt_type,
             value_usd=row.value_usd,
-            weight=row.weight,
+            weight_pct=row.weight_pct,
             period_value=row.period_value,
             positions=row.positions,
         )
@@ -292,8 +288,8 @@ async def position_jumps(
     Compared against the calendar quarter immediately before, and only when
     the filer has a position there: a new position has no percentage change,
     and a comparison across a gap is not quarter-on-quarter — the gap check
-    reports the gap. Like with like, on the natural key, so shares are never
-    compared with a principal amount, nor an option with its underlying.
+    reports the gap. Matched on the security, which in the snapshot is always
+    shares of stock: principal amounts and options are not in it to compare.
 
     Growth only. A position can fall by at most 100%, so no fall exceeds the
     threshold. A reverse split is a fall, and so is a manager selling down to a
@@ -307,10 +303,8 @@ async def position_jumps(
             Filer.slug,
             now.c.period_of_report,
             before.c.period_of_report.label("previous_period"),
-            now.c.cusip,
+            Security.cusip,
             Security.name,
-            now.c.sshprnamt_type,
-            now.c.put_call,
             before.c.shares.label("shares_before"),
             now.c.shares.label("shares_after"),
             before.c.value_usd.label("value_before"),
@@ -320,9 +314,7 @@ async def position_jumps(
         .join(
             before,
             (before.c.filer_id == now.c.filer_id)
-            & (before.c.cusip == now.c.cusip)
-            & before.c.put_call.is_not_distinct_from(now.c.put_call)
-            & (before.c.sshprnamt_type == now.c.sshprnamt_type)
+            & (before.c.security_id == now.c.security_id)
             & (
                 _quarter_index(before.c.period_of_report)
                 == _quarter_index(now.c.period_of_report) - 1
@@ -332,7 +324,7 @@ async def position_jumps(
         .join(Security, Security.id == now.c.security_id)
         .where(before.c.shares > 0)
         .where(now.c.shares - before.c.shares > before.c.shares * MAX_QUARTERLY_CHANGE)
-        .order_by(Filer.slug, now.c.period_of_report, now.c.cusip)
+        .order_by(Filer.slug, now.c.period_of_report, Security.cusip)
     )
     return [
         PositionJump(
@@ -341,8 +333,6 @@ async def position_jumps(
             previous_period=row.previous_period,
             cusip=row.cusip,
             name=row.name,
-            sshprnamt_type=row.sshprnamt_type,
-            put_call=row.put_call,
             shares_before=row.shares_before,
             shares_after=row.shares_after,
             value_before=row.value_before,

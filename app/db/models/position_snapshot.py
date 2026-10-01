@@ -1,4 +1,4 @@
-"""The published portfolio: one row per position, per filer, per period.
+"""The published portfolio: one row per security, per filer, per period.
 
 The first table in what the data model calls the derived layer — "a cache with
 a schema". One function writes it,
@@ -11,36 +11,33 @@ rebuilt from the layer above.
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import (
-    CHAR,
-    BigInteger,
-    CheckConstraint,
-    DateTime,
-    ForeignKey,
-    Numeric,
-    Text,
-    UniqueConstraint,
-    func,
-)
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Numeric, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
 from app.db.models.holding import MONEY, QUANTITY
 
-# A position's share of its period's value. Six places is a ten-thousandth of a
-# percent, which is finer than anything computed from it is ever shown at.
-WEIGHT = Numeric(7, 6)
+# A position's share of its period's value, in percent. Six places so that
+# rounding cannot move a period's sum by a hundredth of a percent until the
+# period holds 20,000 positions, which no 13F in the universe comes near.
+WEIGHT_PCT = Numeric(9, 6)
 
 
 class PositionSnapshot(Base):
-    """One position in one filer's portfolio for one period, as published.
+    """One security in one filer's portfolio for one period, as published.
 
     ``holding`` is one line of one filing; this is the position once the period
     has been resolved. Every filing that counts toward the ``(filer, period)``
     — the original or its latest restatement, the new-holdings amendments after
-    it, each CIK's under a ``sum`` overlap policy — summed on the natural key.
-    The per-filer read path serves this, so it never has to know about
-    amendments.
+    it, each CIK's under a ``sum`` overlap policy — summed per security. The
+    per-filer read path serves this, so it never has to know about amendments.
+
+    **Common stock only.** Option lines and ``PRN`` principal amounts are not
+    rows here. An option's value is the notional of the underlying and a
+    principal amount is not a count of shares, so neither can be added to a
+    share count or be a share of the portfolio. Leaving them out is also what
+    makes ``(filer, period, security)`` a key. One filing can report a CUSIP as
+    stock, calls, puts and principal, but only once as stock.
 
     **A period with a suspect filing is not here** unless the snapshot was
     rebuilt with ``--include-suspect``, and then every one of its rows says so
@@ -53,43 +50,50 @@ class PositionSnapshot(Base):
 
     __tablename__ = "position_snapshot"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-
     filer_id: Mapped[int] = mapped_column(
         BigInteger,
         # CASCADE, unlike holding's RESTRICT: this is a cache of the filer's
         # holdings, and a cache has no business keeping its subject alive.
         ForeignKey("filer.id", ondelete="CASCADE"),
+        primary_key=True,
     )
 
-    period_of_report: Mapped[date] = mapped_column()
+    period_of_report: Mapped[date] = mapped_column(primary_key=True)
 
     security_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("security.id", ondelete="RESTRICT"),
+        primary_key=True,
     )
 
-    cusip: Mapped[str] = mapped_column(CHAR(9))
-    """As the filings wrote it. The natural key is on this, as ``holding``'s is."""
-
-    put_call: Mapped[str | None] = mapped_column(Text)
-    sshprnamt_type: Mapped[str] = mapped_column(Text)
-
     shares: Mapped[Decimal] = mapped_column(QUANTITY)
-    """Summed over the period's filings. Never over ``PRN`` and ``SH`` together:
-    they are different rows, because :attr:`sshprnamt_type` is in the key."""
+    """Summed over every line of the period's filings that holds the security."""
 
     value_usd: Mapped[Decimal] = mapped_column(MONEY)
     """Whole dollars, summed like :attr:`shares`."""
 
-    weight: Mapped[Decimal | None] = mapped_column(WEIGHT)
-    """:attr:`value_usd` over the period's total, counting positions only.
+    weight_pct: Mapped[Decimal | None] = mapped_column(WEIGHT_PCT)
+    """:attr:`value_usd` as a percentage of the period's total.
 
-    Null on an option line. Its value is the notional of the underlying, not a
-    premium, so it cannot be a share of anything. For the same reason options
-    are left out of the total, so the weights of a period's other rows sum to
-    one. Null too for every row of a period whose positions are all worth
-    nothing, where there is no total to divide by.
+    A period's weights sum to 100, give or take the rounding to six places.
+    Null on every row of a period whose positions are all worth nothing, where
+    there is no total to divide by.
+    """
+
+    source_filing_id: Mapped[int] = mapped_column(
+        BigInteger,
+        # CASCADE for filer_id's reason: deleting a filing changes what the
+        # snapshot should say, and only a recompute can say it.
+        ForeignKey("filing.id", ondelete="CASCADE"),
+    )
+    """The filing this position was read from.
+
+    One filing for nearly every row. When more than one of the period's filings
+    holds the security, as with an original and the new-holdings amendment
+    that added to it, or two CIKs under a ``sum`` policy, this is the
+    latest-filed of them. That filing is the one that last changed the number,
+    so it is the one that explains a figure that no longer matches the
+    original. The rest of the period is in ``effective_filing``.
     """
 
     suspect: Mapped[bool] = mapped_column()
@@ -109,19 +113,5 @@ class PositionSnapshot(Base):
     ``now()`` is the transaction's start."""
 
     __table_args__ = (
-        # holding's natural key with the filing replaced by the period: one row
-        # per position, however many filings the period resolved to. NULLS NOT
-        # DISTINCT for the same reason as there — put_call is null on nearly
-        # every row.
-        UniqueConstraint(
-            "filer_id",
-            "period_of_report",
-            "cusip",
-            "put_call",
-            "sshprnamt_type",
-            name="uq_position_snapshot_filer_period_position",
-            postgresql_nulls_not_distinct=True,
-        ),
-        CheckConstraint("weight >= 0 AND weight <= 1", name="weight_is_a_fraction"),
-        CheckConstraint("put_call IS NULL OR weight IS NULL", name="an_option_has_no_weight"),
+        CheckConstraint("weight_pct >= 0 AND weight_pct <= 100", name="weight_pct_is_a_percentage"),
     )

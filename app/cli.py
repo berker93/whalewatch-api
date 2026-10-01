@@ -1635,17 +1635,15 @@ def _echo_check_data(report: DataCheckReport, *, scope: str) -> None:
         for found in report.concentrated:
             typer.echo(
                 f"    {found.slug}  {_quarter(found.period)}  "
-                f"{_security(found.cusip, found.name)}  {found.weight:.1%} of "
+                f"{_security(found.cusip, found.name)}  {found.weight_pct:.1f}% of "
                 f"${found.period_value:,.0f} across {_count(found.positions, 'position')}"
             )
 
     if report.jumps:
         typer.echo("  position jumps: shares up more than 10,000% on the quarter before")
         for jump in report.jumps:
-            instrument = " ".join(filter(None, (jump.sshprnamt_type, jump.put_call)))
             typer.echo(
-                f"    {jump.slug}  {_quarter(jump.period)}  "
-                f"{_security(jump.cusip, jump.name)} {instrument}"
+                f"    {jump.slug}  {_quarter(jump.period)}  {_security(jump.cusip, jump.name)}"
             )
             typer.echo(
                 f"    {'':<{_LABEL_WIDTH}}{jump.shares_before:,.0f} -> {jump.shares_after:,.0f} "
@@ -1701,11 +1699,12 @@ def recompute_command(
 ) -> None:
     """Rebuild position_snapshot, the published portfolio, from the loaded holdings.
 
-    One row per position per filer and period, summed over the filings that
-    count once amendments and overlapping CIKs are resolved. A period that a
-    suspect filing counts toward is withheld unless --include-suspect, which
-    publishes it with every row marked suspect. Run check-data first. Exits 1
-    if --filer names no filer.
+    One row per security per filer and period, summed over the filings that
+    count once amendments and overlapping CIKs are resolved, with its weight as
+    a percentage of the period. Common stock only: option lines and principal
+    amounts are left out. A period that a suspect filing counts toward is
+    withheld unless --include-suspect, which publishes it with every row marked
+    suspect. Run check-data first. Exits 1 if --filer names no filer.
     """
     try:
         asyncio.run(_recompute(filer, include_suspect=include_suspect))
