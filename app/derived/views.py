@@ -20,9 +20,10 @@ materialised (migration ``0014``):
 
 Each view's live query is here: the same aggregate, read from the tables as
 they are now. The migration's SQL is history and is written out, so the two are
-separate texts, and the ``check_*`` tests hold them to the same rows. They also
-say what an endpoint would compute without the view, and the
-:data:`MATERIALISED_VIEWS` handles are what one reads with it.
+separate texts, and the ``check_*`` tests hold them to the same rows, as
+``reconcile`` does on the real data. They also say what an endpoint would
+compute without the view, and the :data:`MATERIALISED_VIEWS` handles are what
+one reads with it.
 
 Traded dollars, not value_delta
 -------------------------------

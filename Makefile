@@ -21,7 +21,7 @@ COMPOSE := docker compose
 s ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down build ps logs shell psql cli explain verify-investors test lint fmt check fixtures fixtures-fetch migrate revision reset-db
+.PHONY: help up down build ps logs shell psql cli explain reconcile verify-investors test lint fmt check fixtures fixtures-fetch migrate revision reset-db
 
 help:  ## List the targets in this file
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -E 's/:[^#]*## /|/' | awk -F'|' '{printf "  %-9s %s\n", $$1, $$2}'
@@ -62,6 +62,14 @@ cli:  ## Run a CLI verb in the api container: make cli c="ingest-filing 00010679
 # anything on the full dataset. See docs/query-performance.md.
 explain:  ## EXPLAIN (ANALYZE, BUFFERS) the API's queries: make explain a="--only stock_holders"
 	$(COMPOSE) exec api uv run python -m scripts.explain_queries $(a)
+
+# In the container for `cli`'s reason, against the real data, which is the
+# point: the fixture in tests/integration/test_reconcile.py proves the checks
+# can tell right from wrong, and this runs them where nobody knows the answer.
+# Read-only but for its ingestion_run row. Exits 1 when an invariant fails, so
+# it can gate a publish. See app/derived/reconcile.py.
+reconcile:  ## Check the published tables add up, on the dev database: make reconcile a="--sample 20"
+	$(COMPOSE) exec api uv run python -m app.cli reconcile $(a)
 
 # On the host, unlike `cli`: this verb reads the YAML and EDGAR and never the
 # database. It makes ~120 requests to data.sec.gov, so it needs SEC_CONTACT_EMAIL

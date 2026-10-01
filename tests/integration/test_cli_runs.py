@@ -30,6 +30,7 @@ from app.cli import app
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.db.models import IngestionRun
+from app.derived.views import MATERIALISED_VIEWS
 from tests.conftest import make_settings
 
 #: Each tracked verb, the job name it records under, an invocation that runs
@@ -45,6 +46,7 @@ TRACKED: Final = {
     "check-data": ("check-data", [], "success"),
     "recompute": ("recompute", ["--all"], "success"),
     "refresh-views": ("refresh-views", [], "success"),
+    "reconcile": ("reconcile", [], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.
@@ -78,12 +80,16 @@ def clean_tables(migrated_engine: AsyncEngine) -> Iterator[None]:
 
 
 def _truncate(engine: AsyncEngine) -> None:
+    """Every table empty, and the views with them, which a truncate does not
+    reach: ``reconcile`` on an empty database finds a view still counting rows
+    an earlier module committed and truncated."""
     _execute(
         engine,
         text(
             "TRUNCATE ingestion_run, matview_refresh, pending_filing, position_snapshot, "
             "holding, filing, security, filer_cik, filer RESTART IDENTITY CASCADE"
         ),
+        *(text(f"REFRESH MATERIALIZED VIEW {view.name}") for view in MATERIALISED_VIEWS),
     )
 
 

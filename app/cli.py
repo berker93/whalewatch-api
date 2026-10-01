@@ -1,5 +1,5 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
-audit-amendments, check-data, recompute, backfill, runs, refresh-views.
+audit-amendments, check-data, recompute, backfill, runs, refresh-views, reconcile.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -26,6 +26,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli recompute --all
     uv run python -m app.cli refresh-views
     uv run python -m app.cli refresh-views --view mv_quarter_flows --no-concurrent
+    uv run python -m app.cli reconcile
     uv run python -m app.cli runs --job backfill_13f
 
 Every run is recorded
@@ -50,8 +51,9 @@ fetched, parsed or written. That is the contract the shell loop around this
 command depends on, and it is why the failure paths below all funnel through
 :class:`CommandError` rather than tracebacks.
 
-``check-data`` is the exception, because finding something is its job: 1 means
-it ran and found something to look at, and 2 means it could not run as asked.
+``check-data`` and ``reconcile`` are the exceptions, because finding something
+is their job: 1 means it ran and found something to look at, and 2 means it
+could not run as asked.
 
 Logs to stderr, summary to stdout
 ---------------------------------
@@ -106,6 +108,7 @@ from app.db.queries.runs import RunSummary, job_names, recent_runs
 from app.db.session import create_engine, create_session_factory, session_scope
 from app.derived.position_change import ChangeRebuild
 from app.derived.recompute import Recomputed, hold_recompute_lock, recompute
+from app.derived.reconcile import INVARIANTS, SAMPLE, Reconciliation, reconcile
 from app.derived.scope import Pair, Scope, filing_pairs, resolve_scope
 from app.derived.views import MATERIALISED_VIEWS, Refreshed, refresh_order, refresh_views
 from app.ingestion.archive import archive_13f_documents, read_13f_documents
@@ -2086,6 +2089,105 @@ def _echo_refreshed(refreshed: list[Refreshed], *, elapsed: float, concurrent: b
             f"  {view.name:<{width}}  {_count(view.rows, 'row'):>14}  "
             f"{_duration(view.seconds):>6}{how}"
         )
+
+
+# --- reconcile ---------------------------------------------------------------
+
+#: Wide enough for every invariant's name, so the rules after it line up.
+_INVARIANT_WIDTH: Final = max(len(invariant.name) for invariant in INVARIANTS)
+
+
+@app.command("reconcile")
+def reconcile_command(
+    include_suspect: Annotated[
+        bool,
+        typer.Option(
+            "--include-suspect",
+            help="The tables were rebuilt with recompute --include-suspect: allow periods a "
+            "suspect filing counts toward, as long as every row of one is marked suspect.",
+        ),
+    ] = False,
+    sample: Annotated[
+        int,
+        typer.Option(
+            "--sample", metavar="N", min=1, help="How many rows to show of each failing invariant."
+        ),
+    ] = SAMPLE,
+) -> None:
+    """Check that the published tables add up: against each other, the filings and the views.
+
+    Reads position_snapshot, position_change and the materialised views as
+    they are stored, and checks every invariant they must satisfy: weights that
+    sum to 100, positions that trace to a non-suspect filing, a change for every
+    position and an exit for every one sold out of, value deltas that add up to
+    each portfolio's change in value, and views that hold what their queries
+    return now. Lists each invariant that fails, with the rows that break it.
+    Writes nothing but the record of its run. Exits 1 if any invariant fails.
+    """
+    report = asyncio.run(_reconcile(include_suspect=include_suspect, sample=sample))
+    if not report.clean:
+        raise typer.Exit(code=_FOUND_SOMETHING)
+
+
+async def _reconcile(*, include_suspect: bool, sample: int) -> Reconciliation:
+    """Check and print. As for ``check-data``, a run that finds something is a
+    ``success``: finding things is the job, and the exit code says it did."""
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+
+    async with track_run(settings, "reconcile", include_suspect=include_suspect) as run:
+        async with session_scope(settings) as session:
+            # Every invariant reads the same snapshot of the database. Otherwise
+            # a rebuild that commits between two of them reads as the two
+            # tables disagreeing.
+            snapshot = {"isolation_level": "REPEATABLE READ", "postgresql_readonly": True}
+            await session.connection(execution_options=snapshot)
+            report = await reconcile(session, include_suspect=include_suspect, sample=sample)
+        run.items_seen = report.positions + report.changes
+        run.metrics["violations"] = {
+            checked.invariant.name: checked.violations for checked in report.checked
+        }
+
+    _echo_reconciliation(report)
+    return report
+
+
+def _echo_reconciliation(report: Reconciliation) -> None:
+    """A headline with the verdict, then every invariant, each failing one with its rows."""
+    total = len(report.checked)
+    verdict = (
+        f"all {total} invariants hold"
+        if report.clean
+        else f"{len(report.failed)} of {total} invariants fail"
+    )
+    published = ", published with --include-suspect" if report.include_suspect else ""
+    typer.echo(
+        f"reconcile  {_count(report.positions, 'position')} and "
+        f"{_count(report.changes, 'change')} in {_count(report.periods, 'period')}"
+        f"{published}: {verdict}"
+    )
+    for checked in report.checked:
+        invariant = checked.invariant
+        status = "ok  " if checked.holds else "FAIL"
+        typer.echo(f"  {status}  {invariant.name:<{_INVARIANT_WIDTH}}  {invariant.rule}")
+        if checked.holds:
+            continue
+        typer.echo(f"{'':8}{_count(checked.violations, 'row')} break it:")
+        for violation in checked.sample:
+            where = [
+                part
+                for part in (
+                    violation.slug,
+                    None if violation.period is None else _quarter(violation.period),
+                    violation.cusip,
+                )
+                if part is not None
+            ]
+            typer.echo(f"{'':10}{'  '.join([*where, violation.problem])}")
+            if violation.detail:
+                typer.echo(f"{'':12}{violation.detail}")
+        if checked.violations > len(checked.sample):
+            typer.echo(f"{'':10}and {checked.violations - len(checked.sample):,} more")
 
 
 # --- runs --------------------------------------------------------------------

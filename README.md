@@ -75,6 +75,7 @@ Then `make test`, and read the specs above.
 | `make psql` | psql on the dev database |
 | `make explain a="--only stock_holders"` | the API's queries, timed and under `EXPLAIN (ANALYZE, BUFFERS)` — see [Query performance](docs/query-performance.md) |
 | `make cli c="ingest-filing ..."` | run a CLI verb in the api container — see [The CLI](#the-cli) |
+| `make reconcile` | check the published tables add up, on the dev database — see [`reconcile`](#reconcile---include-suspect---sample-n) |
 | `make verify-investors` | check every investor CIK against EDGAR, on the host; needs `SEC_CONTACT_EMAIL` |
 | `make test` | the whole pytest suite |
 | `make lint` / `make fmt` | ruff check + mypy --strict / ruff format + safe fixes |
@@ -637,6 +638,54 @@ What the numbers mean, including turnover's formula and why flows count traded
 dollars rather than `value_delta`, is in
 [the data model](docs/data-model.md#materialised-views). Migration `0014`
 creates the views filled from whatever the derived tables held then.
+
+### `reconcile [--include-suspect] [--sample N]`
+
+The published tables checked after the fact: against each other, against the
+filings they came from, and against the views built on them. `check-data`
+looks at filings before they are published; this looks at what was. Read-only,
+one `REPEATABLE READ` snapshot for every check, about 7 s over the full
+backfill. `make reconcile` runs it in the container. Output with one exit
+missing:
+
+```
+reconcile  29 positions and 32 changes in 10 periods: 2 of 8 invariants fail
+  ok    weights_sum_to_100              every (filer, period)'s weights sum to 100 ± 0.01
+  ok    snapshot_traces_to_filing       every position traces to a non-suspect filing that counts toward its period
+  ok    changes_match_snapshot          every change but an exit is a snapshot row, and every snapshot row has its change
+  FAIL  changes_follow_previous_period  every change is against the filer's previous published period, exits included
+        1 row break it:
+          charlie-fund  2024Q4  22222B202  sold out of with no exit
+            1000.0000 shares, $20000.00 in 2024-06-30
+  ok    new_and_exit_rows               new rows alone have no previous shares, and exit rows hold nothing
+  FAIL  value_deltas_add_up             every (filer, period)'s value deltas sum to its change in portfolio value, exactly
+        1 row break it:
+          charlie-fund  2024Q4  value deltas do not add up to the change in portfolio value
+            deltas sum to $20000.00; the portfolio went from $40000.00 to $40000.00, a change of $0.00
+  ok    nothing_negative                no position has negative shares or value
+  ok    views_match_live                every materialised view holds what its live query returns now
+```
+
+Each invariant is a query for the rows that break it, in
+[app/derived/reconcile.py](app/derived/reconcile.py), which says what each one
+allows. Two are worth knowing about:
+
+- **Value deltas add up exactly**, not within a tolerance. Every position the
+  previous period held is a change row, held on or exited, so the sum is the
+  difference of the two totals, with nothing to round. Any difference is a
+  wrong row, and a tolerance would only let a slightly wrong `value_delta`
+  through.
+- **A position must trace to a non-suspect filing**, so a snapshot rebuilt with
+  `recompute --include-suspect` fails it on every row of a suspect period.
+  `--include-suspect` says that was intended, and then checks only that every
+  such row is marked.
+
+The same queries run in
+[tests/integration/test_reconcile.py](tests/integration/test_reconcile.py),
+over three filers and four quarters whose every derived number was worked out by
+hand, then over that fixture broken one way at a time, each breakage caught by
+its invariant on its row. **Exit codes.** 0 when every invariant holds, 1 when
+any fails; under `make`, which exits 2 for any failing command.
 
 ### `runs [--job NAME] [--limit N]`
 
