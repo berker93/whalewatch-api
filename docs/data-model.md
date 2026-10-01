@@ -431,18 +431,19 @@ replaced counts toward nothing and withholds nothing.
 
 ### `position_change`
 
-Derived (`0012_position_change`). What each filer did to each position since its
-previous period: one row per row of `position_snapshot`, rebuilt from it by
-`whalewatch recompute` in the same transaction. The snapshot is what a manager
-holds, and this is what they did. The activity view and the `/changes`
-endpoints read it.
+Derived (`0012_position_change`, exits added by `0013_position_change_exits`).
+What each filer did to each position since its previous period: one row per row
+of `position_snapshot`, plus an `exit` for each position the previous period had
+and this one does not. Rebuilt from the snapshot by `whalewatch recompute` in
+the same transaction. The snapshot is what a manager holds, and this is what
+they did. The activity view and the `/changes` endpoints read it.
 
 ```
 filer_id               bigint    fk -> filer, on delete cascade
 period_of_report       date      not null
 security_id            bigint    fk -> security, on delete restrict
-action                 text      not null, check   -- new | add | trim | hold
-shares                 numeric(20,4)  not null     -- this period's, as the snapshot has them
+action                 text      not null, check   -- new | add | trim | hold | exit
+shares                 numeric(20,4)  not null     -- this period's, as the snapshot has them; 0 on an exit
 value_usd              numeric(20,2)  not null
 weight_pct             numeric(9,6)
 prev_period_of_report  date                        -- the filer's previous published period
@@ -481,9 +482,10 @@ else. A hold's `shares_delta` is the drift, not zero, and the action is judged
 on shares alone, so a stock that doubled is still a hold, with a `value_delta`
 to show for it.
 
-**A `new` row's deltas count from zero.** So a filer's `shares_delta` summed
-over every period is what it holds, and the market-wide flow into a stock is a
-`SUM` that includes those who bought in fresh. `shares_delta_pct` is null there
+**A `new` row's deltas count from zero, and an `exit`'s down to it.** So a
+filer's `shares_delta` summed over every period is what it holds, and the
+market-wide flow into a stock is a `SUM` that includes those who bought in
+fresh and those who sold out. `shares_delta_pct` is null there
 instead, since growth from nothing has no percentage. It is `numeric(28,6)`
 because growth has no ceiling. Twenty-two integer digits hold any change
 between two `numeric(20,4)` share counts, so no position, however strange, can
@@ -493,12 +495,35 @@ overflow the column and fail the rebuild for every filer.
 period published with `--include-suspect`. That includes a `new`, which is a
 claim that the suspect filing did not list the security.
 
-Two things it does not do yet:
+**An `exit` is a position of nothing.** `shares`, `value_usd` and `weight_pct`
+are zero, and a `CHECK` holds them to it. The previous figures and
+`prev_period_of_report` are from the period the security was last held in. The
+deltas are that position, negative, with a `shares_delta_pct` of -100. Exits
+are the reason this is a table rather than a query. An exit is the *absence* of
+a row in the current period, and absence is not something you can index or
+`LAG` from. Materialising it turns "what did they sell" from an anti-join over
+two periods into a range scan.
 
-- **Exits** are DATA-3. They are the reason this is a table rather than a
-  query. An exit is the *absence* of a row in the current period, and absence
-  is not something you can index or `LAG` from. Materialising it turns "what
-  did they sell" from an anti-join over two periods into a range scan.
+So the query finds exits from the period before. For each snapshot row it takes
+the filer's next period, by `LEAD` over the [`filer_period`](#filer_period)
+view. It left joins the snapshot at that period for the same security, and
+keeps the rows where the join misses. **A missing filing is not an exit.**
+`LEAD` is null in a filer's latest period, and those rows are dropped before
+the join. Otherwise everything a filer holds in its latest quarter would be an
+exit until it filed the next one. A quarter with nothing filed, or one
+withheld, is stepped over as it is for the previous period: the exit is dated
+the next period published, and `prev_period_of_report` says when the position
+was last seen.
+
+`LEAD` shares the window that the previous period's `LAG` already sorts, so the
+next period costs nothing more. A self-join, taking the smallest later period,
+gives the same rows but pairs every period with every later one. `CROSS JOIN
+LATERAL` with `LIMIT 1` probes once per period, but through a grouped view each
+probe aggregates the whole of the next period. The anti-join is the real cost.
+Exits roughly double the rebuild.
+
+One thing it does not do yet:
+
 - **Splits.** Shares are compared as filed, so across a 4-for-1 split every
   holder shows an `add` of 300%. Adjusting for splits needs the corporate-action
   feed, which is Epic 4. Until then, `check-data` flags the extreme ones as
@@ -507,6 +532,26 @@ Two things it does not do yet:
 Recomputed, never incrementally updated. An amendment landing months later
 changes a past period and the comparison of the period after it, and an
 incremental updater would have to find and fix every row downstream.
+
+### `filer_period`
+
+View (`0013_position_change_exits`). Every `(filer, period)` published in
+`position_snapshot`, once each. Exits read it for "the filer's next period".
+
+```
+filer_id          bigint
+period_of_report  date
+suspect           boolean   -- published with a suspect filing: only after recompute --include-suspect
+```
+
+A period here is one the filer *published*, which is narrower than one it filed
+for. A period withheld for a suspect filing is not one, and nor is a quarter
+with nothing loaded, so both are stepped over rather than read as a quarter in
+which everything was sold. Neither is a period whose filings hold no common
+stock, only options or principal amounts: it has no snapshot rows, so a manager
+who sold every share has no period to exit into until it files stock again. A
+plain view, for `effective_filing`'s reasons: a `GROUP BY` over the snapshot's
+primary key is cheap, and a view cannot go stale.
 
 ### `insider` and `insider_transaction`
 
@@ -675,7 +720,8 @@ The ones worth a constraint rather than a convention. Everything marked
 - **enforced** — `position_snapshot` has one row per `(filer_id,
   period_of_report, security_id)`, and `weight_pct` is between 0 and 100
   (`0011_position_snapshot_by_security`).
-- **enforced** — `position_change.action IN ('new','add','trim','hold')`, and
-  the action is `new` exactly when `prev_shares` is null (`0012_position_change`).
-  A row whose action and previous figures disagree has every reader believing
-  one of the two.
+- **enforced** — `position_change.action IN ('new','add','trim','hold','exit')`,
+  and the action is `new` exactly when `prev_shares` is null
+  (`0012_position_change`). An `exit` has zero shares, value and weight
+  (`0013_position_change_exits`). A row whose action and figures disagree has
+  every reader believing one of the two.

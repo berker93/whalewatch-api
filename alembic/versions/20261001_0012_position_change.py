@@ -21,12 +21,16 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 
 from alembic import op
-from app.db.models.position_change import ACTION_CHECK, NEW_CHECK
+from app.db.models.position_change import NEW_CHECK
 
 revision: str = "0012"
 down_revision: str | Sequence[str] | None = "0011"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+# Written out, not imported: the model's ACTION_CHECK has since grown 'exit'
+# (0013), and this revision has to create the constraint it always did.
+ACTION_CHECK = "action IN ('new', 'add', 'trim', 'hold')"
 
 
 def upgrade() -> None:

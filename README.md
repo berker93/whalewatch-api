@@ -463,14 +463,17 @@ Then `position_change`, from the snapshot just built: each of those rows against
 the filer's previous published period, as `new`, `add`, `trim` or `hold`, with
 the previous shares, value and weight and the deltas. A change in shares within
 ±0.01% is a `hold`, so the few shares a count drifts by between quarters do not
-read as trading. Exits are not rows yet.
+read as trading. Each position the previous period had and this one does not is
+an `exit`, a row of zero shares whose deltas are the whole previous position. A
+filer's latest period has no exits until it files the next one: a missing
+filing is not an exit.
 
 Both are rebuilt wholesale and in one transaction, for every filer or just
 `--filer`'s rows. Same fixtures as above:
 
 ```
 recompute  position_snapshot for every filer: 144 positions in 3 periods of 1 filer
-  changes     position_change: 62 new, 8 add, 15 trim, 59 hold
+  changes     position_change: 62 new, 8 add, 15 trim, 59 hold, 16 exit
   withheld    1 period with a suspect filing — check-data lists them; --include-suspect publishes them
 ```
 
@@ -487,7 +490,8 @@ published with one. It is not run on ingest: publishing is load, then
 `check-data`, then `recompute`. Exit 1 only if `--filer` names no filer.
 
 Migrations `0011` and `0012` create the two tables empty, in their current
-shape, so run `recompute` once after upgrading past them.
+shape, and `0013` adds exits without writing any, so run `recompute` once after
+upgrading past them.
 
 ### `runs [--job NAME] [--limit N]`
 

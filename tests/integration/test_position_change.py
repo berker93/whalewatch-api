@@ -1,10 +1,11 @@
 """``position_change``: what each filer did to each position, rebuilt from the snapshot.
 
 ``test_position_snapshot`` proves what a period is. These prove what changed
-between two of them: which positions are new, added to, trimmed or held, against
-which previous period, and by how much. They also prove that the hold band
-absorbs the few shares of drift a manager's counts show between quarters with
-nobody having traded. Most run over made-up filings at $10 a share, where the
+between two of them: which positions are new, added to, trimmed, held or exited,
+against which previous period, and by how much. They also prove that the hold
+band absorbs the few shares of drift a manager's counts show between quarters
+with nobody having traded, and that a quarter not filed is not a quarter in
+which everything was sold. Most run over made-up filings at $10 a share, where the
 point is an exact set of positions. Berkshire's real quarters check the window
 against the long way round.
 
@@ -12,10 +13,11 @@ A filing is made suspect as directly as the schema allows: ``parse_status``
 says so, and ``parse_notes`` says why, which a suspect filing must.
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from itertools import count
+from itertools import count, pairwise
 from typing import Any
 
 import pytest
@@ -32,6 +34,7 @@ from app.db.models import (
     PositionSnapshot,
     Security,
 )
+from app.db.queries.periods import FILER_PERIOD
 from app.derived.position_change import (
     HOLD_BAND_PCT,
     ChangeRebuild,
@@ -157,6 +160,17 @@ async def _changes(session: AsyncSession, period: date) -> dict[str, PositionCha
     return {cusip: change for cusip, change in rows.tuples()}
 
 
+async def _exits(session: AsyncSession) -> dict[tuple[date, str], PositionChange]:
+    """Every exit, in every period, by ``(period, CUSIP)``, read fresh."""
+    rows = await session.execute(
+        select(Security.cusip, PositionChange)
+        .join(Security, Security.id == PositionChange.security_id)
+        .where(PositionChange.action == "exit")
+        .execution_options(populate_existing=True)
+    )
+    return {(change.period_of_report, cusip): change for cusip, change in rows.tuples()}
+
+
 def _deltas(change: PositionChange) -> tuple[object, ...]:
     """``(action, shares_delta, shares_delta_pct, value_delta, weight_delta)``."""
     return (
@@ -265,13 +279,125 @@ async def test_hold_is_judged_on_shares_not_value(db_session: AsyncSession) -> N
     assert _deltas(changes[BRAVO]) == ("hold", 0, 0, 0, -25)
 
 
+# --- exits ----------------------------------------------------------------------
+
+
+async def test_a_position_gone_in_q3_is_one_exit_dated_q3(db_session: AsyncSession) -> None:
+    """Alpha is held in Q1 and Q2 and gone in Q3: one exit, in Q3, against Q2.
+    It is a position of nothing, and its deltas are the whole of Q2's
+    position, negative."""
+    fund = await _fund(db_session)
+    for period in (Q1, Q2):
+        await _quarter(db_session, fund, period, held(ALPHA, 100), held(BRAVO, 300))
+    await _quarter(db_session, fund, Q3, held(BRAVO, 300))
+
+    rebuild = await _rebuild(db_session)
+
+    exits = await _exits(db_session)
+    assert list(exits) == [(Q3, ALPHA)]
+    alpha = exits[Q3, ALPHA]
+    assert (alpha.shares, alpha.value_usd, alpha.weight_pct) == (Decimal(0),) * 3
+    assert (
+        alpha.prev_period_of_report,
+        alpha.prev_shares,
+        alpha.prev_value_usd,
+        alpha.prev_weight_pct,
+    ) == (Q2, Decimal(100), Decimal(1_000), Decimal(25))
+    assert _deltas(alpha) == ("exit", -100, -100, -1_000, -25)
+    assert not alpha.suspect
+    assert rebuild == ChangeRebuild(new=2, add=0, trim=0, hold=3, exit=1)
+
+
+async def test_a_filer_that_skips_q3_has_no_exits_in_it(db_session: AsyncSession) -> None:
+    """The fund has filed nothing for Q3 yet, though another fund has. Q2 is
+    its latest period, and nothing in Q2 is gone until a later period says so.
+    A missing filing is not an exit."""
+    fund = await _fund(db_session)
+    other = await _fund(db_session, "b-fund", OTHER_CIK)
+    for period in (Q1, Q2):
+        await _quarter(db_session, fund, period, held(ALPHA, 100), held(BRAVO, 300))
+    for period in (Q2, Q3):
+        await _quarter(db_session, other, period, held(CHARLIE, 10), cik=OTHER_CIK)
+
+    rebuild = await _rebuild(db_session)
+
+    assert await _exits(db_session) == {}
+    assert not any(change.filer_id == fund for change in (await _changes(db_session, Q3)).values())
+    assert rebuild.exit == 0
+
+
+async def test_an_exit_across_a_quarter_not_filed_is_dated_the_next_one_filed(
+    db_session: AsyncSession,
+) -> None:
+    """No 13F for Q2. Alpha is gone by Q3, and the exit says it was last held
+    in Q1, since nobody can say whether it went in Q2 or Q3."""
+    fund = await _fund(db_session)
+    await _quarter(db_session, fund, Q1, held(ALPHA, 100), held(BRAVO, 100))
+    await _quarter(db_session, fund, Q3, held(BRAVO, 100))
+
+    await _rebuild(db_session)
+
+    exits = await _exits(db_session)
+    assert list(exits) == [(Q3, ALPHA)]
+    assert exits[Q3, ALPHA].prev_period_of_report == Q1
+
+
+async def test_an_exit_is_dated_the_first_published_period_without_it(
+    db_session: AsyncSession,
+) -> None:
+    """Alpha is not in Q2, which is withheld for a suspect filing. So the
+    exit is Q3's, against Q1, as if Q2 had not been filed. Published unchecked
+    with --include-suspect, Q2 is where Alpha went, and the exit says that
+    rests on a suspect filing."""
+    fund = await _fund(db_session)
+    await _quarter(db_session, fund, Q1, held(ALPHA, 100), held(BRAVO, 100))
+    await _quarter(db_session, fund, Q2, held(BRAVO, 100), suspect=True)
+    await _quarter(db_session, fund, Q3, held(BRAVO, 100))
+
+    def described(exits: dict[tuple[date, str], PositionChange]) -> dict[object, object]:
+        return {key: (exit.prev_period_of_report, exit.suspect) for key, exit in exits.items()}
+
+    await _rebuild(db_session)
+    assert described(await _exits(db_session)) == {(Q3, ALPHA): (Q1, False)}
+
+    await _rebuild(db_session, include_suspect=True)
+    assert described(await _exits(db_session)) == {(Q2, ALPHA): (Q1, True)}
+
+
+async def test_filer_period_lists_the_periods_published_and_no_others(
+    db_session: AsyncSession,
+) -> None:
+    """The view the exits find the next period in. Q2 is withheld, so it is
+    not one of the fund's periods until --include-suspect publishes it,
+    marked."""
+    fund = await _fund(db_session)
+    await _quarter(db_session, fund, Q1, held(ALPHA, 100))
+    await _quarter(db_session, fund, Q2, held(ALPHA, 100), suspect=True)
+    await _quarter(db_session, fund, Q3, held(ALPHA, 100))
+    listed = (
+        select(FILER_PERIOD.c.period_of_report, FILER_PERIOD.c.suspect)
+        .where(FILER_PERIOD.c.filer_id == fund)
+        .order_by(FILER_PERIOD.c.period_of_report)
+    )
+
+    await _rebuild(db_session)
+    assert (await db_session.execute(listed)).tuples().all() == [(Q1, False), (Q3, False)]
+
+    await _rebuild(db_session, include_suspect=True)
+    assert (await db_session.execute(listed)).tuples().all() == [
+        (Q1, False),
+        (Q2, True),
+        (Q3, False),
+    ]
+
+
 # --- what previous means --------------------------------------------------------
 
 
 async def test_a_position_sold_and_bought_back_is_new_again(db_session: AsyncSession) -> None:
     """Alpha is held in Q1, gone in Q2 and back in Q3 at the same size. LAG
     alone reaches back to Q1 and makes Q3 a hold, of a position the filer
-    did not have a quarter ago."""
+    did not have a quarter ago. Q2 has the exit, and Q3 is new."""
     fund = await _fund(db_session)
     await _quarter(db_session, fund, Q1, held(ALPHA, 100), held(BRAVO, 100))
     await _quarter(db_session, fund, Q2, held(BRAVO, 100))
@@ -279,6 +405,12 @@ async def test_a_position_sold_and_bought_back_is_new_again(db_session: AsyncSes
 
     await _rebuild(db_session)
 
+    gone = (await _changes(db_session, Q2))[ALPHA]
+    assert (gone.action, gone.prev_period_of_report, gone.shares_delta) == (
+        "exit",
+        Q1,
+        Decimal(-100),
+    )
     alpha = (await _changes(db_session, Q3))[ALPHA]
     assert (alpha.action, alpha.prev_period_of_report, alpha.prev_shares) == ("new", Q2, None)
     assert alpha.shares_delta == 100
@@ -301,7 +433,7 @@ async def test_a_filers_first_period_is_new_against_no_period_at_all(
         ("new", None)
     }
     assert (await _changes(db_session, Q2))[CHARLIE].prev_period_of_report == Q1
-    assert rebuild == ChangeRebuild(new=3, add=0, trim=0, hold=2)
+    assert rebuild == ChangeRebuild(new=3, add=0, trim=0, hold=2, exit=0)
 
 
 async def test_a_quarter_with_nothing_filed_is_stepped_over(db_session: AsyncSession) -> None:
@@ -417,7 +549,11 @@ async def test_lag_agrees_with_looking_up_the_previous_period_the_long_way(
     }
     periods = sorted({period for period, _ in snapshot})
     previous_period: dict[date, date | None] = dict(zip(periods, [None, *periods], strict=False))
-    changes = list(await db_session.scalars(select(PositionChange)))
+    changes = [
+        change
+        for change in await db_session.scalars(select(PositionChange))
+        if change.action != "exit"
+    ]
 
     assert len(periods) == 4
     assert len(changes) == len(snapshot)
@@ -434,7 +570,64 @@ async def test_lag_agrees_with_looking_up_the_previous_period_the_long_way(
         assert change.value_delta == change.value_usd - (before.value_usd if before else 0)
     # 2022Q3 is the 49 new, the first period we have. The rest is what
     # Berkshire did over three quarters, one of them across the gap.
-    assert rebuild == ChangeRebuild(new=62, add=12, trim=18, hold=94)
+    assert rebuild == ChangeRebuild(new=62, add=12, trim=18, hold=94, exit=20)
+
+
+async def test_exits_agree_with_looking_for_them_the_long_way(db_session: AsyncSession) -> None:
+    """Every security in the previous published period and not in this one,
+    found by hand, is an exit, and nothing else is: against the period before
+    the gap too. Each carries that period's figures, negated."""
+    await _berkshire(db_session)
+
+    await _rebuild(db_session)
+
+    snapshot = {
+        (row.period_of_report, row.security_id): row
+        for row in await db_session.scalars(select(PositionSnapshot))
+    }
+    periods = sorted({period for period, _ in snapshot})
+    gone = {
+        (period, security_id): snapshot[before, security_id]
+        for before, period in pairwise(periods)
+        for held_in, security_id in snapshot
+        if held_in == before and (period, security_id) not in snapshot
+    }
+    exits = {
+        (change.period_of_report, change.security_id): change
+        for change in await db_session.scalars(
+            select(PositionChange).where(PositionChange.action == "exit")
+        )
+    }
+
+    assert gone
+    assert exits.keys() == gone.keys()
+    for key, change in exits.items():
+        before = gone[key]
+        assert change.prev_period_of_report == before.period_of_report
+        assert (change.shares_delta, change.value_delta) == (-before.shares, -before.value_usd)
+
+
+async def test_the_deltas_add_up_to_the_position(db_session: AsyncSession) -> None:
+    """A security's shares_delta, summed over every period up to one, is what
+    Berkshire held then: a new counts up from zero and an exit down to it.
+    Without the exits, everything Berkshire sold would still be held."""
+    await _berkshire(db_session)
+
+    await _rebuild(db_session)
+
+    snapshot = {
+        (row.period_of_report, row.security_id): row.shares
+        for row in await db_session.scalars(select(PositionSnapshot))
+    }
+    deltas = {
+        (change.period_of_report, change.security_id): change.shares_delta
+        for change in await db_session.scalars(select(PositionChange))
+    }
+    running: defaultdict[int, Decimal] = defaultdict(Decimal)
+    for period in sorted({period for period, _ in snapshot}):
+        for security_id in {security_id for _, security_id in snapshot}:
+            running[security_id] += deltas.get((period, security_id), Decimal(0))
+            assert running[security_id] == snapshot.get((period, security_id), 0)
 
 
 async def test_chubb_released_from_confidential_treatment_is_an_add_in_2023q4(
@@ -476,7 +669,8 @@ def _window_aggregates(node: dict[str, Any]) -> int:
 
 async def test_every_lag_is_computed_in_one_pass_over_one_window(db_session: AsyncSession) -> None:
     """The four LAGs spell out one window, and Postgres plans them as one
-    WindowAgg over one sort. The other WindowAgg is the filer's periods. A
+    WindowAgg over one sort. The other WindowAgg is the filer's periods, LAG
+    and LEAD together, computed once for the changes and the exits both. A
     LAG whose window drifted from the rest, say a tiebreaker added to one
     ORDER BY, would be a third WindowAgg and another sort of the snapshot."""
     connection = await db_session.connection()
@@ -502,7 +696,7 @@ async def test_recomputing_replaces_the_changes_rather_than_adding_to_them(
     first = await _rebuild(db_session)
     second = await _rebuild(db_session)
 
-    assert first == second == ChangeRebuild(new=2, add=1, trim=0, hold=0)
+    assert first == second == ChangeRebuild(new=2, add=1, trim=0, hold=0, exit=0)
     assert await db_session.scalar(select(func.count()).select_from(PositionChange)) == 3
 
 
@@ -538,4 +732,4 @@ async def test_recomputing_one_filer_leaves_the_others_as_they_were(
     rebuild = await _rebuild(db_session, filer_id=a)
 
     assert await _stored(db_session, b) == before
-    assert rebuild == ChangeRebuild(new=1, add=1, trim=0, hold=1)
+    assert rebuild == ChangeRebuild(new=1, add=1, trim=0, hold=1, exit=0)

@@ -1705,7 +1705,9 @@ def recompute_command(
     with its weight as a percentage of the period. Common stock only: option
     lines and principal amounts are left out. position_change classifies each
     of those rows against the filer's previous period as new, add, trim or hold,
-    with the deltas. A period that a suspect filing counts toward is withheld
+    with the deltas, and adds an exit for each position the previous period had
+    and this one does not. A filer's latest period has no exits until it files
+    the next. A period that a suspect filing counts toward is withheld
     from both unless --include-suspect, which publishes it with every row
     marked suspect. Both tables are rebuilt in one transaction. Run check-data
     first. Exits 1 if --filer names no filer.
@@ -1750,6 +1752,7 @@ async def _recompute(slug: str | None, *, include_suspect: bool) -> None:
             add=changes.add,
             trim=changes.trim,
             hold=changes.hold,
+            exit=changes.exit,
         )
     _echo_rebuild(rebuild, changes, scope=slug or "every filer")
 
@@ -1764,7 +1767,7 @@ def _echo_rebuild(rebuild: SnapshotRebuild, changes: ChangeRebuild, *, scope: st
     _line(
         "changes",
         f"position_change: {changes.new:,} new, {changes.add:,} add, "
-        f"{changes.trim:,} trim, {changes.hold:,} hold",
+        f"{changes.trim:,} trim, {changes.hold:,} hold, {changes.exit:,} exit",
     )
     if not rebuild.suspect_periods:
         return

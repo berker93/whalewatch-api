@@ -23,7 +23,7 @@ class ChangeAction(StrEnum):
     """What a filer did to a position between its previous period and this one.
 
     Text with a ``CHECK``, by the rule in :mod:`app.db.models.enums`: the set is
-    ours, and it is about to grow, since exits are DATA-3's.
+    ours, and it has grown once already, by ``exit``.
 
     ``new``
         Not held in the filer's previous period, or the filer has no previous
@@ -38,12 +38,20 @@ class ChangeAction(StrEnum):
         The same shares as before, within
         :data:`~app.derived.position_change.HOLD_BAND_PCT` either way. Judged
         on shares alone, so a stock that doubled in price is still a hold.
+    ``exit``
+        Held in the filer's previous period and not in this one. The row is a
+        position of nothing: no shares, no value, no weight, and the deltas
+        are the whole previous position, negative. Only in a period the filer
+        published, so a quarter it did not file, or one withheld, holds no
+        exits: a missing filing is not a sale. Nor is an exit, for ``trim``'s
+        reasons.
     """
 
     NEW = "new"
     ADD = "add"
     TRIM = "trim"
     HOLD = "hold"
+    EXIT = "exit"
 
 
 ACTION_CHECK = "action IN ({})".format(", ".join(f"'{action.value}'" for action in ChangeAction))
@@ -52,6 +60,10 @@ ACTION_CHECK = "action IN ({})".format(", ".join(f"'{action.value}'" for action 
 #: means ``new``. Either half failing is a row whose action and numbers
 #: disagree, and every reader believes one of the two.
 NEW_CHECK = "(action = 'new') = (prev_shares IS NULL)"
+
+#: An exit is a position of nothing. One way only: a position the filer still
+#: lists at zero shares is not an exit, it is a filer listing zero shares.
+EXIT_CHECK = "action <> 'exit' OR (shares = 0 AND value_usd = 0 AND weight_pct = 0)"
 
 # A change in shares, in percent of the previous count. Falls are bounded at
 # -100, and growth is not: one share to a million is +99,999,900%. 22 integer
@@ -63,7 +75,11 @@ CHANGE_PCT = Numeric(28, 6)
 class PositionChange(Base):
     """One security in one filer's period, against the filer's previous period.
 
-    One row for every row of ``position_snapshot``. The previous period is the
+    One row for every row of ``position_snapshot``, and one ``exit`` for every
+    position the filer's previous period had and this one does not. The
+    snapshot has no row for those, which is why this is a table rather than a
+    query over it: an exit is the absence of a row, and an absence cannot be
+    indexed. The previous period is the
     filer's previous *published* one, which is usually the calendar quarter
     before. Across a quarter with no filing, or one withheld for a suspect
     filing, it is the last period published before the gap.
@@ -74,13 +90,10 @@ class PositionChange(Base):
     position in the filer's first period, which has no previous period at all.
     :attr:`prev_period_of_report` tells those two apart.
 
-    **The deltas count a new position from zero**, so they sum: a filer's
-    ``shares_delta`` over every period up to this one is what it holds now, and
-    the market-wide flow into a stock is a ``SUM`` that includes those who
-    bought in fresh.
-
-    **No exits yet.** A position the filer held last period and no longer holds
-    has no row here: that is DATA-3.
+    **The deltas count a new position from zero, and an exit down to it**, so
+    they sum: a filer's ``shares_delta`` over every period up to this one is
+    what it holds now, and the market-wide flow into a stock is a ``SUM`` that
+    includes those who bought in fresh and those who sold out.
     """
 
     __tablename__ = "position_change"
@@ -106,22 +119,23 @@ class PositionChange(Base):
     :attr:`~app.db.models.filing.Filing.parse_status`."""
 
     shares: Mapped[Decimal] = mapped_column(QUANTITY)
-    """This period's shares, as ``position_snapshot`` has them."""
+    """This period's shares, as ``position_snapshot`` has them. Zero for an exit."""
 
     value_usd: Mapped[Decimal] = mapped_column(MONEY)
-    """This period's value in whole dollars, as ``position_snapshot`` has it."""
+    """This period's value in whole dollars, as ``position_snapshot`` has it.
+    Zero for an exit."""
 
     weight_pct: Mapped[Decimal | None] = mapped_column(WEIGHT_PCT)
     """This period's weight, as ``position_snapshot`` has it: null only in a
-    period whose positions are all worth nothing."""
+    period whose positions are all worth nothing. Zero for an exit."""
 
     prev_period_of_report: Mapped[date | None] = mapped_column()
     """The filer's previous published period: what this row is compared against.
 
     Set on a ``new`` row too, where it is the period the security was not held
-    in. Null only in the filer's first period, which "opened every position"
-    would misdescribe. It is the first period we have, not necessarily the
-    first the filer filed.
+    in, and on an ``exit``, where it is the last period it was. Null only in
+    the filer's first period, which "opened every position" would misdescribe.
+    It is the first period we have, not necessarily the first the filer filed.
     """
 
     prev_shares: Mapped[Decimal | None] = mapped_column(QUANTITY)
@@ -138,14 +152,15 @@ class PositionChange(Base):
     """:attr:`shares` less :attr:`prev_shares`, or less nothing when ``new``.
 
     The number of shares by which the reported position changed, and the field
-    the read API returns. Not "sold" when negative, for the reason given on
-    ``trim``."""
+    the read API returns. The whole previous position, negative, for an exit.
+    Not "sold" when negative, for the reason given on ``trim``."""
 
     shares_delta_pct: Mapped[Decimal | None] = mapped_column(CHANGE_PCT)
     """:attr:`shares_delta` as a percentage of :attr:`prev_shares`.
 
-    Null when the action is ``new``, since growth from nothing has no
-    percentage, and when the previous count was zero for the same reason."""
+    -100 for an exit. Null when the action is ``new``, since growth from
+    nothing has no percentage, and when the previous count was zero for the
+    same reason."""
 
     value_delta: Mapped[Decimal] = mapped_column(MONEY)
     """:attr:`value_usd` less :attr:`prev_value_usd`, or less nothing when ``new``.
@@ -162,7 +177,8 @@ class PositionChange(Base):
     Always false unless the snapshot was rebuilt with ``--include-suspect``.
     The previous period counts because the change is only as good as both of
     its ends: a ``new`` against a suspect period is a claim that the suspect
-    filing did not list the security.
+    filing did not list the security. An ``exit`` is the same claim about
+    this period's filing, and rests on the previous one's having listed it.
     """
 
     computed_at: Mapped[datetime] = mapped_column(
@@ -175,4 +191,5 @@ class PositionChange(Base):
     __table_args__ = (
         CheckConstraint(ACTION_CHECK, name="action_is_known"),
         CheckConstraint(NEW_CHECK, name="new_when_not_held_before"),
+        CheckConstraint(EXIT_CHECK, name="an_exit_holds_nothing"),
     )

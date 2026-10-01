@@ -700,13 +700,41 @@ async def _a_change_row(session: AsyncSession) -> None:
 
 
 async def test_a_change_action_is_one_the_table_knows(db_session: AsyncSession) -> None:
-    """``exit`` included, until DATA-3 decides what an exit row holds and
-    adds it to the vocabulary."""
+    """``sell`` included: neither a trim nor an exit is known to be one."""
     await _a_change_row(db_session)
 
     with pytest.raises(IntegrityError, match="action_is_known"):
         async with db_session.begin_nested():
-            await db_session.execute(text("UPDATE position_change SET action = 'exit'"))
+            await db_session.execute(text("UPDATE position_change SET action = 'sell'"))
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "action = 'exit'",
+        "action = 'exit', shares = 0, value_usd = 0",
+        "action = 'exit', shares = 0, weight_pct = 0",
+    ],
+    ids=["still-holding-it", "still-weighted", "still-worth-something"],
+)
+async def test_an_exit_holds_nothing(db_session: AsyncSession, assignment: str) -> None:
+    """An exit row that still holds shares, value or weight says two things at once."""
+    await _a_change_row(db_session)
+
+    with pytest.raises(IntegrityError, match="an_exit_holds_nothing"):
+        async with db_session.begin_nested():
+            await db_session.execute(text(f"UPDATE position_change SET {assignment}"))
+
+
+async def test_an_exit_of_nothing_is_allowed(db_session: AsyncSession) -> None:
+    """The same row, emptied, is an exit: the check is no wider than it says."""
+    await _a_change_row(db_session)
+
+    await db_session.execute(
+        text(
+            "UPDATE position_change SET action = 'exit', shares = 0, value_usd = 0, weight_pct = 0"
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -1056,6 +1084,50 @@ def test_the_chain_applies_and_reverses_and_applies_again(scratch_database: str)
 
     assert revisions_before == revisions_after
     assert left_behind == [], f"downgrade left objects behind: {left_behind}"
+
+
+def test_downgrading_past_exits_deletes_the_exit_rows(scratch_database: str) -> None:
+    """0012's ``CHECK`` knows four actions, and restoring it over an exit row
+    fails. The rows are derived, so the downgrade deletes them rather than
+    stranding the database between two revisions. ``recompute`` writes them
+    again after the next upgrade."""
+    _run(scratch_database, lambda config: command.upgrade(config, "head"))
+    _execute(
+        scratch_database,
+        """
+        WITH f AS (INSERT INTO filer (name, slug) VALUES ('A fund', 'a-fund') RETURNING id),
+             s AS (INSERT INTO security (cusip) VALUES ('11111A101') RETURNING id)
+        INSERT INTO position_change (
+            filer_id, period_of_report, security_id, action, shares, value_usd, weight_pct,
+            prev_period_of_report, prev_shares, prev_value_usd, prev_weight_pct,
+            shares_delta, shares_delta_pct, value_delta, weight_delta, suspect
+        )
+        SELECT f.id, '2024-06-30', s.id, 'exit', 0, 0, 0,
+               '2024-03-31', 100, 1000, 25, -100, -100, -1000, -25, false
+        FROM f, s
+        """,
+    )
+
+    revisions = _run(scratch_database, lambda config: command.downgrade(config, "0012"))
+
+    assert revisions == ["0012"]
+    assert _execute(scratch_database, "SELECT count(*) FROM position_change") == 0
+
+
+def _execute(url: str, statement: str) -> object:
+    """Run one statement against ``url`` and commit it. The first column of its
+    first row, if it returns any."""
+
+    async def go() -> object:
+        engine = create_async_engine(url, poolclass=NullPool)
+        try:
+            async with engine.begin() as connection:
+                result = await connection.execute(text(statement))
+                return result.scalar() if result.returns_rows else None
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(go())
 
 
 def _run(url: str, action: AlembicAction) -> list[str]:
