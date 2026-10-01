@@ -37,7 +37,16 @@ from app.cli import app
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.core.rate_limit import AsyncTokenBucket
-from app.db.models import Filer, FilerCik, Filing, Holding, PendingFiling, Security
+from app.db.models import (
+    Filer,
+    FilerCik,
+    Filing,
+    Holding,
+    PendingFiling,
+    PositionChange,
+    PositionSnapshot,
+    Security,
+)
 from app.storage.raw import LocalRawStore
 from tests.conftest import make_settings
 
@@ -749,6 +758,111 @@ def test_resolving_the_filer_and_re_running_finishes_the_job(
 
     assert result.exit_code == 0, result.output
     assert len(_fetch(migrated_engine, select(Holding.id))) == 2
+
+
+# --- publishing ----------------------------------------------------------------
+
+
+def _actions(engine: AsyncEngine, period: date) -> list[tuple[Any, ...]]:
+    """One period's changes as ``(cusip, action)``, by CUSIP."""
+    return _fetch(
+        engine,
+        select(Security.cusip, PositionChange.action)
+        .join(Security, Security.id == PositionChange.security_id)
+        .where(PositionChange.period_of_report == period)
+        .order_by(Security.cusip),
+    )
+
+
+@respx.mock
+def test_a_loaded_filing_is_published_in_the_same_run(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """No recompute to remember: the period is in position_snapshot, and its
+    changes in position_change, by the time the command exits."""
+    _edgar()
+    _register_filer(migrated_engine)
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[-2:] == [
+        "  published   2 positions in 2024Q1",
+        "  changes     2 new, 0 add, 0 trim, 0 hold, 0 exit in 2024Q1",
+    ]
+    assert _fetch(
+        migrated_engine,
+        select(Security.cusip, PositionSnapshot.shares)
+        .join(Security, Security.id == PositionSnapshot.security_id)
+        .order_by(Security.cusip),
+    ) == [(APPLE, Decimal(10_000)), (COCA_COLA, Decimal(20_000))]
+    assert _actions(migrated_engine, PERIOD) == [(APPLE, "new"), (COCA_COLA, "new")]
+
+
+@respx.mock
+def test_a_quarter_loaded_after_the_next_one_rebuilds_the_next_one_s_changes(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """Q2 is published when Q1 arrives, and its Apple was new against
+    nothing. With Q1 in, it is a hold, and Coca-Cola, which Q2 does not list,
+    is an exit dated Q2."""
+    q2 = date(2024, 6, 30)
+    _register_filer(migrated_engine)
+    _execute(
+        migrated_engine,
+        insert(Security).values(cusip=APPLE),
+        insert(Filing).values(
+            accession_no="0001067983-24-000022",
+            cik=CIK,
+            filer_id=1,
+            form_type="13F-HR",
+            period_of_report=q2,
+            filed_at=datetime(2024, 8, 14, 20, tzinfo=UTC),
+            value_multiplier=1,
+            parse_status="ok",
+        ),
+        insert(Holding).values(
+            filing_id=select(Filing.id).scalar_subquery(),
+            security_id=select(Security.id).scalar_subquery(),
+            filer_id=1,
+            period_of_report=q2,
+            cusip=APPLE,
+            value_usd=1_000_000,
+            shares=10_000,
+            sshprnamt_type="SH",
+        ),
+    )
+    assert runner.invoke(app, ["recompute", "--all"]).exit_code == 0
+    assert _actions(migrated_engine, q2) == [(APPLE, "new")]
+    _edgar()
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
+
+    assert result.exit_code == 0, result.output
+    assert "  changes     2 new, 0 add, 0 trim, 1 hold, 1 exit in 2024Q1, 2024Q2" in (
+        result.stdout.splitlines()
+    )
+    assert _actions(migrated_engine, q2) == [(APPLE, "hold"), (COCA_COLA, "exit")]
+
+
+@respx.mock
+def test_a_suspect_filing_loads_and_its_period_is_withheld(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """The guard still has the last word on publishing: loaded, flagged, and
+    not in position_snapshot until someone looks."""
+    _edgar(entry_total=3)
+    _register_filer(migrated_engine)
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "  withheld    2024Q1: a suspect filing counts toward it — check-data lists it; "
+        "recompute --include-suspect publishes it"
+    ) in result.stdout.splitlines()
+    assert len(_fetch(migrated_engine, select(Holding.id))) == 2
+    assert _fetch(migrated_engine, select(PositionSnapshot.security_id)) == []
 
 
 # --- filings we do not believe, and filings we cannot read -------------------

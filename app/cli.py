@@ -22,6 +22,8 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli audit-amendments --filer berkshire-hathaway
     uv run python -m app.cli check-data
     uv run python -m app.cli recompute --filer berkshire-hathaway
+    uv run python -m app.cli recompute --period 2026Q1
+    uv run python -m app.cli recompute --all
     uv run python -m app.cli runs --job backfill_13f
 
 Every run is recorded
@@ -67,6 +69,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import re
 import sys
 import time
 from collections import Counter
@@ -95,8 +98,9 @@ from app.db.queries.checks import DataCheckReport, check_data
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.queries.runs import RunSummary, job_names, recent_runs
 from app.db.session import create_engine, create_session_factory, session_scope
-from app.derived.position_change import ChangeRebuild, recompute_position_change
-from app.derived.position_snapshot import SnapshotRebuild, recompute_position_snapshot
+from app.derived.position_change import ChangeRebuild
+from app.derived.recompute import Recomputed, hold_recompute_lock, recompute
+from app.derived.scope import Pair, Scope, filing_pairs, resolve_scope
 from app.ingestion.archive import archive_13f_documents, read_13f_documents
 from app.ingestion.backfill import (
     BackfillPlan,
@@ -339,8 +343,8 @@ async def _fetch_and_load(
     # to sec.gov alive for no reason.
     parsed = _parse(documents, filed_at=submission.filed_at)
 
-    result = (
-        None
+    result, published = (
+        (None, None)
         if dry_run
         else await _load(
             settings,
@@ -361,6 +365,7 @@ async def _fetch_and_load(
         documents=documents,
         raw_prefix=raw_prefix,
         result=result,
+        published=published,
         dry_run=dry_run,
     )
 
@@ -407,10 +412,10 @@ async def _load(
     parsed: _Parsed,
     raw_prefix: str | None,
     source_url: str,
-) -> LoadResult:
+) -> tuple[LoadResult, Recomputed | None]:
     """Write the parsed filing, in one transaction that ``session_scope`` commits."""
     async with session_scope(settings) as session:
-        result = await _write(
+        result, published = await _write(
             session,
             accession=accession,
             filed_at=filed_at,
@@ -418,8 +423,8 @@ async def _load(
             raw_prefix=raw_prefix,
             source_url=source_url,
         )
-    _log_ingested(parsed, result)
-    return result
+    _log_ingested(parsed, result, published)
+    return result, published
 
 
 # --- the steps ingest-filing and backfill share ------------------------------
@@ -463,13 +468,24 @@ async def _write(
     parsed: _Parsed,
     raw_prefix: str | None,
     source_url: str,
-) -> LoadResult:
-    """Load the filing and mark its queue row ``done``, in the caller's transaction.
+) -> tuple[LoadResult, Recomputed | None]:
+    """Load the filing, mark its queue row ``done`` and publish it, in the caller's transaction.
+
+    Publishing is :func:`~app.derived.recompute.recompute` over the pair the
+    filing is filed under, and the pair it was filed under before if a
+    re-ingest moved it, with the period after each. In the load's transaction,
+    so a reader never sees holdings that the snapshot has not caught up with,
+    and a load whose rebuild fails is not loaded. ``None`` while the filing has
+    no filer, and so no pair.
 
     ``raw_key`` is the filing's archive *prefix*, not one document's key: a
     13F is several documents, and the prefix is what lists all of them. It is
     only ever ``None`` on a dry run, which never gets here.
     """
+    # Before the first write, not just before the rebuild: see the deadlock in
+    # app.derived.recompute.
+    await hold_recompute_lock(session)
+    filed_before = await filing_pairs(session, accession)
     result = await load_filing(
         session,
         accession_no=accession,
@@ -480,10 +496,11 @@ async def _write(
         source_url=source_url,
     )
     await mark_ingested(session, accession)
-    return result
+    scope = Scope.of(filed_before | await filing_pairs(session, accession))
+    return result, (await recompute(session, scope) if scope.pairs else None)
 
 
-def _log_ingested(parsed: _Parsed, result: LoadResult) -> None:
+def _log_ingested(parsed: _Parsed, result: LoadResult, published: Recomputed | None) -> None:
     """After the commit, so the line never reports a load that rolled back."""
     logger.info(
         "filing.ingested",
@@ -492,6 +509,8 @@ def _log_ingested(parsed: _Parsed, result: LoadResult) -> None:
         filing_id=result.filing_id,
         rows=result.holdings_loaded,
         status=parsed.normalised.parse_status.value,
+        positions_published=None if published is None else published.snapshot.positions,
+        periods_withheld=None if published is None else published.snapshot.withheld,
     )
 
 
@@ -631,6 +650,7 @@ class _Report:
     documents: FilingDocuments
     raw_prefix: str | None
     result: LoadResult | None
+    published: Recomputed | None
     dry_run: bool
 
 
@@ -663,6 +683,24 @@ def _echo_report(report: _Report) -> None:
 
     if report.result is not None:
         _line("written", _written_line(report.result))
+    if report.published is not None:
+        _echo_published(report.published)
+
+
+def _echo_published(published: Recomputed) -> None:
+    """The filing's period as published, or withheld, and the changes rebuilt with it."""
+    snapshot = published.snapshot
+    periods = _quarters(published.scope)
+    if snapshot.withheld:
+        _line(
+            "withheld",
+            f"{periods}: a suspect filing counts toward it — check-data lists it; "
+            "recompute --include-suspect publishes it",
+        )
+    else:
+        _line("published", f"{_count(snapshot.positions, 'position')} in {periods}")
+    changed = published.scope | Scope.of(published.following)
+    _line("changes", f"{_actions(published.changes)} in {_quarters(changed)}")
 
 
 def _line(label: str, value: str) -> None:
@@ -1168,7 +1206,7 @@ async def _backfill_filing(shared: _Shared, filing: PlannedFiling) -> FilingResu
 
     parsed = _parse(documents, filed_at=filed_at)
     async with shared.sessions.begin() as session:
-        result = await _write(
+        result, published = await _write(
             session,
             accession=accession,
             filed_at=filed_at,
@@ -1176,7 +1214,7 @@ async def _backfill_filing(shared: _Shared, filing: PlannedFiling) -> FilingResu
             raw_prefix=raw_prefix,
             source_url=documents.primary_doc_url,
         )
-    _log_ingested(parsed, result)
+    _log_ingested(parsed, result, published)
 
     return FilingResult(
         filing=filing,
@@ -1683,12 +1721,38 @@ def _count(number: int, noun: str) -> str:
 # --- recompute ---------------------------------------------------------------
 
 
+#: ``2026Q1``, or ``2026q1``.
+_QUARTER: Final = re.compile(r"(\d{4})[Qq]([1-4])")
+
+
+def _quarter_end(value: str) -> date:
+    """``2026Q1`` -> ``2026-03-31``: the ``period_of_report`` of that quarter's 13Fs."""
+    match = _QUARTER.fullmatch(value.strip())
+    if match is None:
+        raise typer.BadParameter(f"{value!r} is not a quarter: expected one like 2026Q1")
+    year, quarter = int(match[1]), int(match[2])
+    return date(year, 3 * quarter, 31 if quarter in (1, 4) else 30)
+
+
 @app.command("recompute")
 def recompute_command(
     filer: Annotated[
         str | None,
-        typer.Option("--filer", metavar="SLUG", help="Rebuild one filer's rows instead of all."),
+        typer.Option("--filer", metavar="SLUG", help="Only this filer's periods."),
     ] = None,
+    period: Annotated[
+        date | None,
+        typer.Option(
+            "--period",
+            metavar="YYYYQN",
+            parser=_quarter_end,
+            help="Only this quarter, e.g. 2026Q1.",
+        ),
+    ] = None,
+    everything: Annotated[
+        bool,
+        typer.Option("--all", help="Every filer's every period."),
+    ] = False,
     include_suspect: Annotated[
         bool,
         typer.Option(
@@ -1709,29 +1773,49 @@ def recompute_command(
     and this one does not. A filer's latest period has no exits until it files
     the next. A period that a suspect filing counts toward is withheld
     from both unless --include-suspect, which publishes it with every row
-    marked suspect. Both tables are rebuilt in one transaction. Run check-data
-    first. Exits 1 if --filer names no filer.
+    marked suspect.
+
+    Rebuilds the (filer, period) pairs --filer and --period pick out, together
+    or alone, or every pair with --all. Each filer's next period after a
+    rebuilt one has its position_change rebuilt too, as its deltas start from
+    it. All of it in one transaction. ingest-filing and backfill do this for
+    each filing they load; run it by hand after anything else that changes what
+    counts, or with --all after a change to how either table is built.
+
+    Exits 1 if --filer names no filer, and 2 without --filer, --period or --all.
     """
+    if everything == (filer is not None or period is not None):
+        typer.secho(
+            "error: --all rebuilds everything, so it takes no --filer or --period"
+            if everything
+            else "error: say what to rebuild: --filer, --period, or --all",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
     try:
-        asyncio.run(_recompute(filer, include_suspect=include_suspect))
+        asyncio.run(_recompute(filer, period=period, include_suspect=include_suspect))
     except UnknownFilerError as failure:
         typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from failure
 
 
-async def _recompute(slug: str | None, *, include_suspect: bool) -> None:
+async def _recompute(slug: str | None, *, period: date | None, include_suspect: bool) -> None:
+    """Everything when neither ``slug`` nor ``period`` is given, which the command says as --all."""
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
+    described = " ".join(
+        [*([] if slug is None else [slug]), *([] if period is None else [_quarter(period)])]
+    )
 
-    async with track_run(settings, "recompute", filer=slug, include_suspect=include_suspect) as run:
+    async with track_run(
+        settings, "recompute", filer=slug, period=period, include_suspect=include_suspect
+    ) as run:
         async with session_scope(settings) as session:
             filer_id = await _filer_id(session, slug)
-            rebuild = await recompute_position_snapshot(
-                session, filer_id=filer_id, include_suspect=include_suspect
-            )
-            # From the snapshot rows just written, in the same transaction: a
-            # reader sees both tables rebuilt, or neither.
-            changes = await recompute_position_change(session, filer_id=filer_id)
+            scope = await resolve_scope(session, filer_id=filer_id, period=period)
+            rebuilt = await recompute(session, scope, include_suspect=include_suspect)
+        rebuild, changes = rebuilt.snapshot, rebuilt.changes
         # Periods, not positions, so that the gap between the two is the
         # periods withheld for a suspect filing.
         run.items_seen = rebuild.periods + rebuild.withheld
@@ -1740,6 +1824,7 @@ async def _recompute(slug: str | None, *, include_suspect: bool) -> None:
         logger.info(
             "position_snapshot.recomputed",
             filer=slug,
+            period=None if period is None else _quarter(period),
             positions=rebuild.positions,
             periods=rebuild.periods,
             suspect_periods=rebuild.suspect_periods,
@@ -1748,27 +1833,32 @@ async def _recompute(slug: str | None, *, include_suspect: bool) -> None:
         logger.info(
             "position_change.recomputed",
             filer=slug,
+            period=None if period is None else _quarter(period),
+            following_periods=len(rebuilt.following),
             new=changes.new,
             add=changes.add,
             trim=changes.trim,
             hold=changes.hold,
             exit=changes.exit,
         )
-    _echo_rebuild(rebuild, changes, scope=slug or "every filer")
+    _echo_rebuild(rebuilt, scope=described or "every filer")
 
 
-def _echo_rebuild(rebuild: SnapshotRebuild, changes: ChangeRebuild, *, scope: str) -> None:
+def _echo_rebuild(rebuilt: Recomputed, *, scope: str) -> None:
     """What was published and what changed in it, then what was not, or was without a check."""
+    rebuild = rebuilt.snapshot
     typer.echo(
         f"recompute  position_snapshot for {scope}: {_count(rebuild.positions, 'position')} "
         f"in {_count(rebuild.periods, 'period')} of {_count(rebuild.filers, 'filer')}"
     )
     # In the stored vocabulary, which is what a WHERE on the table will spell.
-    _line(
-        "changes",
-        f"position_change: {changes.new:,} new, {changes.add:,} add, "
-        f"{changes.trim:,} trim, {changes.hold:,} hold, {changes.exit:,} exit",
-    )
+    _line("changes", f"position_change: {_actions(rebuilt.changes)}")
+    if rebuilt.following:
+        _line(
+            "next",
+            f"also the changes of {_count(len(rebuilt.following), 'next period')}, "
+            f"which start from a rebuilt one: {_quarters(Scope.of(rebuilt.following))}",
+        )
     if not rebuild.suspect_periods:
         return
     periods = _count(rebuild.suspect_periods, "period")
@@ -1780,6 +1870,19 @@ def _echo_rebuild(rebuild: SnapshotRebuild, changes: ChangeRebuild, *, scope: st
             f"{periods} with a suspect filing — check-data lists them; "
             "--include-suspect publishes them",
         )
+
+
+def _actions(changes: ChangeRebuild) -> str:
+    return (
+        f"{changes.new:,} new, {changes.add:,} add, {changes.trim:,} trim, "
+        f"{changes.hold:,} hold, {changes.exit:,} exit"
+    )
+
+
+def _quarters(scope: Scope) -> str:
+    """The quarters a scope's pairs are in, each once, oldest first: ``2023Q3, 2023Q4``."""
+    pairs: frozenset[Pair] = scope.pairs or frozenset()
+    return ", ".join(_quarter(period) for period in sorted({period for _, period in pairs}))
 
 
 # --- runs --------------------------------------------------------------------

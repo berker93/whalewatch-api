@@ -41,7 +41,7 @@ TRACKED: Final = {
     "audit-overlaps": ("audit-overlaps", [], "success"),
     "audit-amendments": ("audit-amendments", [], "success"),
     "check-data": ("check-data", [], "success"),
-    "recompute": ("recompute", [], "success"),
+    "recompute": ("recompute", ["--all"], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.

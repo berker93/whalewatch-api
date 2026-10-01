@@ -43,6 +43,7 @@ from app.db.models import (
     Security,
 )
 from app.derived.position_snapshot import recompute_position_snapshot, snapshot_positions
+from app.derived.scope import resolve_scope
 from app.ingestion.loaders import load_filing
 from app.ingestion.normalisation import normalise_filing
 from tests.conftest import make_settings
@@ -550,7 +551,9 @@ async def test_recomputing_one_filer_leaves_the_others_as_they_were(
     before = await _tuples(db_session, soros)
 
     await _load(db_session, Q4_NEW_HOLDINGS)
-    rebuild = await recompute_position_snapshot(db_session, filer_id=berkshire)
+    rebuild = await recompute_position_snapshot(
+        db_session, await resolve_scope(db_session, filer_id=berkshire)
+    )
 
     assert await _tuples(db_session, soros) == before
     q4 = await _snapshot(db_session, Q4)
@@ -619,7 +622,7 @@ def _count_changes(engine: AsyncEngine) -> int:
 def test_recompute_says_what_it_published_and_what_it_withheld(committed: AsyncEngine) -> None:
     _commit(committed, ("berkshire-2022q4-dollars", False), (Q4_ORIGINAL, True))
 
-    result = CliRunner().invoke(app, ["recompute"])
+    result = CliRunner().invoke(app, ["recompute", "--all"])
 
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [

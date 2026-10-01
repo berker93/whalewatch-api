@@ -42,6 +42,7 @@ from app.derived.position_change import (
     recompute_position_change,
 )
 from app.derived.position_snapshot import recompute_position_snapshot
+from app.derived.scope import EVERYTHING, resolve_scope
 from app.ingestion.loaders import load_filing
 from app.ingestion.normalisation import normalise_filing
 from tests.fixtures_13f import load_fixtures
@@ -144,8 +145,9 @@ async def _rebuild(
     session: AsyncSession, *, filer_id: int | None = None, include_suspect: bool = False
 ) -> ChangeRebuild:
     """What ``recompute`` does: the snapshot, then the changes from it."""
-    await recompute_position_snapshot(session, filer_id=filer_id, include_suspect=include_suspect)
-    return await recompute_position_change(session, filer_id=filer_id)
+    scope = EVERYTHING if filer_id is None else await resolve_scope(session, filer_id=filer_id)
+    await recompute_position_snapshot(session, scope, include_suspect=include_suspect)
+    return await recompute_position_change(session, scope)
 
 
 async def _changes(session: AsyncSession, period: date) -> dict[str, PositionChange]:

@@ -23,7 +23,7 @@ from typing import Any, Final
 import pytest
 import respx
 from httpx import Request, Response
-from sqlalchemy import Executable, insert, select, text
+from sqlalchemy import Executable, insert, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from typer.testing import CliRunner
 
@@ -38,8 +38,11 @@ from app.db.models import (
     Holding,
     IngestionRun,
     PendingFiling,
+    PositionChange,
+    PositionSnapshot,
     Security,
 )
+from app.db.models.base import Base
 from app.storage.raw import LocalRawStore
 from tests.conftest import make_settings
 
@@ -316,6 +319,42 @@ def test_every_queued_filing_is_loaded_and_its_queue_row_marked_done(
         (PS.accession_no, "done", 0),
     ]
     assert len(_fetch(migrated_engine, select(Holding.id))) == 6
+
+
+def _published(engine: AsyncEngine) -> dict[str, list[tuple[Any, ...]]]:
+    """Both derived tables, every column but ``computed_at``, in key order."""
+    published = {}
+    models: tuple[type[Base], ...] = (PositionSnapshot, PositionChange)
+    for model in models:
+        mapper = inspect(model)
+        published[model.__tablename__] = _fetch(
+            engine,
+            select(*(column for column in mapper.columns if column.name != "computed_at")).order_by(
+                *mapper.primary_key
+            ),
+        )
+    return published
+
+
+@respx.mock
+def test_each_filing_is_published_as_it_loads_as_one_rebuild_of_everything_would(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """Three at once, two of them one filer's consecutive quarters, finishing in
+    whatever order they finish. Each load publishes its own period and rebuilds
+    the changes of the period after, one load at a time, so Q2's changes are
+    against Q1 whichever landed first."""
+    _edgar(Q1, Q2, PS)
+    _enqueue(migrated_engine, Q1, Q2, PS)
+
+    result = runner.invoke(app, ["backfill", "--concurrency", "3"])
+    published = _published(migrated_engine)
+    rebuilt = runner.invoke(app, ["recompute", "--all"])
+
+    assert result.exit_code == 0, result.output
+    assert rebuilt.exit_code == 0, rebuilt.output
+    assert _published(migrated_engine) == published
+    assert {row[1] for row in published["position_change"]} == {Q1.period, Q2.period}
 
 
 @respx.mock

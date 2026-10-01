@@ -3,9 +3,9 @@
 The first table in what the data model calls the derived layer — "a cache with
 a schema". One function writes it,
 :func:`~app.derived.position_snapshot.recompute_position_snapshot`, which
-replaces a filer's rows wholesale from ``holding`` through ``effective_filing``;
-nothing else may depend on it for correctness, because everything in it can be
-rebuilt from the layer above.
+replaces the rows of a set of ``(filer, period)`` pairs from ``holding``
+through ``effective_filing``; nothing else may depend on it for correctness,
+because everything in it can be rebuilt from the layer above.
 """
 
 from datetime import date, datetime

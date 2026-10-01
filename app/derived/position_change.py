@@ -109,6 +109,7 @@ from sqlalchemy.orm import aliased
 from app.db.models.position_change import ChangeAction, PositionChange
 from app.db.models.position_snapshot import PositionSnapshot
 from app.db.queries.periods import FILER_PERIOD
+from app.derived.scope import EVERYTHING, Scope
 
 #: The hold band: a change in shares within this percentage of the previous
 #: count, either way, is a ``hold``. 0.01% of 50,000 shares is 5, which covers a
@@ -148,7 +149,7 @@ class ChangeRebuild:
     exit: int
 
 
-def position_changes(*, filer_id: int | None = None) -> Select[Any]:
+def position_changes(*, scope: Scope = EVERYTHING) -> Select[Any]:
     """The rows ``position_change`` holds: one per row of ``position_snapshot``, and one per exit.
 
     Reads the snapshot *table* rather than
@@ -156,15 +157,18 @@ def position_changes(*, filer_id: int | None = None) -> Select[Any]:
     are between the portfolios as they were published, weights rounded as they
     were stored.
 
-    :param filer_id: One filer's changes instead of every filer's. A filer's
-        changes depend on its own periods alone, so they are the same either way.
+    :param scope: Only the changes dated these ``(filer, period)`` pairs. A
+        filer's changes depend on its own periods alone, so they are the same
+        either way. The windows still read every period of the filers in
+        scope, since a period's change needs the one before it, and the pairs
+        are picked out of what they return.
     :returns: A select of :data:`CHANGE_COLUMNS`, unordered.
         ``shares_delta_pct`` is unrounded here, and rounded to six places when
         stored.
     """
-    held = _held(filer_id).cte("held")
-    periods = _periods(filer_id).cte("periods")
-    compared = union_all(_compared(held, periods), _exited(periods, filer_id)).cte("compared")
+    held = _held(scope).cte("held")
+    periods = _periods(scope).cte("periods")
+    compared = union_all(_compared(held, periods), _exited(periods, scope)).cte("compared")
 
     now = compared.c
     new = now.prev_shares.is_(None)
@@ -205,34 +209,37 @@ def position_changes(*, filer_id: int | None = None) -> Select[Any]:
         (now.value_usd - since(now.prev_value_usd)).label("value_delta"),
         (now.weight_pct - since(now.prev_weight_pct)).label("weight_delta"),
         now.suspect,
-    )
+    ).where(*scope.covers(now.filer_id, now.period_of_report))
 
 
 async def recompute_position_change(
-    session: AsyncSession, *, filer_id: int | None = None
+    session: AsyncSession, scope: Scope = EVERYTHING
 ) -> ChangeRebuild:
-    """Replace ``position_change``, all of it or one filer's rows, from ``position_snapshot``.
+    """Replace ``position_change``, all of it or the rows in ``scope``, from ``position_snapshot``.
 
     Run after :func:`~app.derived.position_snapshot.recompute_position_snapshot`
     in the same transaction, as ``recompute`` does: this reads the rows that
     call just wrote. Delete and reinsert, for the snapshot's reasons. A reader
     sees the old changes until the commit and the new ones after, never a mix.
 
-    :param filer_id: Rebuild this filer's rows and leave every other filer's
-        alone, as they were last built.
+    :param scope: Rebuild the changes dated these ``(filer, period)`` pairs and
+        leave every other row alone, as it was last built. An exit is dated the
+        period it is gone from, so it is in the scope of that period.
+        :func:`~app.derived.recompute.recompute` adds the period after each
+        rebuilt snapshot period, whose changes start from it.
     """
-    scope = [] if filer_id is None else [PositionChange.filer_id == filer_id]
+    in_scope = scope.covers(PositionChange.filer_id, PositionChange.period_of_report)
 
-    await session.execute(delete(PositionChange).where(*scope))
+    await session.execute(delete(PositionChange).where(*in_scope))
     await session.execute(
-        insert(PositionChange).from_select(CHANGE_COLUMNS, position_changes(filer_id=filer_id))
+        insert(PositionChange).from_select(CHANGE_COLUMNS, position_changes(scope=scope))
     )
 
     counts: dict[str, int] = dict(
         (
             await session.execute(
                 select(PositionChange.action, func.count())
-                .where(*scope)
+                .where(*in_scope)
                 .group_by(PositionChange.action)
             )
         )
@@ -261,7 +268,7 @@ def _lag(column: SQLColumnExpression[Any]) -> ColumnElement[Any]:
     )
 
 
-def _periods(filer_id: int | None) -> Select[Any]:
+def _periods(scope: Scope) -> Select[Any]:
     """Each filer's published periods, each with the one before it and the one after.
 
     Read from ``filer_period``, so a period counts as published exactly when it
@@ -284,10 +291,10 @@ def _periods(filer_id: int | None) -> Select[Any]:
     )
     # Pushed down into the view, before its GROUP BY: whole filers, so no
     # window loses a neighbour.
-    return statement if filer_id is None else statement.where(view.c.filer_id == filer_id)
+    return statement.where(*scope.of_filers(view.c.filer_id))
 
 
-def _held(filer_id: int | None) -> Select[Any]:
+def _held(scope: Scope) -> Select[Any]:
     """Every published position, with the filer's previous row for the same security.
 
     ``last_period`` is the period that row is from: the last in which the filer
@@ -308,7 +315,7 @@ def _held(filer_id: int | None) -> Select[Any]:
     )
     # A WHERE runs before the window, but it removes whole filers, and no
     # window reaches across filers, so no row's LAG changes.
-    return statement if filer_id is None else statement.where(PositionSnapshot.filer_id == filer_id)
+    return statement.where(*scope.of_filers(PositionSnapshot.filer_id))
 
 
 def _compared(held: CTE, periods: CTE) -> Select[Any]:
@@ -353,7 +360,7 @@ def _compared(held: CTE, periods: CTE) -> Select[Any]:
     )
 
 
-def _exited(periods: CTE, filer_id: int | None) -> Select[Any]:
+def _exited(periods: CTE, scope: Scope) -> Select[Any]:
     """Every position gone from the filer's next period, as a position of nothing in it.
 
     Found from the period it was last held in, since the period it is gone from
@@ -369,7 +376,7 @@ def _exited(periods: CTE, filer_id: int | None) -> Select[Any]:
     later = aliased(PositionSnapshot, name="later")
     nothing = literal(0)
 
-    statement = (
+    return (
         select(
             then.filer_id,
             periods.c.next_period_of_report.label("period_of_report"),
@@ -402,6 +409,6 @@ def _exited(periods: CTE, filer_id: int | None) -> Select[Any]:
             # holds now is an exit. A missing filing is not an exit.
             periods.c.next_period_of_report.is_not(None),
             later.security_id.is_(None),
+            *scope.of_filers(then.filer_id),
         )
     )
-    return statement if filer_id is None else statement.where(then.filer_id == filer_id)

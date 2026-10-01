@@ -161,7 +161,7 @@ are already committed.
 Drains the queue. It takes every filing in `pending_filing` and every 13F
 already in `filing`, skips the loaded ones, and ingests the rest several at a
 time. Each filing goes through `ingest-filing`'s steps in the same order:
-archive, parse, load. It prints one line per filing as it finishes, then a
+archive, parse, load and publish. It prints one line per filing as it finishes, then a
 summary:
 
 ```
@@ -221,7 +221,10 @@ Fetches, parses and loads one 13F. It looks the accession number up in EDGAR's
 submissions index for the CIK, lists the filing directory, identifies the cover
 page and the information table, archives all of it to the
 [raw store](#the-raw-archive), and only then parses it and writes the result in
-one transaction.
+one transaction. The same transaction publishes it: `position_snapshot` for
+the filing's period, and `position_change` for that period and the filer's next
+one, as [`recompute`](#recompute---filer-slug---period-yyyyqn---all---include-suspect)
+would rebuild them.
 
 ```
 0001193125-26-352200  13F-HR
@@ -234,6 +237,8 @@ one transaction.
   value       $299,253,556,246.00
   status      ok
   written     filing #1, 29 holdings, 29 new securities
+  published   29 positions in 2026Q2
+  changes     29 new, 0 add, 0 trim, 0 hold, 0 exit in 2026Q2
 ```
 
 | Flag | |
@@ -271,8 +276,10 @@ being `NOT NULL`. The second prints `DEFERRED` and tells you to re-run it once
 the filer is resolved. Likewise a `suspect` status means every guard's finding
 is printed here and stored on `filing.parse_notes`; the filing is still loaded,
 because deleting a portfolio that is 99% right leaves a hole shaped exactly
-like a manager who filed nothing. What waits is publishing it: see
-[`recompute`](#recompute---filer-slug---include-suspect).
+like a manager who filed nothing. What waits is publishing it: the summary says
+`withheld` instead of `published`, and the period stays out of
+`position_snapshot` until someone looks. See
+[`recompute`](#recompute---filer-slug---period-yyyyqn---all---include-suspect).
 
 ### The raw archive
 
@@ -451,7 +458,7 @@ its book in one name. Each finding is there to be looked at.
 back empty, 1 when anything is found, 2 when `--filer` names no filer — a typo
 that checked nothing must not read as a clean bill.
 
-### `recompute [--filer SLUG] [--include-suspect]`
+### `recompute [--filer SLUG] [--period YYYYQN] [--all] [--include-suspect]`
 
 Rebuilds `position_snapshot`, the published portfolio: one row per security per
 `(filer, period)`, summed over the filings that count once amendments and
@@ -468,8 +475,14 @@ an `exit`, a row of zero shares whose deltas are the whole previous position. A
 filer's latest period has no exits until it files the next one: a missing
 filing is not an exit.
 
-Both are rebuilt wholesale and in one transaction, for every filer or just
-`--filer`'s rows. Same fixtures as above:
+**What it rebuilds is a set of `(filer, period)` pairs.** `--filer` is every
+period the filer has filed for or published, `--period 2026Q1` is every filer's
+2026Q1, the two together are one pair, and `--all` is every pair there is. One
+of them is required: a bare `recompute` would be exactly the five years of
+everything that one new filing should not cost. Each pair's rows in both tables
+are deleted and inserted again, all in one transaction. Not upserted, because a
+rebuild can remove rows, such as a position a restatement no longer lists, and
+an upsert would leave them behind. Over the same fixtures as above:
 
 ```
 recompute  position_snapshot for every filer: 144 positions in 3 periods of 1 filer
@@ -481,17 +494,47 @@ The 49 positions of 2022Q3 are among the `new`: it is the first period loaded,
 and a null `prev_period_of_report` says so. 2023Q3 is compared with 2022Q4, the
 period before it that was loaded.
 
+**The period after comes too.** A period's changes are against the filer's
+previous published period. So when 2022Q4 is rebuilt, 2023Q3's changes are
+stale, because they were computed against the old 2022Q4. Each filer's next
+published period after a rebuilt one has its `position_change` rebuilt as well,
+and the `next` line says which:
+
+```
+recompute  position_snapshot for 2022Q4: 49 positions in 1 period of 1 filer
+  changes     position_change: 13 new, 8 add, 15 trim, 59 hold, 16 exit
+  next        also the changes of 1 next period, which start from a rebuilt one: 2023Q3
+```
+
+Next *published*, not next calendar quarter: 2023Q3 follows 2022Q4 across two
+quarters with nothing loaded, and 2023Q3 has no next period at all while
+2023Q4 is withheld. One period is enough, because a change depends on its own
+period and the one before it and nothing else. Only the changes walk forward.
+The next period's snapshot does not depend on this one, and rebuilding it would
+withhold it again if it had been published with `--include-suspect`.
+
+**Ingesting a filing runs it for you.** `ingest-filing` and `backfill` rebuild
+the pair each filing is filed under, and the period after, in the transaction
+that loads it. Rebuilds take turns on a Postgres advisory lock, so backfill's
+concurrent loads of one filer's quarters cannot build a change from a snapshot
+another load is replacing. Run it by hand after anything else that changes what
+counts toward a period. `seed-investors` moving a CIK or changing an overlap
+policy needs `--filer`, and a change to how either table is built needs `--all`.
+`--all` is also the backstop when in doubt. On a synthetic dataset the size of
+the curated universe, 1.6 million positions, it took about 45 seconds on stock
+Postgres settings, two thirds of it the derived tables' foreign key checks.
+
 **A period a suspect filing counts toward is withheld, all of it.** Not just
 that filing: 2023Q4's addition was fine, but the original without it is the
 portfolio before confidential treatment expired, and would read next quarter as
 Berkshire buying Chubb. `--include-suspect` publishes those periods and marks
 every row `suspect`, so data published without a check never looks like data
-published with one. It is not run on ingest: publishing is load, then
-`check-data`, then `recompute`. Exit 1 only if `--filer` names no filer.
+published with one. Exit 1 if `--filer` names no filer, and 2 without `--filer`,
+`--period` or `--all`, or with `--all` and either of them.
 
 Migrations `0011` and `0012` create the two tables empty, in their current
-shape, and `0013` adds exits without writing any, so run `recompute` once after
-upgrading past them.
+shape, and `0013` adds exits without writing any, so run `recompute --all` once
+after upgrading past them.
 
 ### `runs [--job NAME] [--limit N]`
 

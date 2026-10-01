@@ -58,6 +58,7 @@ from app.db.models.filing import Filing, ParseStatus
 from app.db.models.holding import Holding
 from app.db.models.position_snapshot import PositionSnapshot
 from app.db.queries.effective import EFFECTIVE_FILING
+from app.derived.scope import EVERYTHING, Scope
 
 #: :func:`snapshot_positions`'s columns, in order, as ``position_snapshot`` names them.
 SNAPSHOT_COLUMNS: Final = (
@@ -90,7 +91,7 @@ class SnapshotRebuild:
 
 
 def snapshot_positions(
-    *, include_suspect: bool = False, filer_id: int | None = None
+    *, include_suspect: bool = False, filer_id: int | None = None, scope: Scope = EVERYTHING
 ) -> Select[Any]:
     """The rows ``position_snapshot`` holds: one per security per ``(filer, period)``.
 
@@ -98,10 +99,12 @@ def snapshot_positions(
         Their rows come back with ``suspect`` true; without this they do not
         come back at all.
     :param filer_id: One filer's periods instead of every filer's.
+    :param scope: Only these ``(filer, period)`` pairs. A period's rows depend
+        on that period's filings alone, so they are the same either way.
     :returns: A select of :data:`SNAPSHOT_COLUMNS`, unordered. ``weight_pct``
         is unrounded here, and rounded to six places when stored.
     """
-    winning = _winning_filings(filer_id).cte("winning_filings")
+    winning = _winning_filings(filer_id, scope).cte("winning_filings")
     agg = _agg(winning, include_suspect=include_suspect).cte("agg")
 
     period_total = func.sum(agg.c.value_usd).over(
@@ -122,28 +125,30 @@ def snapshot_positions(
 
 
 async def recompute_position_snapshot(
-    session: AsyncSession, *, filer_id: int | None = None, include_suspect: bool = False
+    session: AsyncSession, scope: Scope = EVERYTHING, *, include_suspect: bool = False
 ) -> SnapshotRebuild:
-    """Replace ``position_snapshot`` — all of it, or one filer's rows — from ``holding``.
+    """Replace ``position_snapshot`` — all of it, or the rows in ``scope`` — from ``holding``.
 
     Delete and reinsert in the caller's transaction, which also commits it. A
     reader sees the old snapshot until then, and the new one after, and never a
     half-built one in between. ``DELETE`` rather than ``TRUNCATE`` for exactly
     that: ``TRUNCATE`` takes a lock that blocks every reader of the table for as
-    long as the rebuild runs.
+    long as the rebuild runs. And delete-and-insert rather than an upsert,
+    because a rebuild can remove rows: a position a restatement no longer
+    lists, a period a suspect filing now withholds. An upsert leaves them.
 
-    :param filer_id: Rebuild this filer's rows and leave every other filer's
-        alone, as they were last built.
+    :param scope: Rebuild these ``(filer, period)`` pairs and leave every other
+        row alone, as it was last built.
     :param include_suspect: Publish the periods a suspect filing counts toward,
         marked ``suspect``, instead of withholding them.
     """
-    scope = [] if filer_id is None else [PositionSnapshot.filer_id == filer_id]
+    in_scope = scope.covers(PositionSnapshot.filer_id, PositionSnapshot.period_of_report)
 
-    await session.execute(delete(PositionSnapshot).where(*scope))
+    await session.execute(delete(PositionSnapshot).where(*in_scope))
     await session.execute(
         insert(PositionSnapshot).from_select(
             SNAPSHOT_COLUMNS,
-            snapshot_positions(include_suspect=include_suspect, filer_id=filer_id),
+            snapshot_positions(include_suspect=include_suspect, scope=scope),
         )
     )
 
@@ -155,10 +160,10 @@ async def recompute_position_snapshot(
                     distinct(tuple_(PositionSnapshot.filer_id, PositionSnapshot.period_of_report))
                 ),
                 func.count(distinct(PositionSnapshot.filer_id)),
-            ).where(*scope)
+            ).where(*in_scope)
         )
     ).one()
-    winning = _winning_filings(filer_id).subquery()
+    winning = _winning_filings(None, scope).subquery()
     suspect_periods = await session.scalar(
         select(func.count(distinct(tuple_(winning.c.filer_id, winning.c.period_of_report)))).where(
             winning.c.suspect
@@ -174,7 +179,7 @@ async def recompute_position_snapshot(
     )
 
 
-def _winning_filings(filer_id: int | None) -> Select[Any]:
+def _winning_filings(filer_id: int | None, scope: Scope) -> Select[Any]:
     """Each filing that counts toward its ``(filer, period)``, and whether the period is suspect.
 
     ``suspect`` is the same on every filing of a period: true when any filing
@@ -182,6 +187,10 @@ def _winning_filings(filer_id: int | None) -> Select[Any]:
     keep one row per filing for the holdings to join to. It is decided here,
     before any holding is read, so a suspect filing withholds its period even
     when none of its own lines is common stock.
+
+    Both filters run before the window and remove whole ``(filer, period)``
+    partitions, so no period's ``suspect`` changes. Postgres pushes them down
+    into ``effective_filing``, whose own window is over the same partitions.
     """
     view = EFFECTIVE_FILING
     statement = (
@@ -197,6 +206,7 @@ def _winning_filings(filer_id: int | None) -> Select[Any]:
         )
         .select_from(view)
         .join(Filing, Filing.id == view.c.filing_id)
+        .where(*scope.covers(view.c.filer_id, view.c.period_of_report))
     )
     return statement if filer_id is None else statement.where(view.c.filer_id == filer_id)
 

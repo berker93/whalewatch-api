@@ -393,9 +393,12 @@ computed_at       timestamptz  not null default now()
 primary key (filer_id, period_of_report, security_id)
 ```
 
-Rebuilt wholesale by `whalewatch recompute`, for every filer or one, inside one
-transaction. Not refreshed on ingest, because publishing is a separate step:
-load, run `check-data`, then `recompute`.
+Rebuilt by `whalewatch recompute`, a set of `(filer, period)` pairs at a time:
+every pair, a filer's, a period's, or one. Each pair's rows are deleted and
+inserted again inside one transaction, never upserted, since a rebuild can
+remove rows a restatement no longer lists. `ingest-filing` and `backfill`
+rebuild the pair each filing is filed under in the transaction that loads it,
+so a loaded filing is a published one, unless the period is withheld (below).
 
 **Common stock only.** Lines with a `put_call` and `PRN` principal amounts are
 not rows here. An option's value is the notional of its underlying and a
@@ -529,9 +532,13 @@ One thing it does not do yet:
   feed, which is Epic 4. Until then, `check-data` flags the extreme ones as
   position jumps.
 
-Recomputed, never incrementally updated. An amendment landing months later
-changes a past period and the comparison of the period after it, and an
-incremental updater would have to find and fix every row downstream.
+Recomputed, never patched. An amendment landing months later changes a past
+period and the comparison of the period after it, and nothing else: a period's
+changes depend on its own snapshot and the filer's previous published one. So
+a rebuild of some `(filer, period)` pairs rebuilds their changes and the
+changes of each filer's next published period after them, which is next across
+a gap or a withheld quarter, not the next calendar quarter. Only the changes
+walk forward, because the next period's snapshot does not depend on this one.
 
 ### `filer_period`
 
