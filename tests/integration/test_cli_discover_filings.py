@@ -25,7 +25,7 @@ from app.cli import app
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.core.rate_limit import AsyncTokenBucket
-from app.db.models import Filer, FilerCik, Filing, PendingFiling
+from app.db.models import Filer, FilerCik, Filing, IngestionRun, PendingFiling
 from app.db.session import create_session_factory
 from app.ingestion.discovery import default_since, discover_filings
 from app.ingestion.edgar.client import EdgarClient
@@ -123,7 +123,7 @@ def _truncate(engine: AsyncEngine) -> None:
     _execute(
         engine,
         text(
-            "TRUNCATE pending_filing, holding, filing, security, filer_cik, filer "
+            "TRUNCATE ingestion_run, pending_filing, holding, filing, security, filer_cik, filer "
             "RESTART IDENTITY CASCADE"
         ),
     )
@@ -376,6 +376,19 @@ def test_a_cik_edgar_cannot_list_fails_the_run_but_not_the_other_ciks(
     assert "FAILED" in result.stdout
     assert f"pershing-square CIK {PERSHING_OLD}" in result.stdout
     assert [row[0] for row in _queue(migrated_engine)] == ["0002026053-25-000001"]
+
+    # Partial, not failed: the other CIK's filing was found and queued.
+    [(status, seen, written, error)] = _fetch(
+        migrated_engine,
+        select(
+            IngestionRun.status,
+            IngestionRun.items_seen,
+            IngestionRun.items_written,
+            IngestionRun.error,
+        ),
+    )
+    assert (status, seen, written) == ("partial", 1, 1)
+    assert error.startswith(f"pershing-square CIK {PERSHING_OLD}: ")
 
 
 @respx.mock

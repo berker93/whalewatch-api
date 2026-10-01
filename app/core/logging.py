@@ -25,7 +25,8 @@ never spell one of them a second way (no ``accession``, no ``accessionNumber``):
 ``filer_slug``      Our stable slug for a filer, e.g. ``berkshire-hathaway``
 ``period``          Reporting period the data belongs to, ``YYYY-MM-DD``
 ``job_name``        Name of the batch job, e.g. ``backfill_13f``
-``run_id``          One execution of a job; every line from that run shares it
+``run_id``          One execution of a job; every line from that run shares it.
+                    The ``id`` of its ``ingestion_run`` row
 ``request_id``      One HTTP request; bound by the middleware, see below
 ==================  ==========================================================
 
@@ -37,7 +38,11 @@ Binding context
 Values that describe *everything* an operation does should be bound once rather
 than repeated on each call::
 
-    structlog.contextvars.bind_contextvars(job_name="backfill_13f", run_id=run_id)
+    structlog.contextvars.bind_contextvars(accession_no=accession_no, cik=cik)
+
+A job's ``job_name`` and ``run_id`` are bound this way by
+:func:`~app.jobs.tracking.track_run`, which every job runs inside, and not by
+hand.
 
 ``contextvars`` and not thread-locals, because this codebase is async: a
 thread-local is shared by every coroutine the event loop interleaves on that

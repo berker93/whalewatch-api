@@ -1,5 +1,5 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
-audit-amendments, check-data, recompute, backfill, refresh-views.
+audit-amendments, check-data, recompute, backfill, runs, refresh-views.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -22,6 +22,16 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli audit-amendments --filer berkshire-hathaway
     uv run python -m app.cli check-data
     uv run python -m app.cli recompute --filer berkshire-hathaway
+    uv run python -m app.cli runs --job backfill_13f
+
+Every run is recorded
+---------------------
+Every verb that touches the database runs its body inside
+:func:`~app.jobs.tracking.track_run`, which writes an ``ingestion_run`` row as
+it starts and its outcome as it ends, and binds the row's id as ``run_id`` on
+every log line in between. ``runs`` lists them. The exceptions are ``runs``
+itself, which reads the record, and ``verify-investors``, which has no database
+to write it to. A test fails if a new verb is neither tracked nor one of those.
 
 Exit codes
 ----------
@@ -59,7 +69,6 @@ import asyncio
 import csv
 import sys
 import time
-import uuid
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -84,6 +93,7 @@ from app.db.models.pending_filing import PendingStatus
 from app.db.queries.amendments import PeriodFiling, PeriodResolution, audit_amendments
 from app.db.queries.checks import DataCheckReport, check_data
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
+from app.db.queries.runs import RunSummary, job_names, recent_runs
 from app.db.session import create_engine, create_session_factory, session_scope
 from app.derived.position_snapshot import SnapshotRebuild, recompute_position_snapshot
 from app.ingestion.archive import archive_13f_documents, read_13f_documents
@@ -140,6 +150,7 @@ from app.ingestion.parsers.thirteen_f import (
     parse_primary_doc,
 )
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
+from app.jobs.tracking import track_run
 from app.storage.raw import RawStore, RawStoreError, open_raw_store
 
 logger = get_logger(__name__)
@@ -271,33 +282,39 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
 
     A filing in ``pending_filing`` has each attempt written back to its row:
     ``done`` in the loader's own transaction, or a failure counted with its
-    message. A dry run writes neither.
+    message. A dry run writes neither. The run itself is recorded either way.
     """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
 
-    accession = _normalise_accession(accession_no)
-    structlog.contextvars.bind_contextvars(job_name="ingest-filing", accession_no=accession)
+    async with track_run(
+        settings, "ingest-filing", accession_no=accession_no, cik=cik, force=force, dry_run=dry_run
+    ) as run:
+        run.items_seen = 1
+        accession = _normalise_accession(accession_no)
+        structlog.contextvars.bind_contextvars(accession_no=accession)
 
-    known, queued = await _known_filing(settings, accession)
-    resolved_cik = _resolve_cik(cik, known=known, queued=queued, accession_no=accession)
+        known, queued = await _known_filing(settings, accession)
+        resolved_cik = _resolve_cik(cik, known=known, queued=queued, accession_no=accession)
 
-    if known is not None and known.parse_status in LOADED_STATUSES and not force:
-        if queued is not None and queued.status != PendingStatus.DONE and not dry_run:
-            async with session_scope(settings) as session:
-                await mark_ingested(session, accession)
-        _echo_skip(accession, known)
-        return
+        if known is not None and known.parse_status in LOADED_STATUSES and not force:
+            if queued is not None and queued.status != PendingStatus.DONE and not dry_run:
+                async with session_scope(settings) as session:
+                    await mark_ingested(session, accession)
+            _echo_skip(accession, known)
+            return
 
-    try:
-        report = await _fetch_and_load(
-            settings, accession, cik=resolved_cik, force=force, dry_run=dry_run
-        )
-    except Exception as failure:
-        if queued is not None and not dry_run:
-            await _record_failure(settings, accession, failure)
-        raise
-    _echo_report(report)
+        try:
+            report = await _fetch_and_load(
+                settings, accession, cik=resolved_cik, force=force, dry_run=dry_run
+            )
+        except Exception as failure:
+            if queued is not None and not dry_run:
+                await _record_failure(settings, accession, failure)
+            raise
+        if report.result is not None:
+            run.items_written = 1
+        _echo_report(report)
 
 
 async def _fetch_and_load(
@@ -895,23 +912,32 @@ async def _discover_filings(slug: str | None, *, since: date | None) -> bool:
     One engine for the run rather than a ``session_scope`` per filer: each of
     those builds and disposes an engine, and this opens two sessions per filer
     across a hundred filers.
+
+    Counted filer by filer, so a run that EDGAR blocks partway records what the
+    filers before the block found and queued, which are committed.
     """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-    structlog.contextvars.bind_contextvars(job_name="discover-filings")
 
-    engine = create_engine(settings)
-    sessions = create_session_factory(engine)
-    try:
-        async with sessions() as session:
-            filer_ids = await tracked_filer_ids(session, slug=slug)
-        async with EdgarClient(settings) as edgar:
-            results = [
-                await discover_filings(sessions, edgar, filer_id, since=since)
-                for filer_id in filer_ids
-            ]
-    finally:
-        await engine.dispose()
+    async with track_run(settings, "discover-filings", filer=slug, since=since) as run:
+        engine = create_engine(settings)
+        sessions = create_session_factory(engine)
+        results: list[FilerDiscovery] = []
+        try:
+            async with sessions() as session:
+                filer_ids = await tracked_filer_ids(session, slug=slug)
+            async with EdgarClient(settings) as edgar:
+                for filer_id in filer_ids:
+                    result = await discover_filings(sessions, edgar, filer_id, since=since)
+                    results.append(result)
+                    run.items_seen += len(result.found)
+                    run.items_written += len(result.new)
+                    run.errors.extend(
+                        f"{result.filer.slug} CIK {failure.cik}: {failure.error}"
+                        for failure in result.failures
+                    )
+        finally:
+            await engine.dispose()
 
     _echo_discovery(results, since=since)
     return any(result.failures for result in results)
@@ -1041,39 +1067,64 @@ async def _backfill(
     every worker. The client is opened even for a run that will only reprocess,
     because opening it sends nothing; the plan is what keeps such a run off
     the network, by giving the workers nothing to fetch.
+
+    The run is ``partial`` whenever this exits non-zero without raising: a
+    filing failed, EDGAR blocked the run, or Ctrl-C stopped it short. Each
+    failed filing is a line of ``ingestion_run.error``, as on its queue row.
     """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-    structlog.contextvars.bind_contextvars(job_name="backfill_13f", run_id=uuid.uuid4().hex)
     started = time.monotonic()
 
-    engine = create_engine(settings)
-    sessions = create_session_factory(engine)
-    run = BackfillRun(results=(), rate_limited=None)
-    try:
-        async with sessions.begin() as session:
-            plan = await plan_backfill(session, slug=slug, since=since, force=force, limit=limit)
-        _echo_plan(plan, slug=slug, since=since, concurrency=concurrency)
+    async with track_run(
+        settings,
+        "backfill_13f",
+        filer=slug,
+        since=since,
+        concurrency=concurrency,
+        limit=limit,
+        force=force,
+    ) as run:
+        engine = create_engine(settings)
+        sessions = create_session_factory(engine)
+        backfilled = BackfillRun(results=(), rate_limited=None)
+        try:
+            async with sessions.begin() as session:
+                plan = await plan_backfill(
+                    session, slug=slug, since=since, force=force, limit=limit
+                )
+            _echo_plan(plan, slug=slug, since=since, concurrency=concurrency)
+            run.items_seen = len(plan.work)
 
-        if plan.work:
-            async with open_raw_store(settings) as store, EdgarClient(settings) as edgar:
-                shared = _Shared(sessions=sessions, store=store, edgar=edgar)
-                with stop_on_interrupt(notify=_echo_stopping) as stop:
-                    run = await run_backfill(
-                        plan.work,
-                        process=partial(_backfill_filing, shared),
-                        on_failure=partial(record_attempt, sessions),
-                        on_result=_progress(len(plan.work)),
-                        concurrency=concurrency,
-                        stop=stop,
-                    )
-    finally:
-        await engine.dispose()
+            if plan.work:
+                async with open_raw_store(settings) as store, EdgarClient(settings) as edgar:
+                    shared = _Shared(sessions=sessions, store=store, edgar=edgar)
+                    with stop_on_interrupt(notify=_echo_stopping) as stop:
+                        backfilled = await run_backfill(
+                            plan.work,
+                            process=partial(_backfill_filing, shared),
+                            on_failure=partial(record_attempt, sessions),
+                            on_result=_progress(len(plan.work)),
+                            concurrency=concurrency,
+                            stop=stop,
+                        )
+        finally:
+            await engine.dispose()
 
-    _echo_backfill_summary(plan, run, elapsed=time.monotonic() - started)
-    if run.rate_limited is not None or run.count(Outcome.FAILED):
+        run.items_written = backfilled.count(Outcome.OK) + backfilled.count(Outcome.SUSPECT)
+        run.errors.extend(
+            f"{result.filing.accession_no}: {result.error}"
+            for result in backfilled.results
+            if result.outcome is Outcome.FAILED
+        )
+        not_started = backfilled.count(Outcome.NOT_STARTED)
+        if not_started:
+            run.errors.append(f"stopped with {not_started} not started; re-run to resume")
+
+    _echo_backfill_summary(plan, backfilled, elapsed=time.monotonic() - started)
+    if backfilled.rate_limited is not None or backfilled.count(Outcome.FAILED):
         return 1
-    return _INTERRUPTED if run.count(Outcome.NOT_STARTED) else 0
+    return _INTERRUPTED if backfilled.count(Outcome.NOT_STARTED) else 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1288,32 +1339,35 @@ def seed_investors_command(
 async def _seed_investors(path: Path, *, dry_run: bool) -> None:
     """Validate first, then write in one transaction.
 
-    The file is validated before a connection is opened, so a malformed list
-    fails in milliseconds with the problem named, rather than after a connect
-    and with a constraint violation that names a table.
+    The file is validated before the filer tables are touched, so a malformed
+    list fails with the problem named, rather than with a constraint violation
+    that names a table. Only the run's own row is written before it.
 
     A dry run is the real run rolled back, not a separate code path: it goes
     through the same upserts and conflict check, so what it prints is what the
-    real run will print.
+    real run will print. The run is recorded either way, with nothing written.
     """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-    structlog.contextvars.bind_contextvars(job_name="seed-investors")
 
-    entries = load_investors(path)
+    async with track_run(settings, "seed-investors", file=path, dry_run=dry_run) as run:
+        entries = load_investors(path)
+        run.items_seen = len(entries)
 
-    async with session_scope(settings) as session:
-        result = await seed_investors(session, entries)
-        if dry_run:
-            await session.rollback()
+        async with session_scope(settings) as session:
+            result = await seed_investors(session, entries)
+            if dry_run:
+                await session.rollback()
+        if not dry_run:
+            run.items_written = len(result.created) + len(result.updated)
 
-    logger.info(
-        "investors.seeded",
-        created=len(result.created),
-        updated=len(result.updated),
-        ciks_added=result.ciks_added,
-        dry_run=dry_run,
-    )
+        logger.info(
+            "investors.seeded",
+            created=len(result.created),
+            updated=len(result.updated),
+            ciks_added=result.ciks_added,
+            dry_run=dry_run,
+        )
     _echo_seed(path, entries, result, dry_run=dry_run)
 
 
@@ -1370,10 +1424,11 @@ def audit_overlaps_command(
 async def _audit_overlaps(slug: str | None) -> None:
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-    structlog.contextvars.bind_contextvars(job_name="audit-overlaps")
 
-    async with session_scope(settings) as session:
-        findings = await audit_overlaps(session, slug=slug)
+    async with track_run(settings, "audit-overlaps", filer=slug) as run:
+        async with session_scope(settings) as session:
+            findings = await audit_overlaps(session, slug=slug)
+        run.items_seen = len(findings)
 
     if not findings:
         typer.echo("audit-overlaps  no overlapping periods in the loaded filings")
@@ -1427,10 +1482,11 @@ def audit_amendments_command(
 async def _audit_amendments(slug: str | None) -> None:
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-    structlog.contextvars.bind_contextvars(job_name="audit-amendments")
 
-    async with session_scope(settings) as session:
-        periods = await audit_amendments(session, slug=slug)
+    async with track_run(settings, "audit-amendments", filer=slug) as run:
+        async with session_scope(settings) as session:
+            periods = await audit_amendments(session, slug=slug)
+        run.items_seen = len(periods)
 
     if not periods:
         typer.echo("audit-amendments  no filer has more than one filing for any period")
@@ -1517,13 +1573,18 @@ def check_data_command(
 
 
 async def _check_data(slug: str | None, *, include_suspect: bool) -> DataCheckReport:
+    """Run the checks and print them. A run that finds something is still a
+    ``success``: finding things is the job, and the exit code says it did."""
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-    structlog.contextvars.bind_contextvars(job_name="check-data")
 
-    async with session_scope(settings) as session:
-        filer_id = await _filer_id(session, slug)
-        report = await check_data(session, filer_id=filer_id, include_suspect=include_suspect)
+    async with track_run(
+        settings, "check-data", filer=slug, include_suspect=include_suspect
+    ) as run:
+        async with session_scope(settings) as session:
+            filer_id = await _filer_id(session, slug)
+            report = await check_data(session, filer_id=filer_id, include_suspect=include_suspect)
+        run.items_seen = report.findings
 
     _echo_check_data(report, scope=slug or "every filer")
     return report
@@ -1656,22 +1717,26 @@ def recompute_command(
 async def _recompute(slug: str | None, *, include_suspect: bool) -> None:
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-    structlog.contextvars.bind_contextvars(job_name="recompute")
 
-    async with session_scope(settings) as session:
-        filer_id = await _filer_id(session, slug)
-        rebuild = await recompute_position_snapshot(
-            session, filer_id=filer_id, include_suspect=include_suspect
+    async with track_run(settings, "recompute", filer=slug, include_suspect=include_suspect) as run:
+        async with session_scope(settings) as session:
+            filer_id = await _filer_id(session, slug)
+            rebuild = await recompute_position_snapshot(
+                session, filer_id=filer_id, include_suspect=include_suspect
+            )
+        # Periods, not positions, so that the gap between the two is the
+        # periods withheld for a suspect filing.
+        run.items_seen = rebuild.periods + rebuild.withheld
+        run.items_written = rebuild.periods
+
+        logger.info(
+            "position_snapshot.recomputed",
+            filer=slug,
+            positions=rebuild.positions,
+            periods=rebuild.periods,
+            suspect_periods=rebuild.suspect_periods,
+            include_suspect=include_suspect,
         )
-
-    logger.info(
-        "position_snapshot.recomputed",
-        filer=slug,
-        positions=rebuild.positions,
-        periods=rebuild.periods,
-        suspect_periods=rebuild.suspect_periods,
-        include_suspect=include_suspect,
-    )
     _echo_rebuild(rebuild, scope=slug or "every filer")
 
 
@@ -1692,6 +1757,75 @@ def _echo_rebuild(rebuild: SnapshotRebuild, *, scope: str) -> None:
             f"{periods} with a suspect filing — check-data lists them; "
             "--include-suspect publishes them",
         )
+
+
+# --- runs --------------------------------------------------------------------
+
+#: Wide enough for every job name in use, so the columns after it line up.
+_JOB_WIDTH: Final = 16
+
+#: How much of a run's first error fits on its line under the run.
+_ERROR_WIDTH: Final = 90
+
+
+@app.command("runs")
+def runs_command(
+    job: Annotated[
+        str | None,
+        typer.Option("--job", metavar="NAME", help="Only runs of this job, e.g. backfill_13f."),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", metavar="N", min=1, help="How many runs to list."),
+    ] = 20,
+) -> None:
+    """List the most recent job runs, newest first, from ingestion_run.
+
+    One line per run: when it started, the job, how it ended, how long it took,
+    and what it counted. Under a run that did not succeed, the first line of
+    its error. A run still marked running long after it started is a process
+    that died without recording why. Writes nothing, and is not itself a run.
+    """
+    asyncio.run(_runs(job, limit=limit))
+
+
+async def _runs(job_name: str | None, *, limit: int) -> None:
+    """Not tracked: a listing that added a row to what it lists would show
+    itself first, every time."""
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+
+    async with session_scope(settings) as session:
+        runs = await recent_runs(session, job_name=job_name, limit=limit)
+        known = await job_names(session) if not runs and job_name is not None else []
+
+    scope = f" of {job_name}" if job_name is not None else ""
+    if not runs:
+        # A name that matches nothing is more often a misremembered name than
+        # a job that never ran, so say which names do match.
+        hint = f"; jobs with runs: {', '.join(known)}" if known else ""
+        typer.echo(f"runs  no runs{scope} recorded{hint}")
+        return
+    typer.echo(f"runs  {_count(len(runs), 'most recent run')}{scope}")
+    typer.echo(
+        f"  {'started':<25}  {'job':<{_JOB_WIDTH}}  {'status':<7}  {'elapsed':>7}  "
+        f"{'seen':>6}  {'written':>7}  run_id"
+    )
+    for run in runs:
+        _echo_run(run)
+
+
+def _echo_run(run: RunSummary) -> None:
+    """The run's line and, when it did not succeed, why, with how much more there is."""
+    typer.echo(
+        f"  {_instant(run.started_at):<25}  {run.job_name:<{_JOB_WIDTH}}  {run.status:<7}  "
+        f"{_duration(run.elapsed.total_seconds()):>7}  {run.items_seen:>6}  "
+        f"{run.items_written:>7}  {run.id}"
+    )
+    if run.error:
+        first, *rest = run.error.splitlines()
+        more = f"  (+{len(rest)} more)" if rest else ""
+        typer.echo(f"  {'':<25}  {_truncate(first, _ERROR_WIDTH)}{more}")
 
 
 # --- verify-investors --------------------------------------------------------
@@ -1769,7 +1903,13 @@ def verify_investors_command(
 
 
 async def _verify_investors(path: Path, *, csv_path: Path | None, today: date) -> bool:
-    """Run the checks and print them. Returns whether any CIK failed."""
+    """Run the checks and print them. Returns whether any CIK failed.
+
+    The one job not recorded in ``ingestion_run``, because it has no database
+    to record it in: it runs on the host and in a GitHub workflow, against
+    EDGAR and the YAML file only. Its record is the workflow's run history and
+    the CSV that run uploads.
+    """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
     structlog.contextvars.bind_contextvars(job_name="verify-investors")

@@ -309,11 +309,20 @@ rate-limit block is the exception, and it stops the run. `--force` reparses
 loaded filings from the raw store, with `filed_at` taken from their `filing`
 row. The first SIGINT lets in-flight filings finish and starts no new ones.
 
-**Logging.** Every backfill binds `job_name` and `run_id`, and every filing binds
+**Logging.** Every job binds `job_name` and `run_id`, and every filing binds
 `accession_no` and `cik`, per the vocabulary in
 [the README](../README.md#logging). A backfill of 2,000 filings that dies on
 number 1,347 is only debuggable if one grep returns every line that touched that
 filing.
+
+**Run records.** Every job runs inside
+[`track_run`](../app/jobs/tracking.py), CLI verb and Celery task alike, and
+leaves one `ingestion_run` row: its parameters, its counters, and `success`,
+`partial` or `failed` with what went wrong. The row's `id` is the `run_id` in
+the log. So whether last night's backfill finished is
+`whalewatch runs --job backfill_13f`, or the `SELECT` behind it, and the answer
+does not depend on whoever started it still having the terminal open. See
+[`ingestion_run`](data-model.md#ingestion_run).
 
 **When a backfill goes wrong**, the recovery is
 [`make reset-db`](../README.md#everyday-commands) plus a re-parse from

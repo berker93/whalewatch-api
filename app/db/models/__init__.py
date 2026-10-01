@@ -24,19 +24,29 @@ from app.db.models.filing import (
     ParseStatus,
 )
 from app.db.models.holding import MONEY, QUANTITY, Holding
+from app.db.models.ingestion_run import (
+    FINISHED_CHECK,
+    NOT_SUCCESS_SAYS_WHY_CHECK,
+    RUN_STATUS_CHECK,
+    IngestionRun,
+    RunStatus,
+)
 from app.db.models.pending_filing import PENDING_STATUS_CHECK, PendingFiling, PendingStatus
 from app.db.models.position_snapshot import WEIGHT, PositionSnapshot
 from app.db.models.security import Security
 
 __all__ = [
     "CATEGORY_CHECK",
+    "FINISHED_CHECK",
     "MONEY",
     "NAMING_CONVENTION",
+    "NOT_SUCCESS_SAYS_WHY_CHECK",
     "OVERLAP_CHECK",
     "PARSE_STATUS_CHECK",
     "PENDING_STATUS_CHECK",
     "QUANTITY",
     "QUARTER_EXPRESSION",
+    "RUN_STATUS_CHECK",
     "SUSPECT_HAS_NOTES_CHECK",
     "WEIGHT",
     "AmendmentKind",
@@ -46,10 +56,12 @@ __all__ = [
     "FilerCik",
     "Filing",
     "Holding",
+    "IngestionRun",
     "OverlapPolicy",
     "ParseStatus",
     "PendingFiling",
     "PendingStatus",
     "PositionSnapshot",
+    "RunStatus",
     "Security",
 ]

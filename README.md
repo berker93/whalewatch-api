@@ -110,6 +110,10 @@ or, from a shell that can reach the database directly:
 uv run python -m app.cli ingest-filing 0001067983-24-000011 --cik 1067983
 ```
 
+Every verb records its run in `ingestion_run` — when it started and finished,
+how it ended, what it counted — and [`runs`](#runs---job-name---limit-n) lists
+them.
+
 ### `discover-filings [--filer SLUG] [--since DATE | --all]`
 
 Finds the work. For every tracked filer, or only `--filer`, it lists each of the
@@ -207,7 +211,9 @@ next run picks them up.
 **Exit codes.** 0 when everything planned was loaded or skipped. 1 if any
 filing failed or EDGAR blocked the run. 130 if it was interrupted with nothing
 failed. Every line from one run carries the same `run_id` in the log, and every
-line about one filing carries its `accession_no`.
+line about one filing carries its `accession_no`. The run's `ingestion_run` row
+is `partial` whenever it exits 1 or 130, with each failed filing on a line of
+its `error`.
 
 ### `ingest-filing ACCESSION_NO [--cik] [--force] [--dry-run]`
 
@@ -465,6 +471,61 @@ Berkshire buying Chubb. `--include-suspect` publishes those periods and marks
 every row `suspect`, so data published without a check never looks like data
 published with one. It is not run on ingest: publishing is load, then
 `check-data`, then `recompute`. Exit 1 only if `--filer` names no filer.
+
+### `runs [--job NAME] [--limit N]`
+
+Lists the most recent job runs, newest first, from `ingestion_run`. Every verb
+above writes one row as it starts and fills in how it ended, so "did the
+backfill finish?" is answered here or in SQL rather than by scrolling back
+through a terminal:
+
+```
+runs  2 most recent runs
+  started                    job               status   elapsed    seen  written  run_id
+  2026-10-01 11:50:00+00:00  backfill_13f      partial    3m12s      21       19  5c1d0e6a-…
+                             0001193125-22-000123: FilingDocumentsError: no information table  (+1 more)
+  2026-10-01 10:30:00+00:00  discover-filings  success    12.0s      61       21  9b2f4a17-…
+```
+
+```sql
+SELECT status, items_seen, items_written, error
+FROM ingestion_run WHERE job_name = 'backfill_13f'
+ORDER BY started_at DESC LIMIT 1;
+```
+
+| Flag | |
+| --- | --- |
+| `--job` | Only runs of this job. Job names are the verbs, except `backfill`, which records as `backfill_13f`. A name with no runs lists the names that have some |
+| `--limit` | How many runs, default 20 |
+
+| Status | Means |
+| --- | --- |
+| `running` | Started, not finished. One that started hours ago is a process that died without recording why (`SIGKILL`, OOM). Nothing else leaves a run in this state |
+| `success` | Finished, and everything it took on went through |
+| `partial` | Finished with something left undone: failed filings, an unreadable CIK, a backfill EDGAR blocked or Ctrl-C stopped. `error` has one line per item |
+| `failed` | Raised. `error` starts with `ExceptionType: message`. A second Ctrl-C lands here, as `CancelledError` |
+
+**`run_id` is the row's `id`.** It is bound to every log line the run writes,
+so the row leads to the log and the log back to the row with one grep. `context`
+holds the run's parameters as `jsonb`, e.g. `WHERE context @> '{"force": true}'`.
+
+**What the counters count**, per job:
+
+| Job | `items_seen` | `items_written` |
+| --- | --- | --- |
+| `backfill_13f` | Filings it set out to ingest or reprocess. Skipped ones do not count, as with `--limit` | Filings loaded, `ok` or `suspect` |
+| `discover-filings` | Filings found in EDGAR's listings | Filings now in `pending_filing` |
+| `ingest-filing` | 1 | 1 when it loaded, 0 when skipped or a dry run |
+| `seed-investors` | Filers in the list | Filers created or updated, 0 on a dry run |
+| `recompute` | Periods resolved, published or withheld | Periods published |
+| `check-data`, `audit-*` | Findings reported | 0 |
+
+**Every verb records its run except two.** `runs` reads the record, and a
+listing that added itself would always show itself first. `verify-investors`
+never opens a database: it runs on the host and in a GitHub workflow, and that
+workflow's history is its record. A test fails if a new verb is neither tracked
+nor one of these. Jobs written later do the same, through
+[`track_run`](app/jobs/tracking.py).
 
 ## The API
 
@@ -798,13 +859,14 @@ anywhere inside that request carries it without being passed one:
  "duration_ms": 3.21, "request_id": "d5ba98bedf344d1c93b534184024906d", ...}
 ```
 
-Give a customer the id from the header and their whole request is one grep. Bind
-the same way in batch work, and one run is one grep:
+Give a customer the id from the header and their whole request is one grep.
+Batch work gets the same from [`track_run`](app/jobs/tracking.py), which binds
+`job_name` and `run_id` for the run's duration. The `run_id` is the id of the
+run's `ingestion_run` row, so one run is one grep, and one `SELECT`:
 
 ```python
-import structlog
-
-structlog.contextvars.bind_contextvars(job_name="backfill_13f", run_id=run_id)
+async with track_run(settings, "backfill_13f", filer=slug) as run:
+    ...  # every line logged in here carries run_id and job_name
 ```
 
 `contextvars` rather than thread-locals, deliberately: a thread-local is shared
@@ -823,7 +885,7 @@ second way — no `accession`, no `accessionNumber`:
 | `filer_slug` | Our stable slug for a filer, e.g. `berkshire-hathaway` |
 | `period` | Reporting period the data belongs to, `YYYY-MM-DD` |
 | `job_name` | Name of the batch job, e.g. `backfill_13f` |
-| `run_id` | One execution of a job; every line from that run shares it |
+| `run_id` | One execution of a job; every line from that run shares it. The `id` of its `ingestion_run` row |
 | `request_id` | One HTTP request; bound by the middleware |
 
 **One stream.** uvicorn, SQLAlchemy and Alembic log through the standard library

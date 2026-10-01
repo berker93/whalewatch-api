@@ -503,6 +503,38 @@ unique (accession_no, filename)
 `sha256` is what makes a re-fetch cheap to verify and what proves, when a number
 looks wrong two years from now, whether the bytes changed or our parser did.
 
+### `ingestion_run`
+
+```
+id             uuid         pk default gen_random_uuid()   -- the run_id in the logs
+job_name       text         not null                       -- the CLI verb, or backfill_13f
+status         text         not null default 'running'     -- running | success | partial | failed
+started_at     timestamptz  not null default now()
+finished_at    timestamptz                                  -- null exactly while running
+items_seen     integer      not null default 0
+items_written  integer      not null default 0
+error          text                                         -- one line per thing that went wrong
+context        jsonb        not null default '{}'           -- the run's parameters
+index (job_name, started_at desc)
+```
+
+One row per execution of a job, so "did the backfill finish?" is a `SELECT`.
+[`track_run`](../app/jobs/tracking.py) writes it as the job starts and fills in
+the outcome as it ends, through sessions of its own. A job that fails
+mid-transaction rolls back its own writes, not the record of why it failed.
+`id` is generated before the row is written and bound to every log line as
+`run_id`, so the row and the log lead to each other. A UUID rather than a
+sequence because a UUID is one grep and `42` is every line with a 42 in it.
+
+`partial` is a run that finished with something left undone: failed filings,
+an unreadable CIK, a backfill stopped short. `error` lists each, the failure
+first when the run raised. A `running` row with no process behind it is a
+`SIGKILL` or an OOM. There is no heartbeat, so its age is the only tell.
+
+Not in any layer above. It describes the pipeline, not the filings, and nothing
+reads it for correctness. Unlike `pending_filing` it only grows, hence the one
+index, for its one question: the latest runs of a job.
+
 ## Partitioning
 
 `holding` is the only table with a partitioning plan, and it is deferred until it
@@ -545,6 +577,10 @@ The ones worth a constraint rather than a convention. Everything marked
 - **enforced** — `filing.parse_status IN ('pending','ok','suspect','failed')`.
 - **enforced** — `pending_filing.status IN ('pending','failed','done')` and
   `attempts >= 0` (`0007_pending_filing`).
+- **enforced** — `ingestion_run.status IN ('running','success','partial','failed')`,
+  `finished_at` is null exactly when the status is `running`, a `partial` or
+  `failed` run has a non-null `error`, and both counters are `>= 0`
+  (`0010_ingestion_run`).
 - **enforced** — a `suspect` filing has non-null `parse_notes`. A filing we do not
   fully believe has to say why; the status exists to send a person to a specific
   row of a specific document, which a bare flag cannot do.

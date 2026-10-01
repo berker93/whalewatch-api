@@ -31,7 +31,15 @@ from app.cli import app
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.core.rate_limit import AsyncTokenBucket
-from app.db.models import Filer, FilerCik, Filing, Holding, PendingFiling, Security
+from app.db.models import (
+    Filer,
+    FilerCik,
+    Filing,
+    Holding,
+    IngestionRun,
+    PendingFiling,
+    Security,
+)
 from app.storage.raw import LocalRawStore
 from tests.conftest import make_settings
 
@@ -213,7 +221,7 @@ def _truncate(engine: AsyncEngine) -> None:
     _execute(
         engine,
         text(
-            "TRUNCATE pending_filing, holding, filing, security, filer_cik, filer "
+            "TRUNCATE ingestion_run, pending_filing, holding, filing, security, filer_cik, filer "
             "RESTART IDENTITY CASCADE"
         ),
     )
@@ -251,6 +259,19 @@ def _enqueue(engine: AsyncEngine, *specs: _Spec) -> None:
                 }
                 for spec in specs
             ]
+        ),
+    )
+
+
+def _recorded(engine: AsyncEngine) -> list[tuple[Any, ...]]:
+    """The run's row: status, the two counters, and the error."""
+    return _fetch(
+        engine,
+        select(
+            IngestionRun.status,
+            IngestionRun.items_seen,
+            IngestionRun.items_written,
+            IngestionRun.error,
         ),
     )
 
@@ -466,6 +487,109 @@ def test_a_suspect_filing_loads_and_is_counted_as_suspect(
     assert _loaded(migrated_engine) == [(Q1.accession_no, "suspect")]
     assert "berkshire-hathaway 2024Q1 · 2 rows · suspect" in result.stdout
     assert "succeeded 0 · skipped 0 · failed 0 · suspect 1" in result.stdout
+
+
+# --- the run's record --------------------------------------------------------
+
+
+@respx.mock
+def test_a_clean_run_is_recorded_and_every_log_line_carries_its_id(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """The question this exists for, as a query: did the backfill finish?
+    And the run_id on the row is the one to grep for, which returns every
+    line, the per-filing ones and the HTTP requests included."""
+    _edgar(Q1, Q2)
+    _enqueue(migrated_engine, Q1, Q2)
+
+    result = runner.invoke(app, ["backfill", "--concurrency", "2", "--since", "2024-01-01"])
+
+    assert result.exit_code == 0, result.output
+    assert _recorded(migrated_engine) == [("success", 2, 2, None)]
+    [(run_id, context)] = _fetch(migrated_engine, select(IngestionRun.id, IngestionRun.context))
+    assert context == {
+        "filer": None,
+        "since": "2024-01-01",
+        "concurrency": 2,
+        "limit": None,
+        "force": False,
+    }
+
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert lines
+    assert all(f"run_id={run_id}" in line for line in lines), result.stderr
+    assert sum("filing.ingested" in line for line in lines) == 2
+
+
+@respx.mock
+def test_a_run_with_a_failed_filing_is_partial_and_names_it(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    _edgar(Q1, Q2, primary_doc={Q1.accession_no: _primary_doc(Q1)[:200]})
+    _enqueue(migrated_engine, Q1, Q2)
+
+    result = runner.invoke(app, ["backfill", "--concurrency", "1"])
+
+    assert result.exit_code == 1
+    [(status, seen, written, error)] = _recorded(migrated_engine)
+    assert (status, seen, written) == ("partial", 2, 1)
+    # One line, in the queue row's words.
+    [(last_error,)] = _fetch(
+        migrated_engine,
+        select(PendingFiling.last_error).where(PendingFiling.accession_no == Q1.accession_no),
+    )
+    assert error == f"{Q1.accession_no}: {last_error}"
+
+
+@respx.mock
+def test_a_run_stopped_by_ctrl_c_is_partial_and_says_so(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """Finished cleanly, but not finished: the next run has work to do."""
+    _edgar(Q1, Q2)
+    _enqueue(migrated_engine, Q1, Q2)
+
+    def interrupt(request: Request) -> Response:
+        signal.raise_signal(signal.SIGINT)
+        return _listing()
+
+    respx.get(f"{Q1.directory}/index.json").side_effect = interrupt
+
+    result = runner.invoke(app, ["backfill", "--concurrency", "1"])
+
+    assert result.exit_code == 130, result.output
+    assert _recorded(migrated_engine) == [
+        ("partial", 2, 1, "stopped with 1 not started; re-run to resume")
+    ]
+
+
+@respx.mock
+def test_a_resumed_run_with_nothing_left_records_nothing_taken_on(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """Skipped filings are not what the run took on, as with --limit, so a
+    resume of a finished backfill is 0 of 0 rather than 0 of 2."""
+    _edgar(Q1, Q2)
+    _enqueue(migrated_engine, Q1, Q2)
+    assert runner.invoke(app, ["backfill"]).exit_code == 0
+
+    assert runner.invoke(app, ["backfill"]).exit_code == 0
+
+    assert _fetch(
+        migrated_engine,
+        select(IngestionRun.status, IngestionRun.items_seen, IngestionRun.items_written).order_by(
+            IngestionRun.started_at
+        ),
+    ) == [("success", 2, 2), ("success", 0, 0)]
+
+
+def test_a_run_that_cannot_start_is_failed(runner: CliRunner, migrated_engine: AsyncEngine) -> None:
+    result = runner.invoke(app, ["backfill", "--filer", "no-such-fund"])
+
+    assert result.exit_code == 1
+    assert _recorded(migrated_engine) == [
+        ("failed", 0, 0, "UnknownFilerError: no filer has the slug 'no-such-fund'")
+    ]
 
 
 # --- --force -----------------------------------------------------------------
