@@ -11,7 +11,17 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Numeric, Text, func
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -192,4 +202,13 @@ class PositionChange(Base):
         CheckConstraint(ACTION_CHECK, name="action_is_known"),
         CheckConstraint(NEW_CHECK, name="new_when_not_held_before"),
         CheckConstraint(EXIT_CHECK, name="an_exit_holds_nothing"),
+        # Who added, trimmed, opened or exited a stock in a period (0017).
+        # Partial because that question never includes a hold, so only a query
+        # that says action <> 'hold' can use it.
+        Index(
+            "ix_position_change_period_of_report_security_id_not_hold",
+            "period_of_report",
+            "security_id",
+            postgresql_where=text("action <> 'hold'"),
+        ),
     )

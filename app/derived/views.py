@@ -60,27 +60,43 @@ places and the midpoint of two has seven, and rounded to six as the average is.
 
 Refreshing
 ----------
-Refreshed by ``whalewatch refresh-views``, when a period's ingestion is
-complete, not on a timer. A timer refreshes mid-backfill and publishes a
-quarter with a third of its filers in it. Until then each view is as of its
-last refresh, which is the point of it.
+Refreshed by ``whalewatch refresh-views``. ``recompute`` runs it after every
+rebuild. ``ingest-filing`` runs it after a load that publishes. ``backfill``
+runs it once, at the end, if anything loaded, and never after each filing: a
+refresh in the middle of a backfill publishes a quarter with a third of its
+filers in it. None of them runs on a timer. Until the next refresh each view
+is as of its last one, which is the point of it.
 
-Concurrently, so reads go on through a refresh. That needs a unique index on
-plain columns, with no ``WHERE``, on each view, and the migration creates one.
-A view that has never been populated cannot be refreshed concurrently, and is
-refreshed plainly once.
+Concurrently, so reads go on through a refresh. ``REFRESH ... CONCURRENTLY``
+builds the new rows beside the old ones and applies the difference, and
+readers see the old rows until the commit. It needs a unique index on plain
+columns, with no ``WHERE``, on each view, and the migration creates one. It
+also does more work than a plain refresh, which empties the view and fills it
+again under a lock that blocks every read until the commit. That cost is
+worth paying to never block the API. A view that has never been populated
+cannot be refreshed concurrently, and is refreshed plainly once.
 
 :func:`refresh_views` holds the recompute lock while it runs. Every rebuild of
 the derived tables takes the same lock, so none commits between the first
-refresh and the last. All three views are refreshed from the same snapshot,
+refresh and the last. All the views are refreshed from the same snapshot,
 and agree with each other.
+
+A view that reads another is refreshed after it. The order is read from the
+catalog (:func:`view_reads`), not declared here, so a new view that reads an
+old one is ordered correctly without anyone listing the dependency. None does
+yet.
+
+Each refresh records its time in ``matview_refresh``, in the same transaction,
+for the API to report how old an aggregate is (:func:`last_refreshed`).
 """
 
 from __future__ import annotations
 
-import time
-from collections.abc import Callable
+import uuid
+from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Final
 
@@ -102,8 +118,10 @@ from sqlalchemy import (
     table,
     text,
 )
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.matview_refresh import MatviewRefresh
 from app.db.models.position_change import ChangeAction, PositionChange
 from app.db.models.position_snapshot import PositionSnapshot
 from app.derived.recompute import hold_recompute_lock
@@ -334,12 +352,103 @@ class MaterialisedView:
         return self.handle.name
 
 
-#: Every materialised view, in the order ``refresh-views`` refreshes them.
+#: Every materialised view. ``refresh-views`` refreshes them in this order,
+#: except that a view that reads another always comes after it.
 MATERIALISED_VIEWS: Final = (
     MaterialisedView(CONSENSUS_HOLDINGS, ("period_of_report", "security_id"), consensus_holdings),
     MaterialisedView(QUARTER_FLOWS, ("period_of_report", "security_id"), quarter_flows),
     MaterialisedView(FILER_SUMMARY, ("filer_id", "period_of_report"), filer_summary),
 )
+
+
+# Every materialised view in this schema, and every relation its query names,
+# directly or through plain views. A view's rewrite rule depends on each
+# relation it reads, and on the view itself, which is left out. Matviews only:
+# a plain view is followed, not returned.
+_READS: Final = text("""
+    WITH RECURSIVE reads (reader, source) AS (
+        SELECT r.ev_class, d.refobjid
+        FROM pg_rewrite r
+        JOIN pg_class m ON m.oid = r.ev_class
+        JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid
+        WHERE m.relkind = 'm'
+          AND m.relnamespace = to_regnamespace(current_schema())
+          AND d.refclassid = 'pg_class'::regclass
+          AND d.refobjid <> r.ev_class
+      UNION
+        SELECT reads.reader, d.refobjid
+        FROM reads
+        JOIN pg_class v ON v.oid = reads.source AND v.relkind = 'v'
+        JOIN pg_rewrite r ON r.ev_class = v.oid
+        JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid
+        WHERE d.refclassid = 'pg_class'::regclass
+          AND d.refobjid <> v.oid
+    )
+    SELECT DISTINCT reader.relname, source.relname
+    FROM reads
+    JOIN pg_class reader ON reader.oid = reads.reader
+    JOIN pg_class source ON source.oid = reads.source
+    WHERE source.relkind = 'm'
+""")
+
+
+async def view_reads(session: AsyncSession) -> dict[str, frozenset[str]]:
+    """The materialised views each materialised view reads, by name, from the catalog.
+
+    Including those it reads through a plain view. A view that reads no other
+    is not a key.
+    """
+    reads: defaultdict[str, set[str]] = defaultdict(set)
+    for reader, source in (await session.execute(_READS)).tuples():
+        reads[reader].add(source)
+    return {reader: frozenset(sources) for reader, sources in reads.items()}
+
+
+def in_refresh_order(
+    views: Sequence[MaterialisedView],
+    reads: Mapping[str, frozenset[str]],
+    *,
+    only: str | None = None,
+) -> list[MaterialisedView]:
+    """``views``, each after every one of them it reads, and otherwise in their own order.
+
+    With ``only``, that view and each view that reads it, directly or through
+    another. Refreshing a view without the views that read it would leave them
+    disagreeing with it. The views it reads are left as they are, as of their
+    own last refresh, since only the one view was asked for.
+
+    :param reads: What :func:`view_reads` returns.
+    :raises ValueError: ``only`` is not one of ``views``.
+    """
+    names = {view.name for view in views}
+    if only is None:
+        wanted = names
+    elif only not in names:
+        raise ValueError(f"{only!r} is not a materialised view")
+    else:
+        wanted = {only}
+        while more := {reader for reader in names - wanted if reads.get(reader, set()) & wanted}:
+            wanted |= more
+
+    pending = [view for view in views if view.name in wanted]
+    ordered: list[MaterialisedView] = []
+    while pending:
+        # There is always one: Postgres cannot make a cycle of views. A view
+        # can only read one that already exists, and a materialised view's
+        # query cannot be replaced afterwards.
+        done = {view.name for view in ordered}
+        ready = next(view for view in pending if reads.get(view.name, set()) & wanted <= done)
+        ordered.append(ready)
+        pending.remove(ready)
+    return ordered
+
+
+async def refresh_order(
+    session: AsyncSession, *, only: str | None = None
+) -> list[MaterialisedView]:
+    """What ``refresh-views`` refreshes, in the order it does: :func:`in_refresh_order`
+    of every view, with the dependencies the catalog has now."""
+    return in_refresh_order(MATERIALISED_VIEWS, await view_reads(session), only=only)
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,35 +458,91 @@ class Refreshed:
     name: str
     rows: int
     concurrently: bool
-    """False only for a view never populated before, which cannot be refreshed
-    concurrently."""
+    """False for a view never populated before, which cannot be refreshed
+    concurrently, and for every view in a refresh asked not to be."""
     seconds: float
+    refreshed_at: datetime
+    """As ``matview_refresh`` records it."""
 
 
-async def refresh_views(session: AsyncSession) -> list[Refreshed]:
-    """Refresh every materialised view from the derived tables, in the caller's transaction.
+async def refresh_views(
+    session: AsyncSession,
+    views: Sequence[MaterialisedView] | None = None,
+    *,
+    concurrently: bool = True,
+    run_id: uuid.UUID | None = None,
+) -> list[Refreshed]:
+    """Refresh ``views`` in the caller's transaction, and record each in ``matview_refresh``.
 
     Takes the recompute lock first, and holds it until the caller commits, so
     no rebuild lands between one view's refresh and the next. Readers see each
-    view as it was until the commit, and refreshed after it.
+    view as it was until the commit, and refreshed after it. The views'
+    ``matview_refresh`` rows commit with them.
+
+    Times are the database's ``clock_timestamp()``, for ``ingestion_run``'s
+    reason: a duration never mixes two machines' clocks.
+
+    :param views: In the order to refresh them, as :func:`refresh_order` gives
+        them. By default every view, in that order.
+    :param concurrently: Readers go on reading each view as it was. Without
+        it, each view is refreshed faster, but locked against reads from its
+        refresh until the caller commits, which is after the last view. A view
+        never populated is refreshed plainly either way.
+    :param run_id: The run doing this, for ``matview_refresh.run_id``.
     """
     await hold_recompute_lock(session)
+    if views is None:
+        views = await refresh_order(session)
+
     refreshed: list[Refreshed] = []
-    for view in MATERIALISED_VIEWS:
-        populated = await session.scalar(
-            text(
-                "SELECT ispopulated FROM pg_matviews "
-                "WHERE schemaname = current_schema() AND matviewname = :name"
-            ),
-            {"name": view.name},
-        )
-        concurrently = "CONCURRENTLY " if populated else ""
-        started = time.perf_counter()
+    for view in views:
+        started, populated = (
+            await session.execute(
+                text(
+                    "SELECT clock_timestamp(), (SELECT ispopulated FROM pg_matviews "
+                    "WHERE schemaname = current_schema() AND matviewname = :name)"
+                ),
+                {"name": view.name},
+            )
+        ).one()
+        concurrent = concurrently and bool(populated)
         # The name is one of ours, not input: there is nothing to quote.
-        await session.execute(text(f"REFRESH MATERIALIZED VIEW {concurrently}{view.name}"))
-        seconds = time.perf_counter() - started
+        how = "CONCURRENTLY " if concurrent else ""
+        await session.execute(text(f"REFRESH MATERIALIZED VIEW {how}{view.name}"))
+        recorded = insert(MatviewRefresh).values(
+            view_name=view.name, refreshed_at=func.clock_timestamp(), run_id=run_id
+        )
+        finished = await session.scalar(
+            recorded.on_conflict_do_update(
+                index_elements=[MatviewRefresh.view_name],
+                set_={
+                    "refreshed_at": recorded.excluded.refreshed_at,
+                    "run_id": recorded.excluded.run_id,
+                },
+            ).returning(MatviewRefresh.refreshed_at)
+        )
+        assert finished is not None
         rows = await session.scalar(select(func.count()).select_from(view.handle))
         refreshed.append(
-            Refreshed(name=view.name, rows=rows or 0, concurrently=bool(populated), seconds=seconds)
+            Refreshed(
+                name=view.name,
+                rows=rows or 0,
+                concurrently=concurrent,
+                seconds=(finished - started).total_seconds(),
+                refreshed_at=finished,
+            )
         )
     return refreshed
+
+
+async def last_refreshed(session: AsyncSession) -> dict[str, datetime | None]:
+    """When each materialised view was last refreshed, by name. Every view is a key.
+
+    ``None`` for a view not refreshed since ``matview_refresh`` was created,
+    whose last refresh is unknown. This is what lets a response built from a
+    view say how old it is. It is for the API's endpoint over the aggregates
+    (API-7) to serve.
+    """
+    rows = await session.execute(select(MatviewRefresh.view_name, MatviewRefresh.refreshed_at))
+    recorded = {name: refreshed_at for name, refreshed_at in rows.tuples()}
+    return {view.name: recorded.get(view.name) for view in MATERIALISED_VIEWS}

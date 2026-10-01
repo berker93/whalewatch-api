@@ -22,6 +22,7 @@ Docker.
 | [Product spec](docs/product-spec.md) | What the API answers, the endpoint surface, non-goals, the epic roadmap, the domain glossary |
 | [Data model](docs/data-model.md) | Tables, natural keys, the raw → normalised → derived split, and the invariants worth a constraint |
 | [Ingestion spec](docs/ingestion-spec.md) | EDGAR sources, rate limits, the 13F and Form 4 parsers, enrichment, and every way the numbers can be quietly wrong |
+| [Query performance](docs/query-performance.md) | The API's ten queries under `EXPLAIN ANALYZE` on the full dataset, the indexes that changed because of it, and how to read a plan |
 
 The rest of this file is how to run it; the specs are what it is.
 
@@ -72,6 +73,7 @@ Then `make test`, and read the specs above.
 | `make logs` | follow every service; `make logs s=db` for one |
 | `make shell` | a shell inside the api container |
 | `make psql` | psql on the dev database |
+| `make explain a="--only stock_holders"` | the API's queries, timed and under `EXPLAIN (ANALYZE, BUFFERS)` — see [Query performance](docs/query-performance.md) |
 | `make cli c="ingest-filing ..."` | run a CLI verb in the api container — see [The CLI](#the-cli) |
 | `make verify-investors` | check every investor CIK against EDGAR, on the host; needs `SEC_CONTACT_EMAIL` |
 | `make test` | the whole pytest suite |
@@ -145,7 +147,7 @@ Re-running is always safe. It never duplicates a queue row, and a row keeps its
 `discovered_at`, `attempts` and `last_error`. "Loaded" means `parse_status` `ok`
 or `suspect`, the same test `ingest-filing` uses to skip.
 
-**Draining the queue** is [`backfill`](#backfill---filer-slug---since-date---concurrency-n---limit-n---force),
+**Draining the queue** is [`backfill`](#backfill---filer-slug---since-date---concurrency-n---limit-n---force---no-refresh-views),
 or `ingest-filing ACCESSION_NO` for one row, with no `--cik`. Either way each
 attempt is written back to the row: `done` on a load, or `failed` with
 `attempts` incremented and `last_error` set.
@@ -156,7 +158,7 @@ filer are still queued. A rate-limit block from EDGAR stops the run, because
 every request after it would fail the same way. Filers finished before the block
 are already committed.
 
-### `backfill [--filer SLUG] [--since DATE] [--concurrency N] [--limit N] [--force]`
+### `backfill [--filer SLUG] [--since DATE] [--concurrency N] [--limit N] [--force] [--no-refresh-views]`
 
 Drains the queue. It takes every filing in `pending_filing` and every 13F
 already in `filing`, skips the loaded ones, and ingests the rest several at a
@@ -180,6 +182,7 @@ backfill  done: succeeded 340 · skipped 1756 · failed 3 · suspect 4 · elapse
 | `--concurrency` | Filings in flight at once, default 5, at most 15. They all share the one EDGAR rate limiter, so more than about 5 does not make it faster |
 | `--limit` | Work on at most N filings, oldest first. Skipped filings do not count |
 | `--force` | Also reprocess the loaded filings, from the raw store |
+| `--no-refresh-views` | Do not refresh the materialised views at the end |
 
 **Resuming is running it again.** The work is planned from the database before
 any worker starts. A filing that is already loaded (`ok` or `suspect`) is
@@ -208,6 +211,14 @@ and lets the ones already running load, then prints the summary with a
 roll back, and each document is either archived whole or not at all, so the
 next run picks them up.
 
+**The views are refreshed once, at the end.** Each filing is published as it
+loads, but [`refresh-views`](#refresh-views---view-name---no-concurrent) runs
+only after the last one, and only if anything loaded. Refreshing after each
+filing would cost a full refresh per filing, and would publish a quarter
+partway through with only some of its filers in it. A run that stopped short
+still refreshes what it loaded. A second Ctrl-C during the refresh rolls the
+refresh back and leaves the loads in place, so run `refresh-views` by hand.
+
 **Exit codes.** 0 when everything planned was loaded or skipped. 1 if any
 filing failed or EDGAR blocked the run. 130 if it was interrupted with nothing
 failed. Every line from one run carries the same `run_id` in the log, and every
@@ -215,7 +226,7 @@ line about one filing carries its `accession_no`. The run's `ingestion_run` row
 is `partial` whenever it exits 1 or 130, with each failed filing on a line of
 its `error`.
 
-### `ingest-filing ACCESSION_NO [--cik] [--force] [--dry-run]`
+### `ingest-filing ACCESSION_NO [--cik] [--force] [--dry-run] [--no-refresh-views]`
 
 Fetches, parses and loads one 13F. It looks the accession number up in EDGAR's
 submissions index for the CIK, lists the filing directory, identifies the cover
@@ -223,7 +234,7 @@ page and the information table, archives all of it to the
 [raw store](#the-raw-archive), and only then parses it and writes the result in
 one transaction. The same transaction publishes it: `position_snapshot` for
 the filing's period, and `position_change` for that period and the filer's next
-one, as [`recompute`](#recompute---filer-slug---period-yyyyqn---all---include-suspect)
+one, as [`recompute`](#recompute---filer-slug---period-yyyyqn---all---include-suspect---no-refresh-views)
 would rebuild them.
 
 ```
@@ -241,11 +252,17 @@ would rebuild them.
   changes     29 new, 0 add, 0 trim, 0 hold, 0 exit in 2026Q2
 ```
 
+A load that publishes then runs
+[`refresh-views`](#refresh-views---view-name---no-concurrent), after its own
+transaction has committed. A skipped filing, a dry run and a deferred filing
+publish nothing, so they refresh nothing.
+
 | Flag | |
 | --- | --- |
 | `--cik` | Which filer's archive the filing lives under. Optional only for a filing already in the database, whose CIK is then already known — see below |
 | `--force` | Re-fetch and re-load a filing that is already loaded, replacing its archived documents |
 | `--dry-run` | Fetch, parse and print the same summary. Write nothing, archive included |
+| `--no-refresh-views` | Publish, but do not refresh the materialised views. For a script that loads many filings and runs `refresh-views` once at the end |
 
 **`--cik` is not optional as often as you would like.** EDGAR's archive path is
 `/Archives/edgar/data/<cik>/<accession>/`, and the CIK in it is the *filer's* —
@@ -279,7 +296,7 @@ because deleting a portfolio that is 99% right leaves a hole shaped exactly
 like a manager who filed nothing. What waits is publishing it: the summary says
 `withheld` instead of `published`, and the period stays out of
 `position_snapshot` until someone looks. See
-[`recompute`](#recompute---filer-slug---period-yyyyqn---all---include-suspect).
+[`recompute`](#recompute---filer-slug---period-yyyyqn---all---include-suspect---no-refresh-views).
 
 ### The raw archive
 
@@ -458,7 +475,7 @@ its book in one name. Each finding is there to be looked at.
 back empty, 1 when anything is found, 2 when `--filer` names no filer — a typo
 that checked nothing must not read as a clean bill.
 
-### `recompute [--filer SLUG] [--period YYYYQN] [--all] [--include-suspect]`
+### `recompute [--filer SLUG] [--period YYYYQN] [--all] [--include-suspect] [--no-refresh-views]`
 
 Rebuilds `position_snapshot`, the published portfolio: one row per security per
 `(filer, period)`, summed over the filings that count once amendments and
@@ -520,6 +537,10 @@ concurrent loads of one filer's quarters cannot build a change from a snapshot
 another load is replacing. Run it by hand after anything else that changes what
 counts toward a period. `seed-investors` moving a CIK or changing an overlap
 policy needs `--filer`, and a change to how either table is built needs `--all`.
+Either way it then runs
+[`refresh-views`](#refresh-views---view-name---no-concurrent), unless told
+`--no-refresh-views`. It does this even after a rebuild that published nothing,
+since the rebuild may have deleted rows that the views still count.
 `--all` is also the backstop when in doubt. On a synthetic dataset the size of
 the curated universe, 1.6 million positions, it took about 45 seconds on stock
 Postgres settings, two thirds of it the derived tables' foreign key checks.
@@ -534,9 +555,9 @@ published with one. Exit 1 if `--filer` names no filer, and 2 without `--filer`,
 
 Migrations `0011` and `0012` create the two tables empty, in their current
 shape, and `0013` adds exits without writing any, so run `recompute --all` once
-after upgrading past them, and then `refresh-views`.
+after upgrading past them. That refreshes the views too.
 
-### `refresh-views`
+### `refresh-views [--view NAME] [--no-concurrent]`
 
 Refreshes the three materialised views that the market-wide and per-filer reads
 are served from. Each aggregates the derived tables:
@@ -561,15 +582,56 @@ refresh-views  3 materialised views refreshed in 4.5s
 Each view's live query takes one to two seconds over the same data. The 50
 most-held stocks of one quarter, read from `mv_consensus_holdings`, take 2ms.
 
-**Run it when a period's ingestion is complete.** It is not on a timer, and
-`ingest-filing`, `backfill` and `recompute` do not run it. A refresh
-mid-backfill would publish a quarter with a third of its filers in it, as the
-consensus of all of them. Until it runs, each view is as of its last refresh.
+**It runs after whatever publishes.** `recompute` runs it after every rebuild.
+`ingest-filing` runs it after a load that publishes. `backfill` runs it once at
+the end, never after each filing, because a refresh partway through a backfill
+would publish a quarter with a third of its filers in it, as the consensus of
+all of them. Nothing runs it on a timer. Each of the three takes
+`--no-refresh-views`, and then `refresh-views` is yours to run. Until it runs,
+each view is as of its last refresh.
+
+**It is always a run of its own.** The automatic refresh starts after the
+publishing run has committed and recorded how it went. It is then recorded as
+a `refresh-views` run, with the publishing run's id as `after_run_id` in its
+`context`. A refresh that fails therefore cannot mark a finished rebuild as
+failed, and `runs --job refresh-views` lists every refresh, whoever started it.
 
 **Readers are not blocked.** Each view is refreshed `CONCURRENTLY`, which its
-unique index allows. The refresh waits for any `recompute` in progress, and
-holds off the next until it commits, so all three views are refreshed from the
-same tables.
+unique index allows. Postgres builds the new rows beside the old ones and
+applies the difference, and readers see the old rows until the commit. That is
+more work than a plain refresh, which is an acceptable price for never blocking
+the API. The refresh waits for any `recompute` in progress, and holds off the
+next until it commits, so the views are refreshed from the same tables.
+
+| Flag | |
+| --- | --- |
+| `--view` | Only this view, and any view that reads it, so that none is left disagreeing with one it reads. The others stay as of their own last refresh |
+| `--no-concurrent` | Plain `REFRESH`. It does less work, but each view is locked against reads from its refresh until the last one commits. For a database nobody is reading |
+
+**A view that reads another is refreshed after it.** The order comes from the
+Postgres catalog, including dependencies through a plain view, so a new view
+that reads an existing one is ordered correctly without anyone declaring it.
+None of the three reads another yet.
+
+**When each view was last refreshed is recorded.** `matview_refresh` has one
+row per view, which every refresh replaces in the same transaction as the
+view's rows. A reader never sees a refresh time newer than the data. This is
+what lets an endpoint say honestly when its aggregates were computed:
+
+```sql
+SELECT view_name, refreshed_at, run_id FROM matview_refresh;
+```
+
+A view with no row has not been refreshed since migration `0015`, and its
+last refresh is unknown. How long each view took is in the run's `ingestion_run`
+row, and in a `materialised_view.refreshed` log line per view:
+
+```sql
+SELECT started_at, view, (detail ->> 'seconds')::numeric AS seconds, detail ->> 'rows' AS rows
+FROM ingestion_run, jsonb_each(metrics -> 'views') AS v(view, detail)
+WHERE job_name = 'refresh-views'
+ORDER BY started_at DESC, view;
+```
 
 What the numbers mean, including turnover's formula and why flows count traded
 dollars rather than `value_delta`, is in
@@ -612,6 +674,13 @@ ORDER BY started_at DESC LIMIT 1;
 **`run_id` is the row's `id`.** It is bound to every log line the run writes,
 so the row leads to the log and the log back to the row with one grep. `context`
 holds the run's parameters as `jsonb`, e.g. `WHERE context @> '{"force": true}'`.
+`metrics` holds what the run measured beyond its counters, written as it ends.
+So far only `refresh-views` measures anything: each view's duration, rows, and
+whether it was refreshed concurrently.
+
+**A verb that publishes leaves two rows.** `recompute`, and an `ingest-filing`
+or `backfill` that loaded something, are followed by the `refresh-views` run
+they started. Its `context` names them in `after_run_id`.
 
 **What the counters count**, per job:
 

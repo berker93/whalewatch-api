@@ -2,9 +2,11 @@
 
 The first half is the rule as a test: each command registered on the CLI is
 either run here against an empty database and seen to leave exactly one
-finished ``ingestion_run`` row, with the ``run_id`` on its log lines, or is
-named in :data:`UNTRACKED` with the reason it cannot be. A new verb that is
-neither fails :func:`test_every_command_is_tracked_or_says_why_not`.
+finished ``ingestion_run`` row of its job, with the ``run_id`` on its log
+lines, or is named in :data:`UNTRACKED` with the reason it cannot be. A new
+verb that is neither fails :func:`test_every_command_is_tracked_or_says_why_not`.
+A verb that publishes may leave a ``refresh-views`` row after its own, which
+is the refresh it ran: a run of its own, tested in test_materialised_views.
 
 The second half is ``runs`` itself, over rows inserted directly so that their
 times, statuses and errors are whatever the test needs.
@@ -79,8 +81,8 @@ def _truncate(engine: AsyncEngine) -> None:
     _execute(
         engine,
         text(
-            "TRUNCATE ingestion_run, pending_filing, position_snapshot, holding, filing, "
-            "security, filer_cik, filer RESTART IDENTITY CASCADE"
+            "TRUNCATE ingestion_run, matview_refresh, pending_filing, position_snapshot, "
+            "holding, filing, security, filer_cik, filer RESTART IDENTITY CASCADE"
         ),
     )
 
@@ -124,22 +126,22 @@ def test_a_run_of_the_command_leaves_one_finished_row(
     result = runner.invoke(app, [command, *args])
 
     assert result.exit_code == (1 if status == "failed" else 0), result.output
-    [(run_id, recorded_job, recorded_status, finished_at)] = _fetch(
+    [(run_id, recorded_status, finished_at)] = _fetch(
         migrated_engine,
-        select(
-            IngestionRun.id,
-            IngestionRun.job_name,
-            IngestionRun.status,
-            IngestionRun.finished_at,
+        select(IngestionRun.id, IngestionRun.status, IngestionRun.finished_at).where(
+            IngestionRun.job_name == job_name
         ),
     )
-    assert (recorded_job, recorded_status) == (job_name, status)
+    assert recorded_status == status
     assert finished_at is not None
     # The run's first and last log lines, at least, carry the row's id.
     for event in ("ingestion_run.started", "ingestion_run.finished"):
-        [line] = [line for line in result.stderr.splitlines() if event in line]
+        [line] = [
+            line
+            for line in result.stderr.splitlines()
+            if event in line and f"job_name={job_name}" in line
+        ]
         assert f"run_id={run_id}" in line
-        assert f"job_name={job_name}" in line
 
 
 @pytest.mark.parametrize("command", sorted(UNTRACKED))
@@ -166,6 +168,7 @@ def test_a_failed_ingest_records_why(runner: CliRunner, migrated_engine: AsyncEn
         "cik": None,
         "force": False,
         "dry_run": False,
+        "refresh_views": True,
     }
 
 

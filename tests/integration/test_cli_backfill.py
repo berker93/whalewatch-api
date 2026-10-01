@@ -224,8 +224,8 @@ def _truncate(engine: AsyncEngine) -> None:
     _execute(
         engine,
         text(
-            "TRUNCATE ingestion_run, pending_filing, holding, filing, security, filer_cik, filer "
-            "RESTART IDENTITY CASCADE"
+            "TRUNCATE ingestion_run, matview_refresh, pending_filing, holding, filing, "
+            "security, filer_cik, filer RESTART IDENTITY CASCADE"
         ),
     )
 
@@ -267,7 +267,8 @@ def _enqueue(engine: AsyncEngine, *specs: _Spec) -> None:
 
 
 def _recorded(engine: AsyncEngine) -> list[tuple[Any, ...]]:
-    """The run's row: status, the two counters, and the error."""
+    """The backfill's row: status, the two counters, and the error. Not the
+    refresh-views run after it, which is a run of its own."""
     return _fetch(
         engine,
         select(
@@ -275,7 +276,17 @@ def _recorded(engine: AsyncEngine) -> list[tuple[Any, ...]]:
             IngestionRun.items_seen,
             IngestionRun.items_written,
             IngestionRun.error,
-        ),
+        ).where(IngestionRun.job_name == "backfill_13f"),
+    )
+
+
+def _jobs(engine: AsyncEngine) -> list[tuple[Any, ...]]:
+    """Every run, oldest first: its job, and the run it followed, if any."""
+    return _fetch(
+        engine,
+        select(
+            IngestionRun.id, IngestionRun.job_name, IngestionRun.context["after_run_id"].astext
+        ).order_by(IngestionRun.started_at),
     )
 
 
@@ -545,19 +556,31 @@ def test_a_clean_run_is_recorded_and_every_log_line_carries_its_id(
 
     assert result.exit_code == 0, result.output
     assert _recorded(migrated_engine) == [("success", 2, 2, None)]
-    [(run_id, context)] = _fetch(migrated_engine, select(IngestionRun.id, IngestionRun.context))
+    [(run_id, context)] = _fetch(
+        migrated_engine,
+        select(IngestionRun.id, IngestionRun.context).where(
+            IngestionRun.job_name == "backfill_13f"
+        ),
+    )
     assert context == {
         "filer": None,
         "since": "2024-01-01",
         "concurrency": 2,
         "limit": None,
         "force": False,
+        "refresh_views": True,
     }
 
+    # The refresh after it is a run of its own, and its lines carry its own id.
+    [(refresh_id,)] = _fetch(
+        migrated_engine,
+        select(IngestionRun.id).where(IngestionRun.job_name == "refresh-views"),
+    )
     lines = [line for line in result.stderr.splitlines() if line.strip()]
-    assert lines
-    assert all(f"run_id={run_id}" in line for line in lines), result.stderr
-    assert sum("filing.ingested" in line for line in lines) == 2
+    backfill = [line for line in lines if f"run_id={refresh_id}" not in line]
+    assert backfill
+    assert all(f"run_id={run_id}" in line for line in backfill), result.stderr
+    assert sum("filing.ingested" in line for line in backfill) == 2
 
 
 @respx.mock
@@ -607,7 +630,8 @@ def test_a_resumed_run_with_nothing_left_records_nothing_taken_on(
     runner: CliRunner, migrated_engine: AsyncEngine
 ) -> None:
     """Skipped filings are not what the run took on, as with --limit, so a
-    resume of a finished backfill is 0 of 0 rather than 0 of 2."""
+    resume of a finished backfill is 0 of 0 rather than 0 of 2. Having
+    published nothing, it refreshes nothing."""
     _edgar(Q1, Q2)
     _enqueue(migrated_engine, Q1, Q2)
     assert runner.invoke(app, ["backfill"]).exit_code == 0
@@ -616,10 +640,51 @@ def test_a_resumed_run_with_nothing_left_records_nothing_taken_on(
 
     assert _fetch(
         migrated_engine,
-        select(IngestionRun.status, IngestionRun.items_seen, IngestionRun.items_written).order_by(
-            IngestionRun.started_at
-        ),
-    ) == [("success", 2, 2), ("success", 0, 0)]
+        select(
+            IngestionRun.job_name,
+            IngestionRun.status,
+            IngestionRun.items_seen,
+            IngestionRun.items_written,
+        ).order_by(IngestionRun.started_at),
+    ) == [
+        ("backfill_13f", "success", 2, 2),
+        ("refresh-views", "success", 3, 3),
+        ("backfill_13f", "success", 0, 0),
+    ]
+
+
+@respx.mock
+def test_the_views_are_refreshed_once_at_the_end_by_a_run_of_their_own(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """Not after each filing, which would publish a quarter with some of its
+    filers in it, and refresh the views once per filing."""
+    _edgar(Q1, Q2, PS)
+    _enqueue(migrated_engine, Q1, Q2, PS)
+
+    result = runner.invoke(app, ["backfill", "--concurrency", "3"])
+
+    assert result.exit_code == 0, result.output
+    [(backfill, first, followed), (_, second, after)] = _jobs(migrated_engine)
+    assert (first, followed, second) == ("backfill_13f", None, "refresh-views")
+    assert after == str(backfill)
+    lines = result.stdout.splitlines()
+    [summary] = [n for n, line in enumerate(lines) if line.startswith("backfill  done:")]
+    assert lines[summary + 1].startswith("refresh-views  3 materialised views refreshed in ")
+
+
+@respx.mock
+def test_no_refresh_views_leaves_them_to_be_refreshed_by_hand(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    _edgar(Q1)
+    _enqueue(migrated_engine, Q1)
+
+    result = runner.invoke(app, ["backfill", "--no-refresh-views"])
+
+    assert result.exit_code == 0, result.output
+    assert [job for _, job, _ in _jobs(migrated_engine)] == ["backfill_13f"]
+    assert "refresh-views" not in result.stdout
 
 
 def test_a_run_that_cannot_start_is_failed(runner: CliRunner, migrated_engine: AsyncEngine) -> None:

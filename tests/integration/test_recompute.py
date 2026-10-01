@@ -549,8 +549,9 @@ def _truncate(engine: AsyncEngine) -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
-                    "TRUNCATE ingestion_run, position_change, position_snapshot, holding, "
-                    "filing, security, filer_cik, filer RESTART IDENTITY CASCADE"
+                    "TRUNCATE ingestion_run, matview_refresh, position_change, "
+                    "position_snapshot, holding, filing, security, filer_cik, filer "
+                    "RESTART IDENTITY CASCADE"
                 )
             )
 
@@ -583,12 +584,14 @@ def test_recompute_period_rebuilds_the_quarter_and_the_changes_after_it(
     result = CliRunner().invoke(app, ["recompute", "--period", "2024q3"])
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines() == [
+    rebuild, refresh = _rebuild_then_refresh(result.stdout)
+    assert rebuild == [
         "recompute  position_snapshot for 2024Q3: 2 positions in 2 periods of 2 filers",
         # Q3: A's add and B's hold. Q4: A's trim back to 100, and B's hold.
         "  changes     position_change: 0 new, 1 add, 1 trim, 2 hold, 0 exit",
         "  next        also the changes of 2 next periods, which start from a rebuilt one: 2024Q4",
     ]
+    assert refresh.startswith("refresh-views  3 materialised views refreshed in ")
 
 
 def test_recompute_filer_and_period_rebuild_that_one_pair(committed: AsyncEngine) -> None:
@@ -597,11 +600,20 @@ def test_recompute_filer_and_period_rebuild_that_one_pair(committed: AsyncEngine
     result = CliRunner().invoke(app, ["recompute", "--filer", "a-fund", "--period", "2024Q3"])
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines() == [
+    rebuild, _ = _rebuild_then_refresh(result.stdout)
+    assert rebuild == [
         "recompute  position_snapshot for a-fund 2024Q3: 1 position in 1 period of 1 filer",
         "  changes     position_change: 0 new, 1 add, 1 trim, 0 hold, 0 exit",
         "  next        also the changes of 1 next period, which start from a rebuilt one: 2024Q4",
     ]
+
+
+def _rebuild_then_refresh(stdout: str) -> tuple[list[str], str]:
+    """The rebuild's lines, and the first line of the refresh that follows them.
+    The refresh's own lines are test_materialised_views' to check."""
+    lines = stdout.splitlines()
+    [at] = [n for n, line in enumerate(lines) if line.startswith("refresh-views  ")]
+    return lines[:at], lines[at]
 
 
 @pytest.mark.parametrize(

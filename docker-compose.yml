@@ -9,6 +9,25 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # pg_stat_statements has to be loaded at server start; CREATE EXTENSION
+    # (migration 0016) only adds the view that reads it. track_io_timing puts
+    # read times next to the buffer counts in EXPLAIN (ANALYZE, BUFFERS), which
+    # is what tells a cold-cache read from a slow plan. See
+    # docs/query-performance.md. Changing either means recreating the container:
+    # `docker compose up -d db`.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - track_io_timing=on
+    # Parallel workers share memory through /dev/shm, which Docker caps at 64 MB.
+    # A manual VACUUM of the full dataset vacuums its indexes in parallel and
+    # asked for 67 MB: "could not resize shared memory segment ... No space left
+    # on device". Parallel hash joins draw on the same space.
+    shm_size: 256mb
     environment:
       # Same three variables the app reads out of .env, so the credentials the
       # server is initialised with cannot drift from the ones Settings uses to

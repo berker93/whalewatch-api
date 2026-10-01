@@ -42,6 +42,7 @@ from app.db.models import (
     FilerCik,
     Filing,
     Holding,
+    IngestionRun,
     PendingFiling,
     PositionChange,
     PositionSnapshot,
@@ -222,8 +223,8 @@ def _truncate(engine: AsyncEngine) -> None:
     _execute(
         engine,
         text(
-            "TRUNCATE pending_filing, holding, filing, security, filer_cik, filer "
-            "RESTART IDENTITY CASCADE"
+            "TRUNCATE ingestion_run, matview_refresh, pending_filing, holding, filing, "
+            "security, filer_cik, filer RESTART IDENTITY CASCADE"
         ),
     )
 
@@ -786,10 +787,12 @@ def test_a_loaded_filing_is_published_in_the_same_run(
     result = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines()[-2:] == [
-        "  published   2 positions in 2024Q1",
-        "  changes     2 new, 0 add, 0 trim, 0 hold, 0 exit in 2024Q1",
-    ]
+    lines = result.stdout.splitlines()
+    published = lines.index("  published   2 positions in 2024Q1")
+    assert lines[published + 1] == "  changes     2 new, 0 add, 0 trim, 0 hold, 0 exit in 2024Q1"
+    # And the views refreshed from them, by a run of its own after this one.
+    assert lines[published + 2].startswith("refresh-views  3 materialised views refreshed in ")
+    assert _jobs(migrated_engine) == ["ingest-filing", "refresh-views"]
     assert _fetch(
         migrated_engine,
         select(Security.cusip, PositionSnapshot.shares)
@@ -797,6 +800,49 @@ def test_a_loaded_filing_is_published_in_the_same_run(
         .order_by(Security.cusip),
     ) == [(APPLE, Decimal(10_000)), (COCA_COLA, Decimal(20_000))]
     assert _actions(migrated_engine, PERIOD) == [(APPLE, "new"), (COCA_COLA, "new")]
+
+
+def _jobs(engine: AsyncEngine) -> list[str]:
+    """The jobs that ran, oldest first."""
+    return [
+        job
+        for (job,) in _fetch(
+            engine, select(IngestionRun.job_name).order_by(IngestionRun.started_at)
+        )
+    ]
+
+
+@respx.mock
+def test_a_load_that_publishes_nothing_refreshes_nothing(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """A filing whose CIK is no filer's yet is loaded without holdings, and a
+    dry run and a filing already loaded write nothing. None of them changes
+    what the views aggregate."""
+    _edgar()
+    deferred = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
+    _register_filer(migrated_engine)
+    skipped = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK])
+    dry = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK, "--force", "--dry-run"])
+
+    assert deferred.exit_code == skipped.exit_code == dry.exit_code == 0
+    assert "already loaded" in skipped.stdout
+    assert _jobs(migrated_engine) == ["ingest-filing"] * 3
+
+
+@respx.mock
+def test_no_refresh_views_loads_and_publishes_without_refreshing(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """For a script that loads a quarter's filings one by one and refreshes once."""
+    _edgar()
+    _register_filer(migrated_engine)
+
+    result = runner.invoke(app, ["ingest-filing", ACCESSION, "--cik", CIK, "--no-refresh-views"])
+
+    assert result.exit_code == 0, result.output
+    assert _jobs(migrated_engine) == ["ingest-filing"]
+    assert len(_fetch(migrated_engine, select(PositionSnapshot.security_id))) == 2
 
 
 @respx.mock

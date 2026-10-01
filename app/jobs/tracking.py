@@ -13,7 +13,9 @@ with its counters and whatever went wrong::
         run.errors.append(f"{accession_no}: {describe(failure)}")
 
 Any line in :attr:`TrackedRun.errors` makes the run ``partial``; an exception
-out of the block makes it ``failed`` and is re-raised untouched. The query, the
+out of the block makes it ``failed`` and is re-raised untouched. Anything else
+the job measured goes in :attr:`TrackedRun.metrics`, which is written with the
+outcome. The query, the
 row and the log then agree::
 
     SELECT status, items_seen, items_written, error
@@ -76,6 +78,10 @@ class TrackedRun:
     errors: list[str] = field(default_factory=list)
     """One line per item that went wrong. Any at all make the run ``partial``."""
 
+    metrics: dict[str, Any] = field(default_factory=dict)
+    """What the run measured beyond the counters, such as how long each view
+    took to refresh. Stored as ``jsonb``, as ``context`` is."""
+
 
 @asynccontextmanager
 async def track_run(settings: Settings, job_name: str, **context: Any) -> AsyncIterator[TrackedRun]:
@@ -137,6 +143,7 @@ async def _finish(
                     items_seen=run.items_seen,
                     items_written=run.items_written,
                     error="\n".join(errors) or None,
+                    metrics=_jsonable(run.metrics),
                 )
             )
     except Exception as unrecorded:
@@ -164,6 +171,7 @@ def _describe(failure: BaseException) -> str:
 
 
 def _jsonable(context: dict[str, Any]) -> dict[str, Any]:
-    """``context`` as ``jsonb`` will take it: dates and paths as strings."""
+    """``context`` or ``metrics`` as ``jsonb`` will take it: dates, paths and
+    UUIDs as strings."""
     parameters: dict[str, Any] = json.loads(json.dumps(context, default=str))
     return parameters

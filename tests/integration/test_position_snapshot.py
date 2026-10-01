@@ -619,13 +619,18 @@ def _count_changes(engine: AsyncEngine) -> int:
     return asyncio.run(run())
 
 
+def _rebuild(stdout: str) -> list[str]:
+    """The rebuild's lines, without the refresh-views lines that follow them."""
+    return stdout.split("refresh-views  ")[0].splitlines()
+
+
 def test_recompute_says_what_it_published_and_what_it_withheld(committed: AsyncEngine) -> None:
     _commit(committed, ("berkshire-2022q4-dollars", False), (Q4_ORIGINAL, True))
 
     result = CliRunner().invoke(app, ["recompute", "--all"])
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines() == [
+    assert _rebuild(result.stdout) == [
         "recompute  position_snapshot for every filer: 49 positions in 1 period of 1 filer",
         "  changes     position_change: 49 new, 0 add, 0 trim, 0 hold, 0 exit",
         "  withheld    1 period with a suspect filing — check-data lists them; "
@@ -644,7 +649,7 @@ def test_recompute_include_suspect_says_what_it_published_unchecked(
     )
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines() == [
+    assert _rebuild(result.stdout) == [
         "recompute  position_snapshot for berkshire-hathaway: 90 positions in 2 periods of 1 filer",
         # 2022Q4's 49 positions, less the 31 still held in 2023Q4, are 18 exits.
         "  changes     position_change: 59 new, 4 add, 6 trim, 21 hold, 18 exit",

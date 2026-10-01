@@ -112,6 +112,16 @@ class IngestionRun(Base):
     ``WHERE context @> '{"force": true}'`` rather than a parse.
     """
 
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    """What the run measured beyond its two counters, written as it ends.
+
+    :attr:`context` is what the run was asked to do, and this is what it found
+    doing it. A ``refresh-views`` run records each view it refreshed, how long
+    that took and how many rows it ended with:
+    ``{"views": {"mv_quarter_flows": {"seconds": 1.204, "rows": 76000,
+    "concurrently": true}}}``. Empty for jobs that measure nothing else.
+    """
+
     __table_args__ = (
         # The question this table is for: the latest runs of one job.
         Index("ix_ingestion_run_job_name_started_at", "job_name", desc("started_at")),

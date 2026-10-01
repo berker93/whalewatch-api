@@ -10,8 +10,11 @@ change to either one alone fails here.
 The rest pin down what the numbers mean, on positions small enough to work out
 by hand: that a price move is not buying, that a filer's first period is not
 a flow, what turnover is, and why the median weight is there beside the
-average. Then the refresh itself: concurrent, under the recompute lock, and
-possible only because every view has a unique index.
+average. Then the refresh itself: concurrent, so that reads go on through it,
+under the recompute lock, possible only because every view has a unique
+index, in the order the catalog says the views read each other, and recorded
+in ``matview_refresh``. Last the command, which ``recompute`` runs after every
+rebuild as a run of its own.
 """
 
 import asyncio
@@ -19,6 +22,7 @@ import logging
 import random
 import re
 import sys
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -27,15 +31,28 @@ from itertools import count
 from typing import Any
 
 import pytest
-from sqlalchemy import Row, func, insert, select, text
+from sqlalchemy import (
+    BigInteger,
+    Date,
+    Executable,
+    Row,
+    column,
+    delete,
+    func,
+    insert,
+    select,
+    table,
+    text,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from typer.testing import CliRunner
 
 from app.cli import app
 from app.core.config import Settings
 from app.core.logging import configure_logging
-from app.db.models import Filer, FilerCik, Filing, Holding, Security
+from app.db.models import Filer, FilerCik, Filing, Holding, IngestionRun, MatviewRefresh, Security
 from app.derived.recompute import RECOMPUTE_LOCK, recompute
 from app.derived.scope import EVERYTHING
 from app.derived.views import (
@@ -44,7 +61,12 @@ from app.derived.views import (
     MATERIALISED_VIEWS,
     QUARTER_FLOWS,
     MaterialisedView,
+    consensus_holdings,
+    in_refresh_order,
+    last_refreshed,
+    refresh_order,
     refresh_views,
+    view_reads,
 )
 from app.ingestion.loaders import load_filing
 from app.ingestion.normalisation import normalise_filing
@@ -615,6 +637,159 @@ async def test_a_refresh_keeps_rebuilds_waiting_until_it_commits(
         await second.rollback()
 
 
+@pytest.mark.parametrize(("concurrently", "blocks"), [(True, False), (False, True)])
+async def test_reads_go_on_through_a_concurrent_refresh_and_wait_out_a_plain_one(
+    migrated_engine: AsyncEngine, concurrently: bool, blocks: bool
+) -> None:
+    """Why refreshes are concurrent. A plain refresh locks each view against
+    reads until it commits, after the last view. A read that will wait 200ms
+    for a lock gets its rows during a concurrent refresh, and gives up during
+    a plain one."""
+    async with (
+        migrated_engine.connect() as first,
+        migrated_engine.connect() as second,
+        AsyncSession(bind=first) as refreshing,
+    ):
+        await refresh_views(refreshing, concurrently=concurrently)
+
+        await second.begin()
+        await second.execute(text("SET LOCAL lock_timeout = '200ms'"))
+        read = second.scalar(select(func.count()).select_from(CONSENSUS_HOLDINGS))
+        if blocks:
+            with pytest.raises(DBAPIError, match="lock timeout"):
+                await read
+        else:
+            await read
+        await second.rollback()
+        await refreshing.rollback()
+
+
+async def test_each_refresh_records_when_it_finished_in_place_of_the_last(
+    db_session: AsyncSession,
+) -> None:
+    """One row per view. Each view's own time, from the clock, not the
+    transaction's start, which would give all three the time the first began."""
+    run_id = uuid.uuid4()
+    first = await refresh_views(db_session)
+    second = await refresh_views(db_session, run_id=run_id)
+
+    recorded = await db_session.execute(
+        select(MatviewRefresh.view_name, MatviewRefresh.refreshed_at, MatviewRefresh.run_id)
+    )
+    assert {name: (at, run) for name, at, run in recorded.tuples()} == {
+        view.name: (view.refreshed_at, run_id) for view in second
+    }
+    times = [view.refreshed_at for view in (*first, *second)]
+    assert times == sorted(times)
+    assert len(set(times)) == len(times)
+
+
+async def test_a_view_s_last_refresh_is_unknown_until_one_is_recorded(
+    db_session: AsyncSession,
+) -> None:
+    """As 0015 leaves it: 0014 filled the views, but nothing recorded when,
+    and the answer is that nobody knows, not the time of the migration."""
+    await db_session.execute(delete(MatviewRefresh))
+
+    before = await last_refreshed(db_session)
+    [flows] = await refresh_views(
+        db_session, await refresh_order(db_session, only="mv_quarter_flows")
+    )
+
+    assert before == dict.fromkeys((view.name for view in MATERIALISED_VIEWS), None)
+    assert await last_refreshed(db_session) == {
+        "mv_consensus_holdings": None,
+        "mv_quarter_flows": flows.refreshed_at,
+        "mv_filer_summary": None,
+    }
+
+
+# --- the order ------------------------------------------------------------------------
+
+
+def _named(*names: str) -> tuple[MaterialisedView, ...]:
+    """Stand-ins with nothing but a name, which is all the order looks at."""
+    return tuple(MaterialisedView(table(name), (), consensus_holdings) for name in names)
+
+
+def _names(views: list[MaterialisedView]) -> list[str]:
+    return [view.name for view in views]
+
+
+def test_a_view_comes_after_every_view_it_reads_and_otherwise_keeps_its_place() -> None:
+    """``a`` reads ``c``, which reads ``d``."""
+    reads = {"a": frozenset({"c"}), "c": frozenset({"d"})}
+
+    assert _names(in_refresh_order(_named("a", "b", "c", "d"), reads)) == ["b", "d", "c", "a"]
+
+
+def test_one_view_brings_the_views_that_read_it_and_not_those_it_reads() -> None:
+    """``c`` reads ``b``, which reads ``a``, which reads ``d``. Refreshed
+    alone, ``a`` would leave ``b`` and ``c`` disagreeing with it. ``d`` is as
+    of its own last refresh, which is what asking for ``a`` alone means."""
+    reads = {"a": frozenset({"d"}), "b": frozenset({"a"}), "c": frozenset({"b"})}
+    views = _named("c", "b", "a", "d")
+
+    assert _names(in_refresh_order(views, reads, only="a")) == ["a", "b", "c"]
+    assert _names(in_refresh_order(views, reads, only="c")) == ["c"]
+
+
+def test_only_a_view_there_is() -> None:
+    with pytest.raises(ValueError, match="'mv_nope' is not a materialised view"):
+        in_refresh_order(_named("a"), {}, only="mv_nope")
+
+
+async def _view_reading(session: AsyncSession, name: str, source: str) -> MaterialisedView:
+    """A materialised view of how many rows ``source`` has per period, with
+    the unique index a concurrent refresh needs."""
+    await session.execute(
+        text(
+            f"CREATE MATERIALIZED VIEW {name} AS "
+            f"SELECT period_of_report, count(*) AS n FROM {source} GROUP BY period_of_report"
+        )
+    )
+    await session.execute(text(f"CREATE UNIQUE INDEX ON {name} (period_of_report)"))
+    handle = table(name, column("period_of_report", Date), column("n", BigInteger))
+    return MaterialisedView(handle, ("period_of_report",), consensus_holdings)
+
+
+async def test_the_catalog_says_which_views_read_which(db_session: AsyncSession) -> None:
+    """Directly, and through a plain view in between. None of ours reads
+    another yet, so the two made here are the only ones."""
+    await db_session.execute(text("CREATE VIEW holders AS SELECT * FROM mv_consensus_holdings"))
+    await _view_reading(db_session, "mv_flow_periods", "mv_quarter_flows")
+    await _view_reading(db_session, "mv_holder_periods", "holders")
+
+    assert await view_reads(db_session) == {
+        "mv_flow_periods": {"mv_quarter_flows"},
+        "mv_holder_periods": {"mv_consensus_holdings"},
+    }
+
+
+async def test_a_view_that_reads_another_is_refreshed_after_it(db_session: AsyncSession) -> None:
+    """Listed first, it is refreshed third, from flows as just refreshed.
+    Refreshed before them, it would count the periods flows had before."""
+    await refresh_views(db_session)
+    reader = await _view_reading(db_session, "mv_flow_periods", "mv_quarter_flows")
+    fund = await _fund(db_session)
+    await _quarter(db_session, fund, Q1, held(ALPHA, 100))
+    await _quarter(db_session, fund, Q2, held(ALPHA, 200), held(BRAVO, 10))
+    await recompute(db_session, EVERYTHING)
+
+    order = in_refresh_order((reader, *MATERIALISED_VIEWS), await view_reads(db_session))
+    refreshed = await refresh_views(db_session, order)
+
+    assert [view.name for view in refreshed] == [
+        "mv_consensus_holdings",
+        "mv_quarter_flows",
+        "mv_flow_periods",
+        "mv_filer_summary",
+    ]
+    assert all(view.concurrently for view in refreshed)
+    # Q2's two flows, Alpha's add and Bravo's new. Q1 is the fund's first period.
+    assert (await db_session.execute(select(reader.handle))).tuples().all() == [(Q2, 2)]
+
+
 # --- the schema ---------------------------------------------------------------------
 
 
@@ -692,8 +867,9 @@ def _truncate(engine: AsyncEngine) -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
-                    "TRUNCATE ingestion_run, position_change, position_snapshot, holding, "
-                    "filing, security, filer_cik, filer RESTART IDENTITY CASCADE"
+                    "TRUNCATE ingestion_run, matview_refresh, position_change, "
+                    "position_snapshot, holding, filing, security, filer_cik, filer "
+                    "RESTART IDENTITY CASCADE"
                 )
             )
             for view in MATERIALISED_VIEWS:
@@ -702,32 +878,196 @@ def _truncate(engine: AsyncEngine) -> None:
     asyncio.run(run())
 
 
-def test_refresh_views_refreshes_every_view_and_says_how_many_rows(
-    committed: AsyncEngine,
-) -> None:
-    async def two_funds_published() -> None:
-        async with AsyncSession(committed) as session:
+def _two_funds(engine: AsyncEngine, *, published: bool = True) -> None:
+    """Two funds' Q1 and Q2, committed. ``published`` rebuilds the derived
+    tables from them, as a load does, and does not refresh the views."""
+
+    async def run() -> None:
+        async with AsyncSession(engine) as session:
             a = await _fund(session, "a-fund")
             b = await _fund(session, "b-fund")
             for fund in (a, b):
                 await _quarter(session, fund, Q1, held(ALPHA, 100))
                 await _quarter(session, fund, Q2, held(ALPHA, 200), held(BRAVO, 10))
-            await recompute(session, EVERYTHING)
+            if published:
+                await recompute(session, EVERYTHING)
             await session.commit()
 
-    asyncio.run(two_funds_published())
+    asyncio.run(run())
+
+
+def _fetch(engine: AsyncEngine, statement: Executable) -> list[tuple[Any, ...]]:
+    async def run() -> list[tuple[Any, ...]]:
+        async with engine.connect() as connection:
+            return [tuple(row) for row in await connection.execute(statement)]
+
+    return asyncio.run(run())
+
+
+def _runs(engine: AsyncEngine) -> list[tuple[Any, ...]]:
+    """Every run, oldest first: id, job, context, metrics, and the two counters."""
+    return _fetch(
+        engine,
+        select(
+            IngestionRun.id,
+            IngestionRun.job_name,
+            IngestionRun.context,
+            IngestionRun.metrics,
+            IngestionRun.items_seen,
+            IngestionRun.items_written,
+        ).order_by(IngestionRun.started_at),
+    )
+
+
+def _recorded(engine: AsyncEngine) -> dict[str, uuid.UUID | None]:
+    """``matview_refresh``: each view recorded, and the run that refreshed it."""
+    return dict(_fetch(engine, select(MatviewRefresh.view_name, MatviewRefresh.run_id)))
+
+
+def _agreeing(engine: AsyncEngine) -> dict[str, bool]:
+    """Whether each view holds what its live query says, as committed."""
+
+    async def run() -> dict[str, bool]:
+        agreeing: dict[str, bool] = {}
+        async with AsyncSession(engine) as session:
+            for view in MATERIALISED_VIEWS:
+                try:
+                    await _check(session, view)
+                except AssertionError:
+                    agreeing[view.name] = False
+                else:
+                    agreeing[view.name] = True
+        return agreeing
+
+    return asyncio.run(run())
+
+
+def _timeless(output: str) -> list[str]:
+    return [re.sub(r"\d+\.\ds", "0.0s", line) for line in output.splitlines()]
+
+
+def test_refresh_views_refreshes_every_view_and_says_how_many_rows(
+    committed: AsyncEngine,
+) -> None:
+    _two_funds(committed)
 
     result = CliRunner().invoke(app, ["refresh-views"])
 
     assert result.exit_code == 0, result.output
     # Q1: Alpha. Q2: Alpha and Bravo. Flows: Q2's two. Summaries: two funds, two periods.
-    lines = [re.sub(r"\d+\.\ds", "0.0s", line) for line in result.stdout.splitlines()]
-    assert lines == [
+    assert _timeless(result.stdout) == [
         "refresh-views  3 materialised views refreshed in 0.0s",
         "  mv_consensus_holdings          3 rows    0.0s",
         "  mv_quarter_flows               2 rows    0.0s",
         "  mv_filer_summary               4 rows    0.0s",
     ]
+    assert all(_agreeing(committed).values())
+
+
+def test_refresh_views_records_how_long_each_view_took_in_its_run(
+    committed: AsyncEngine,
+) -> None:
+    """In ``ingestion_run.metrics``, in the log line for each view, and in
+    ``matview_refresh``, whose rows name the run."""
+    _two_funds(committed)
+
+    result = CliRunner().invoke(app, ["refresh-views"])
+
+    assert result.exit_code == 0, result.output
+    [(run_id, job, context, metrics, seen, written)] = _runs(committed)
+    assert (job, seen, written) == ("refresh-views", 3, 3)
+    assert context == {"view": None, "concurrent": True, "after_run_id": None}
+    assert {
+        name: (view["rows"], view["concurrently"]) for name, view in metrics["views"].items()
+    } == {
+        "mv_consensus_holdings": (3, True),
+        "mv_quarter_flows": (2, True),
+        "mv_filer_summary": (4, True),
+    }
+    for name, view in metrics["views"].items():
+        [line] = [
+            line
+            for line in result.stderr.splitlines()
+            if "materialised_view.refreshed" in line and f"view={name}" in line
+        ]
+        assert f"seconds={view['seconds']}" in line
+        assert f"run_id={run_id}" in line
+    assert _recorded(committed) == dict.fromkeys(metrics["views"], run_id)
+
+
+def test_view_refreshes_that_view_and_records_only_it(committed: AsyncEngine) -> None:
+    _two_funds(committed)
+
+    result = CliRunner().invoke(app, ["refresh-views", "--view", "mv_quarter_flows"])
+
+    assert result.exit_code == 0, result.output
+    assert _timeless(result.stdout) == [
+        "refresh-views  1 materialised view refreshed in 0.0s",
+        "  mv_quarter_flows          2 rows    0.0s",
+    ]
+    assert _agreeing(committed) == {
+        "mv_consensus_holdings": False,
+        "mv_quarter_flows": True,
+        "mv_filer_summary": False,
+    }
+    [(run_id, _, context, _, seen, written)] = _runs(committed)
+    assert (context["view"], seen, written) == ("mv_quarter_flows", 1, 1)
+    assert _recorded(committed) == {"mv_quarter_flows": run_id}
+
+
+def test_view_must_name_a_materialised_view(committed: AsyncEngine) -> None:
+    result = CliRunner().invoke(app, ["refresh-views", "--view", "quarter_flows"])
+
+    assert result.exit_code == 2
+    assert "is not a materialised view" in result.stderr
+    assert "mv_quarter_flows" in result.stderr
+    assert _runs(committed) == []
+
+
+def test_no_concurrent_refreshes_plainly_and_says_so(committed: AsyncEngine) -> None:
+    _two_funds(committed)
+
+    result = CliRunner().invoke(app, ["refresh-views", "--no-concurrent"])
+
+    assert result.exit_code == 0, result.output
+    assert _timeless(result.stdout)[0] == (
+        "refresh-views  3 materialised views refreshed in 0.0s, not concurrently"
+    )
+    # Every view was asked to be plain, so none is a first refresh to point out.
+    assert "first refresh" not in result.stdout
+    [(_, _, context, metrics, _, _)] = _runs(committed)
+    assert context["concurrent"] is False
+    assert not any(view["concurrently"] for view in metrics["views"].values())
+    assert all(_agreeing(committed).values())
+
+
+def test_recompute_refreshes_the_views_after_it_in_a_run_of_its_own(
+    committed: AsyncEngine,
+) -> None:
+    """After the rebuild has committed, so a refresh that fails cannot report
+    a finished rebuild as failed, and every refresh is a refresh-views run,
+    whoever started it."""
+    _two_funds(committed, published=False)
+
+    result = CliRunner().invoke(app, ["recompute", "--all"])
+
+    assert result.exit_code == 0, result.output
+    assert all(_agreeing(committed).values())
+    [(recompute_id, first, _, _, _, _), (refresh_id, second, context, _, _, _)] = _runs(committed)
+    assert (first, second) == ("recompute", "refresh-views")
+    assert context == {"view": None, "concurrent": True, "after_run_id": str(recompute_id)}
+    assert set(_recorded(committed).values()) == {refresh_id}
+
+
+def test_recompute_no_refresh_views_leaves_the_views_as_they_were(committed: AsyncEngine) -> None:
+    _two_funds(committed, published=False)
+
+    result = CliRunner().invoke(app, ["recompute", "--all", "--no-refresh-views"])
+
+    assert result.exit_code == 0, result.output
+    assert not any(_agreeing(committed).values())
+    assert [job for _, job, *_ in _runs(committed)] == ["recompute"]
+    assert "refresh-views" not in result.stdout
 
 
 async def test_turnover_says_what_it_is_in_the_database(db_session: AsyncSession) -> None:

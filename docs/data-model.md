@@ -187,6 +187,9 @@ information table gives us a CUSIP and a filer-supplied issuer name and nothing
 else, so the issuer table arrives with the `/stocks` search that needs it. Until
 then `security.name` holds the name as filed — inconsistent, abbreviated
 ("BERKSHIRE HATHAWAY INC DEL"), and enough to display an unresolved security.
+It is also what `/stocks` searches for now, so the trigram index is on it
+(`ix_security_name_trgm`, `0017_query_indexes`) until `issuer.name` exists to
+take it over.
 
 `ticker` is nullable and stays nullable. CUSIP→ticker resolution fails for
 delisted names and obscure instruments, and a `NOT NULL` here would force the
@@ -392,6 +395,7 @@ source_filing_id  bigint    fk -> filing, on delete cascade, not null
 suspect           boolean   not null        -- a suspect filing counts toward the period
 computed_at       timestamptz  not null default now()
 primary key (filer_id, period_of_report, security_id)
+index (period_of_report, security_id)       -- the latest period; a stock's holders (0017)
 ```
 
 Rebuilt by `whalewatch recompute`, a set of `(filer, period)` pairs at a time:
@@ -461,6 +465,7 @@ weight_delta           numeric(9,6)                -- percentage points
 suspect                boolean   not null          -- either end of the change is
 computed_at            timestamptz  not null default now()
 primary key (filer_id, period_of_report, security_id)
+index (period_of_report, security_id) where action <> 'hold'   -- who traded a stock (0017)
 ```
 
 The previous shares, value, weight and period come from `LAG` over one window,
@@ -643,6 +648,7 @@ items_seen     integer      not null default 0
 items_written  integer      not null default 0
 error          text                                         -- one line per thing that went wrong
 context        jsonb        not null default '{}'           -- the run's parameters
+metrics        jsonb        not null default '{}'           -- what it measured, written at the end
 index (job_name, started_at desc)
 ```
 
@@ -653,6 +659,10 @@ mid-transaction rolls back its own writes, not the record of why it failed.
 `id` is generated before the row is written and bound to every log line as
 `run_id`, so the row and the log lead to each other. A UUID rather than a
 sequence because a UUID is one grep and `42` is every line with a 42 in it.
+
+`context` is what the run was asked to do, and `metrics` is what it measured
+doing it, beyond the two counters (`0015_matview_refresh`). A `refresh-views`
+run records each view's duration and row count there.
 
 `partial` is a run that finished with something left undone: failed filings,
 an unreadable CIK, a backfill stopped short. `error` lists each, the failure
@@ -745,15 +755,48 @@ others averages 1.13% and has a median of 0.5%. The median is
 `numeric`, it is the exact midpoint: a weight has at most nine significant
 digits, and the conversion keeps fifteen.
 
-**Refreshed by `whalewatch refresh-views` after each period's ingestion
-completes, not on a timer.** A timer would refresh mid-backfill and publish a
-quarter with a third of its filers in it. Until a refresh, each view is as of
-the last one. The refresh is `CONCURRENTLY`, so reads go on through it. That
-needs a unique index on plain columns, with no `WHERE`, on every view. The
-refresh holds the recompute lock, so no rebuild commits between one view and
-the next. A view that was never populated is refreshed plainly once. The
-migration creates them `WITH DATA`, so this happens only after a `REFRESH ...
-WITH NO DATA`.
+**Refreshed by `whalewatch refresh-views`, after whatever publishes, not on a
+timer.** `recompute` runs it after every rebuild, `ingest-filing` after a load
+that publishes, and `backfill` once at the end, never after each filing. A
+refresh partway through a backfill would publish a quarter with a third of its
+filers in it. Each of them is its own `refresh-views` run, recorded after the
+publishing run has committed, with that run's id as `after_run_id`. Until a
+refresh, each view is as of the last one.
+
+The refresh is `CONCURRENTLY`, so reads go on through it: Postgres builds the
+new rows beside the old ones and applies the difference, and readers see the
+old rows until the commit. That needs a unique index on plain columns, with no
+`WHERE`, on every view. It is more work than a plain refresh, which locks the
+view against every read until the commit, and the extra cost is worth paying
+to never block the API. `--no-concurrent` takes the plain path for a database
+nobody is reading. The refresh holds the recompute lock, so no rebuild commits
+between one view and the next. A view that was never populated is refreshed
+plainly once. The migration creates them `WITH DATA`, so this happens only
+after a `REFRESH ... WITH NO DATA`.
+
+**A view that reads another is refreshed after it**, in an order read from the
+catalog (`pg_depend`, followed through plain views), not declared anywhere.
+`refresh-views --view` refreshes one view and every view that reads it. None of
+the three reads another yet.
+
+```
+matview_refresh                        pk (view_name)
+  view_name      text                  -- pg_matviews.matviewname
+  refreshed_at   timestamptz not null  -- clock_timestamp() as the refresh finished
+  run_id         uuid                  -- the refresh-views run; null only from tests
+```
+
+**When each view was last refreshed** is in `matview_refresh`
+(`0015_matview_refresh`), one row per view, replaced in the transaction that
+refreshes it. The row and the view's rows commit together, so a reader never
+sees a refresh time newer than the data. This is what lets a response built
+from a view say honestly when its aggregates were computed, which makes it a
+product feature, not housekeeping. `clock_timestamp()`, not `now()`: in a
+refresh of several views, `now()` would give each one the time the first
+began. Created empty: `0014` filled the views without recording when, so a
+view with no row has a last refresh that is unknown, and is reported as
+unknown. `run_id` is not a foreign key, because nothing depends on
+`ingestion_run` for correctness and this row is what the API serves.
 
 Alembic does not model views. They are `op.execute()` in a hand-written migration
 with a real `downgrade`, like everything else in

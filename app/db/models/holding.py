@@ -208,23 +208,22 @@ class Holding(Base):
         ),
         # --- indexes ----------------------------------------------------------
         #
-        # holding(filing_id): the AC asks for it explicitly. Worth flagging that
-        # it duplicates the leading column of the unique constraint above, which
-        # Postgres can already use for filing_id lookups — so this buys no plan
-        # that is not already available and costs a write on every insert. Kept
-        # because it is specified, and because it stops being redundant the day
-        # the unique key's column order changes.
+        # holding(filing_id): the AC asks for it explicitly. It repeats the
+        # leading column of the unique constraint above, which can serve the
+        # same lookups, but not as cheaply. Without it a 13,450-row filing is
+        # read through the 135 MB unique index, in CUSIP order, which visits
+        # the heap at random: 1,452 buffers instead of 212 (see
+        # docs/query-performance.md). Deduplicated, this one is 14 MB.
         Index("ix_holding_filing_id", "filing_id"),
         # holding(security_id): "who else holds this", across all filers.
         Index("ix_holding_security_id", "security_id"),
         # holding(cusip): the same question asked before resolution has run, and
         # the way a position is found when a security row is suspected wrong.
         Index("ix_holding_cusip", "cusip"),
-        # Not in the AC's list, and the reason filer_id and period_of_report are
-        # on this table at all. Denormalising two columns onto the largest table
-        # in the schema to avoid a join, and then leaving the composite lookup
-        # to a scan, is half of a decision.
-        Index("ix_holding_filer_id_period_of_report", "filer_id", "period_of_report"),
+        # No (filer_id, period_of_report) index: 0017 dropped it. No correct
+        # query reads holdings that way, since every per-filer read goes through
+        # effective_filing by filing_id, and position_snapshot is the per-filer
+        # read path. A full backfill and every command after it never used it.
         # --- invariants -------------------------------------------------------
         #
         # 13F is long-only: there are no short positions in this dataset and

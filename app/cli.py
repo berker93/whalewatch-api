@@ -25,6 +25,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli recompute --period 2026Q1
     uv run python -m app.cli recompute --all
     uv run python -m app.cli refresh-views
+    uv run python -m app.cli refresh-views --view mv_quarter_flows --no-concurrent
     uv run python -m app.cli runs --job backfill_13f
 
 Every run is recorded
@@ -35,6 +36,9 @@ it starts and its outcome as it ends, and binds the row's id as ``run_id`` on
 every log line in between. ``runs`` lists them. The exceptions are ``runs``
 itself, which reads the record, and ``verify-investors``, which has no database
 to write it to. A test fails if a new verb is neither tracked nor one of those.
+A verb that publishes (``recompute``, and ``ingest-filing`` or ``backfill`` when
+they load something) then runs ``refresh-views`` as a second run, which names
+the first in its ``after_run_id``.
 
 Exit codes
 ----------
@@ -73,6 +77,7 @@ import csv
 import re
 import sys
 import time
+import uuid
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -102,7 +107,7 @@ from app.db.session import create_engine, create_session_factory, session_scope
 from app.derived.position_change import ChangeRebuild
 from app.derived.recompute import Recomputed, hold_recompute_lock, recompute
 from app.derived.scope import Pair, Scope, filing_pairs, resolve_scope
-from app.derived.views import MATERIALISED_VIEWS, Refreshed, refresh_views
+from app.derived.views import MATERIALISED_VIEWS, Refreshed, refresh_order, refresh_views
 from app.ingestion.archive import archive_13f_documents, read_13f_documents
 from app.ingestion.backfill import (
     BackfillPlan,
@@ -247,6 +252,15 @@ def ingest_filing(
         bool,
         typer.Option("--dry-run", help="Fetch, parse and report. Write nothing."),
     ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-views/--no-refresh-views",
+            help="Refresh the materialised views after a load that publishes, as "
+            "refresh-views does. --no-refresh-views is for a script that loads many "
+            "filings and runs refresh-views once at the end.",
+        ),
+    ] = True,
 ) -> None:
     """Fetch, parse and load one 13F filing.
 
@@ -255,7 +269,9 @@ def ingest_filing(
     reported as such.
     """
     try:
-        asyncio.run(_ingest_filing(accession_no, cik=cik, force=force, dry_run=dry_run))
+        asyncio.run(
+            _ingest_filing(accession_no, cik=cik, force=force, dry_run=dry_run, refresh=refresh)
+        )
     except (
         CommandError,
         FilingDocumentsError,
@@ -277,7 +293,9 @@ def ingest_filing(
         raise typer.Exit(code=1) from failure
 
 
-async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry_run: bool) -> None:
+async def _ingest_filing(
+    accession_no: str, *, cik: str | None, force: bool, dry_run: bool, refresh: bool
+) -> None:
     """The command's body, as one coroutine, so the sync wrapper stays a bridge.
 
     The ordering here is not arbitrary. The database is consulted first and
@@ -290,12 +308,22 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
     A filing in ``pending_filing`` has each attempt written back to its row:
     ``done`` in the loader's own transaction, or a failure counted with its
     message. A dry run writes neither. The run itself is recorded either way.
+
+    A load that publishes refreshes the materialised views after it commits,
+    as a ``refresh-views`` run of its own. A skipped filing, a dry run and a
+    filing loaded without a filer publish nothing, so they refresh nothing.
     """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
 
     async with track_run(
-        settings, "ingest-filing", accession_no=accession_no, cik=cik, force=force, dry_run=dry_run
+        settings,
+        "ingest-filing",
+        accession_no=accession_no,
+        cik=cik,
+        force=force,
+        dry_run=dry_run,
+        refresh_views=refresh,
     ) as run:
         run.items_seen = 1
         accession = _normalise_accession(accession_no)
@@ -322,6 +350,9 @@ async def _ingest_filing(accession_no: str, *, cik: str | None, force: bool, dry
         if report.result is not None:
             run.items_written = 1
         _echo_report(report)
+
+    if refresh and report.published is not None:
+        await _refresh(settings, after=run.id)
 
 
 async def _fetch_and_load(
@@ -1063,6 +1094,14 @@ def backfill_command(
             ),
         ),
     ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-views/--no-refresh-views",
+            help="Refresh the materialised views once, at the end, if anything loaded, "
+            "as refresh-views does.",
+        ),
+    ] = True,
 ) -> None:
     """Ingest every queued 13F, several at a time. Re-run it to resume.
 
@@ -1070,6 +1109,9 @@ def backfill_command(
     already loaded is skipped without an EDGAR request; with --force it is
     re-parsed from the raw store instead, also without one. A filing that fails
     is reported and recorded on its queue row, and the run carries on.
+
+    Each filing is published as it loads. The materialised views are refreshed
+    once, after the last filing, never in the middle of the run.
 
     Ctrl-C lets the filings in flight finish and starts no more; a second
     Ctrl-C abandons them. Exits 1 if any filing failed or EDGAR blocked the
@@ -1083,6 +1125,7 @@ def backfill_command(
                 concurrency=concurrency,
                 limit=limit,
                 force=force,
+                refresh=refresh,
             )
         )
     except UnknownFilerError as failure:
@@ -1100,9 +1143,15 @@ def backfill_command(
 
 
 async def _backfill(
-    slug: str | None, *, since: date | None, concurrency: int, limit: int | None, force: bool
+    slug: str | None,
+    *,
+    since: date | None,
+    concurrency: int,
+    limit: int | None,
+    force: bool,
+    refresh: bool,
 ) -> int:
-    """Plan from the database, work through the plan, summarise. Returns the exit code.
+    """Plan from the database, work through the plan, summarise, refresh. Returns the exit code.
 
     One engine, one raw store and one EDGAR client for the whole run, shared by
     every worker. The client is opened even for a run that will only reprocess,
@@ -1112,6 +1161,11 @@ async def _backfill(
     The run is ``partial`` whenever this exits non-zero without raising: a
     filing failed, EDGAR blocked the run, or Ctrl-C stopped it short. Each
     failed filing is a line of ``ingestion_run.error``, as on its queue row.
+
+    The views are refreshed after the run is recorded, as a ``refresh-views``
+    run of its own, whenever a filing loaded, however the backfill ended. A
+    run that stopped short has published what it loaded, and the views
+    should say so.
     """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
@@ -1125,6 +1179,7 @@ async def _backfill(
         concurrency=concurrency,
         limit=limit,
         force=force,
+        refresh_views=refresh,
     ) as run:
         engine = create_engine(settings)
         sessions = create_session_factory(engine)
@@ -1163,6 +1218,8 @@ async def _backfill(
             run.errors.append(f"stopped with {not_started} not started; re-run to resume")
 
     _echo_backfill_summary(plan, backfilled, elapsed=time.monotonic() - started)
+    if refresh and run.items_written:
+        await _refresh(settings, after=run.id)
     if backfilled.rate_limited is not None or backfilled.count(Outcome.FAILED):
         return 1
     return _INTERRUPTED if backfilled.count(Outcome.NOT_STARTED) else 0
@@ -1763,6 +1820,13 @@ def recompute_command(
             "suspect, instead of withholding them.",
         ),
     ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-views/--no-refresh-views",
+            help="Refresh the materialised views after the rebuild, as refresh-views does.",
+        ),
+    ] = True,
 ) -> None:
     """Rebuild position_snapshot, the published portfolio, and position_change, what changed in it.
 
@@ -1784,6 +1848,10 @@ def recompute_command(
     each filing they load; run it by hand after anything else that changes what
     counts, or with --all after a change to how either table is built.
 
+    Then refreshes the materialised views, which aggregate both tables, unless
+    --no-refresh-views. The refresh is recorded as a refresh-views run of its
+    own, after the rebuild has committed.
+
     Exits 1 if --filer names no filer, and 2 without --filer, --period or --all.
     """
     if everything == (filer is not None or period is not None):
@@ -1796,13 +1864,17 @@ def recompute_command(
         )
         raise typer.Exit(code=2)
     try:
-        asyncio.run(_recompute(filer, period=period, include_suspect=include_suspect))
+        asyncio.run(
+            _recompute(filer, period=period, include_suspect=include_suspect, refresh=refresh)
+        )
     except UnknownFilerError as failure:
         typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from failure
 
 
-async def _recompute(slug: str | None, *, period: date | None, include_suspect: bool) -> None:
+async def _recompute(
+    slug: str | None, *, period: date | None, include_suspect: bool, refresh: bool
+) -> None:
     """Everything when neither ``slug`` nor ``period`` is given, which the command says as --all."""
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
@@ -1811,7 +1883,12 @@ async def _recompute(slug: str | None, *, period: date | None, include_suspect: 
     )
 
     async with track_run(
-        settings, "recompute", filer=slug, period=period, include_suspect=include_suspect
+        settings,
+        "recompute",
+        filer=slug,
+        period=period,
+        include_suspect=include_suspect,
+        refresh_views=refresh,
     ) as run:
         async with session_scope(settings) as session:
             filer_id = await _filer_id(session, slug)
@@ -1844,6 +1921,10 @@ async def _recompute(slug: str | None, *, period: date | None, include_suspect: 
             exit=changes.exit,
         )
     _echo_rebuild(rebuilt, scope=described or "every filer")
+    # Even after a rebuild that published nothing: it may have deleted rows
+    # that the views still count.
+    if refresh:
+        await _refresh(settings, after=run.id)
 
 
 def _echo_rebuild(rebuilt: Recomputed, *, scope: str) -> None:
@@ -1890,52 +1971,117 @@ def _quarters(scope: Scope) -> str:
 # --- refresh-views -----------------------------------------------------------
 
 
+#: What ``--view`` takes.
+_VIEW_NAMES: Final = tuple(view.name for view in MATERIALISED_VIEWS)
+
+
+def _view_name(value: str) -> str:
+    if value not in _VIEW_NAMES:
+        raise typer.BadParameter(
+            f"{value!r} is not a materialised view: expected one of {', '.join(_VIEW_NAMES)}"
+        )
+    return value
+
+
 @app.command("refresh-views")
-def refresh_views_command() -> None:
+def refresh_views_command(
+    view: Annotated[
+        str | None,
+        typer.Option(
+            "--view",
+            metavar="NAME",
+            parser=_view_name,
+            help=f"Only this view, and any view that reads it: {', '.join(_VIEW_NAMES)}.",
+        ),
+    ] = None,
+    concurrent: Annotated[
+        bool,
+        typer.Option(
+            "--concurrent/--no-concurrent",
+            help="Let reads of each view go on while it is refreshed. --no-concurrent is "
+            "faster, but blocks reads of each view until the last one is done.",
+        ),
+    ] = True,
+) -> None:
     """Refresh the materialised views the market-wide and per-filer reads are served from.
 
     mv_consensus_holdings, mv_quarter_flows and mv_filer_summary aggregate
     position_snapshot and position_change, and each is as of its last refresh.
-    Run this once a period's ingestion is complete. A refresh mid-backfill
-    publishes a quarter with a third of its filers in it.
+    recompute runs this after every rebuild, ingest-filing after a load that
+    publishes, and backfill once at the end. Run it by hand after any of them
+    was told --no-refresh-views.
 
-    Concurrently, so reads of the views go on while it runs. It waits for any
-    recompute in progress and holds off the next until it commits, so all
-    three views are refreshed from the same tables.
+    Concurrently by default, so reads of the views go on while it runs. It
+    waits for any recompute in progress and holds off the next until it
+    commits, so the views are refreshed from the same tables. A view that
+    reads another is refreshed after it. Each view's refresh time is recorded
+    in matview_refresh, and how long it took in this run's ingestion_run row.
     """
-    asyncio.run(_refresh_views())
+    asyncio.run(_refresh_views(view, concurrent=concurrent))
 
 
-async def _refresh_views() -> None:
+async def _refresh_views(view: str | None, *, concurrent: bool) -> None:
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-    started = time.perf_counter()
+    await _refresh(settings, view=view, concurrent=concurrent)
 
-    async with track_run(settings, "refresh-views") as run:
-        run.items_seen = len(MATERIALISED_VIEWS)
+
+async def _refresh(
+    settings: Settings,
+    *,
+    view: str | None = None,
+    concurrent: bool = True,
+    after: uuid.UUID | None = None,
+) -> None:
+    """One ``refresh-views`` run, by hand or after a run that published.
+
+    Always a run of its own, never part of the run before it. That one has
+    committed, and its row says how it went. A refresh that fails after it is
+    this row's failure, not a reason to report a finished rebuild as failed.
+
+    :param after: The run whose publishing this follows, kept in ``context``
+        as ``after_run_id``. ``None`` when run by hand.
+    """
+    started = time.perf_counter()
+    async with track_run(
+        settings, "refresh-views", view=view, concurrent=concurrent, after_run_id=after
+    ) as run:
         async with session_scope(settings) as session:
-            refreshed = await refresh_views(session)
+            views = await refresh_order(session, only=view)
+            run.items_seen = len(views)
+            refreshed = await refresh_views(session, views, concurrently=concurrent, run_id=run.id)
         run.items_written = len(refreshed)
-        for view in refreshed:
+        run.metrics["views"] = {
+            done.name: {
+                "seconds": round(done.seconds, 3),
+                "rows": done.rows,
+                "concurrently": done.concurrently,
+            }
+            for done in refreshed
+        }
+        # After the commit, so a line never reports a refresh that rolled back.
+        for done in refreshed:
             logger.info(
                 "materialised_view.refreshed",
-                view=view.name,
-                rows=view.rows,
-                concurrently=view.concurrently,
-                seconds=round(view.seconds, 3),
+                view=done.name,
+                rows=done.rows,
+                concurrently=done.concurrently,
+                seconds=round(done.seconds, 3),
             )
-    _echo_refreshed(refreshed, elapsed=time.perf_counter() - started)
+    _echo_refreshed(refreshed, elapsed=time.perf_counter() - started, concurrent=concurrent)
 
 
-def _echo_refreshed(refreshed: list[Refreshed], *, elapsed: float) -> None:
+def _echo_refreshed(refreshed: list[Refreshed], *, elapsed: float, concurrent: bool) -> None:
     width = max(len(view.name) for view in refreshed)
+    blocking = "" if concurrent else ", not concurrently"
     typer.echo(
         f"refresh-views  {_count(len(refreshed), 'materialised view')} refreshed "
-        f"in {_duration(elapsed)}"
+        f"in {_duration(elapsed)}{blocking}"
     )
     for view in refreshed:
-        # Only the first refresh of a view never populated is not concurrent.
-        how = "" if view.concurrently else "  (first refresh, not concurrent)"
+        # Asked to be concurrent, only the first refresh of a view never
+        # populated is not.
+        how = "  (first refresh, not concurrent)" if concurrent and not view.concurrently else ""
         typer.echo(
             f"  {view.name:<{width}}  {_count(view.rows, 'row'):>14}  "
             f"{_duration(view.seconds):>6}{how}"

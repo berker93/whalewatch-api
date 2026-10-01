@@ -10,7 +10,7 @@ this one holds only what a 13F information table actually gives us.
 
 from datetime import datetime
 
-from sqlalchemy import CHAR, BigInteger, CheckConstraint, DateTime, Text
+from sqlalchemy import CHAR, BigInteger, CheckConstraint, DateTime, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -88,5 +88,14 @@ class Security(Base):
             "resolution_source IS NULL"
             " OR resolution_source IN ('openfigi', '13f_column', 'manual')",
             name="resolution_source_is_known",
+        ),
+        # /stocks?q= searches names with ILIKE '%...%', which no B-tree can
+        # serve. Trigrams can (0017): a bitmap index scan instead of reading
+        # every security. Here until the issuer table it belongs on exists.
+        Index(
+            "ix_security_name_trgm",
+            "name",
+            postgresql_using="gin",
+            postgresql_ops={"name": "gin_trgm_ops"},
         ),
     )

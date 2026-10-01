@@ -11,7 +11,7 @@ because everything in it can be rebuilt from the layer above.
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Numeric, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, Numeric, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -114,4 +114,12 @@ class PositionSnapshot(Base):
 
     __table_args__ = (
         CheckConstraint("weight_pct >= 0 AND weight_pct <= 100", name="weight_pct_is_a_percentage"),
+        # The latest period (0017): max(period_of_report) reads one entry of
+        # this instead of every row. Who holds a stock in a period uses both
+        # columns. Period first for the max, which the other order cannot serve.
+        Index(
+            "ix_position_snapshot_period_of_report_security_id",
+            "period_of_report",
+            "security_id",
+        ),
     )

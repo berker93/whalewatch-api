@@ -989,7 +989,9 @@ async def test_deleting_a_filing_takes_its_holdings(db_session: AsyncSession) ->
         ("holding", "ix_holding_filing_id"),
         ("holding", "ix_holding_security_id"),
         ("holding", "ix_holding_cusip"),
-        ("holding", "ix_holding_filer_id_period_of_report"),
+        ("position_snapshot", "ix_position_snapshot_period_of_report_security_id"),
+        ("position_change", "ix_position_change_period_of_report_security_id_not_hold"),
+        ("security", "ix_security_name_trgm"),
         ("filer_cik", "uq_filer_cik_cik"),
         ("filing", "uq_filing_accession_no"),
         ("mv_consensus_holdings", "uq_mv_consensus_holdings_period_of_report"),
@@ -1033,6 +1035,36 @@ async def test_the_period_indexes_are_descending(db_session: AsyncSession) -> No
 
     assert "filed_at DESC" in definitions["ix_filing_filed_at"]
     assert "period_of_report DESC" in definitions["ix_filing_filer_id_period_of_report"]
+
+
+async def test_the_query_indexes_have_the_shape_their_queries_need(
+    db_session: AsyncSession,
+) -> None:
+    """0017's two indexes whose name does not say what makes them work.
+
+    A B-tree on ``security.name`` would exist under the same name and serve no
+    ``ILIKE '%...%'`` at all. And the change index is only usable by a query
+    whose ``WHERE`` implies its own, which a rebuilt index without one would
+    quietly stop requiring. See docs/query-performance.md.
+    """
+    rows = (
+        await db_session.execute(
+            text("""
+                SELECT indexname, indexdef FROM pg_indexes
+                WHERE indexname IN (
+                    'ix_security_name_trgm',
+                    'ix_position_change_period_of_report_security_id_not_hold'
+                )
+            """)
+        )
+    ).all()
+    definitions: dict[str, str] = {name: definition for name, definition in rows}
+
+    assert "USING gin (name gin_trgm_ops)" in definitions["ix_security_name_trgm"]
+    assert (
+        "WHERE (action <> 'hold'::text)"
+        in definitions["ix_position_change_period_of_report_security_id_not_hold"]
+    )
 
 
 # --- the migration, both directions -----------------------------------------

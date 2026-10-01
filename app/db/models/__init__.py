@@ -31,6 +31,7 @@ from app.db.models.ingestion_run import (
     IngestionRun,
     RunStatus,
 )
+from app.db.models.matview_refresh import MatviewRefresh
 from app.db.models.pending_filing import PENDING_STATUS_CHECK, PendingFiling, PendingStatus
 from app.db.models.position_change import (
     ACTION_CHECK,
@@ -68,6 +69,7 @@ __all__ = [
     "Filing",
     "Holding",
     "IngestionRun",
+    "MatviewRefresh",
     "OverlapPolicy",
     "ParseStatus",
     "PendingFiling",

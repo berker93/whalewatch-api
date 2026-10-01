@@ -10,7 +10,7 @@ table is truncated around each test rather than rolled back.
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -232,6 +232,26 @@ async def test_the_parameters_are_stored_as_jsonb(
         "force": True,
     }
     assert forced == run.id
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_what_the_run_measured_is_written_with_its_outcome(
+    settings: Settings, migrated_engine: AsyncEngine, fails: bool
+) -> None:
+    """Empty until the run ends, and kept when it fails: what it measured
+    before it stopped is part of why."""
+    with pytest.raises(RuntimeError) if fails else nullcontext():
+        async with track_run(settings, "test-job") as run:
+            run.metrics["views"] = {"mv_quarter_flows": {"seconds": 1.204, "rows": 76_000}}
+            async with migrated_engine.connect() as connection:
+                during = await connection.scalar(select(IngestionRun.metrics))
+            if fails:
+                raise RuntimeError("the second view failed")
+
+    async with migrated_engine.connect() as connection:
+        after = await connection.scalar(select(IngestionRun.metrics))
+    assert during == {}
+    assert after == {"views": {"mv_quarter_flows": {"seconds": 1.204, "rows": 76_000}}}
 
 
 async def test_run_id_is_bound_for_the_run_and_only_the_run(settings: Settings) -> None:
