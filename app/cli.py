@@ -24,6 +24,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli recompute --filer berkshire-hathaway
     uv run python -m app.cli recompute --period 2026Q1
     uv run python -m app.cli recompute --all
+    uv run python -m app.cli refresh-views
     uv run python -m app.cli runs --job backfill_13f
 
 Every run is recorded
@@ -101,6 +102,7 @@ from app.db.session import create_engine, create_session_factory, session_scope
 from app.derived.position_change import ChangeRebuild
 from app.derived.recompute import Recomputed, hold_recompute_lock, recompute
 from app.derived.scope import Pair, Scope, filing_pairs, resolve_scope
+from app.derived.views import MATERIALISED_VIEWS, Refreshed, refresh_views
 from app.ingestion.archive import archive_13f_documents, read_13f_documents
 from app.ingestion.backfill import (
     BackfillPlan,
@@ -1883,6 +1885,61 @@ def _quarters(scope: Scope) -> str:
     """The quarters a scope's pairs are in, each once, oldest first: ``2023Q3, 2023Q4``."""
     pairs: frozenset[Pair] = scope.pairs or frozenset()
     return ", ".join(_quarter(period) for period in sorted({period for _, period in pairs}))
+
+
+# --- refresh-views -----------------------------------------------------------
+
+
+@app.command("refresh-views")
+def refresh_views_command() -> None:
+    """Refresh the materialised views the market-wide and per-filer reads are served from.
+
+    mv_consensus_holdings, mv_quarter_flows and mv_filer_summary aggregate
+    position_snapshot and position_change, and each is as of its last refresh.
+    Run this once a period's ingestion is complete. A refresh mid-backfill
+    publishes a quarter with a third of its filers in it.
+
+    Concurrently, so reads of the views go on while it runs. It waits for any
+    recompute in progress and holds off the next until it commits, so all
+    three views are refreshed from the same tables.
+    """
+    asyncio.run(_refresh_views())
+
+
+async def _refresh_views() -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    started = time.perf_counter()
+
+    async with track_run(settings, "refresh-views") as run:
+        run.items_seen = len(MATERIALISED_VIEWS)
+        async with session_scope(settings) as session:
+            refreshed = await refresh_views(session)
+        run.items_written = len(refreshed)
+        for view in refreshed:
+            logger.info(
+                "materialised_view.refreshed",
+                view=view.name,
+                rows=view.rows,
+                concurrently=view.concurrently,
+                seconds=round(view.seconds, 3),
+            )
+    _echo_refreshed(refreshed, elapsed=time.perf_counter() - started)
+
+
+def _echo_refreshed(refreshed: list[Refreshed], *, elapsed: float) -> None:
+    width = max(len(view.name) for view in refreshed)
+    typer.echo(
+        f"refresh-views  {_count(len(refreshed), 'materialised view')} refreshed "
+        f"in {_duration(elapsed)}"
+    )
+    for view in refreshed:
+        # Only the first refresh of a view never populated is not concurrent.
+        how = "" if view.concurrently else "  (first refresh, not concurrent)"
+        typer.echo(
+            f"  {view.name:<{width}}  {_count(view.rows, 'row'):>14}  "
+            f"{_duration(view.seconds):>6}{how}"
+        )
 
 
 # --- runs --------------------------------------------------------------------

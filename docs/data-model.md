@@ -18,7 +18,8 @@ as three layers rather than one is what makes a parser bug survivable.
         |
         v
   position_snapshot / position_change /       derived, recomputable, droppable
-  mv_market_flows
+  mv_consensus_holdings / mv_quarter_flows /
+  mv_filer_summary
 ```
 
 **The raw layer is the source of truth.** A parser bug found in Epic 3 is
@@ -676,18 +677,89 @@ partitioning requires and what is expensive to add later.
 
 ## Materialised views
 
-`mv_market_flows` — net share and dollar change per `(security, period)` across
-all filers, which is `/market/flows` and is otherwise an aggregate over the whole
-`position_change` table per request.
+Three aggregates of the derived tables (`0014_materialised_views`), for the
+reads that would otherwise aggregate hundreds of thousands of rows per request
+over inputs that change four times a year. Each has a live query in
+[`app/derived/views.py`](../app/derived/views.py) that computes the same rows
+from the tables as they are now. The `check_*` tests hold each view to its live
+query, row for row.
 
-Refreshed `CONCURRENTLY`, which requires a unique index on the view, by
-`whalewatch refresh-views` after each period's ingestion completes — not on a
-timer. A timer refreshes mid-backfill and publishes a quarter that is one third
-loaded.
+```
+mv_consensus_holdings                  unique (period_of_report, security_id)
+  period_of_report, security_id
+  holder_count        bigint            -- filers holding it
+  total_value_usd     numeric
+  total_shares        numeric
+  avg_weight_pct      numeric           -- over its holders, 6 places
+  median_weight_pct   numeric           -- over its holders, 6 places
+  value_rank          bigint            -- 1 = most dollars held in the period; ties share
+  suspect             boolean           -- a holder's period was published unchecked
+
+mv_quarter_flows                       unique (period_of_report, security_id)
+  period_of_report, security_id
+  bought_value_usd    numeric           -- new + add, traded dollars (below)
+  sold_value_usd      numeric           -- trim + exit, positive
+  net_value_usd       numeric           -- bought - sold
+  net_shares          numeric           -- sum(shares_delta), holds included
+  new_positions, exits, buyer_count, seller_count     bigint
+  suspect             boolean
+
+mv_filer_summary                       unique (filer_id, period_of_report)
+  filer_id, period_of_report
+  portfolio_value_usd numeric           -- common stock, as position_snapshot holds it
+  position_count      bigint
+  top10_weight_pct    numeric           -- the ten largest positions' share of the book
+  turnover_pct        numeric           -- null in the filer's first period
+  suspect             boolean           -- this period or the one it is compared with
+```
+
+**Flows and turnover count traded dollars, not `value_delta`.** `value_delta`
+includes the price move on every share held throughout. Summed as flows, a
+stock that doubled would read as bought by every holder who did nothing, and a
+trim during a rally as negative selling. So each change is valued as the shares
+it bought or sold, times the period-end price. An exit has no price in its own
+period, so it is valued at the price it was last held at, which makes it its
+whole previous value. A new position is its whole value. A `hold` trades
+nothing, drift included. Period-end prices are the only ones a 13F has, so this
+is an estimate: a position bought at $50 and worth $80 at quarter end counts as
+$80 of buying.
+
+**Turnover is `sum(traded) / 2 / previous portfolio value`**, in percent. There
+is no single standard. This one is half of bought plus sold, so a manager who
+sold half the book and bought the same again turned over half of it. The
+previous portfolio value is the sum of the period's `prev_value_usd`, since
+every position of the previous period is a change row, held on or exited.
+Across a gap the previous period is the one before the gap, so turnover covers
+every quarter since. The formula is also the column's comment in the database,
+so `\d+ mv_filer_summary` in psql says which turnover this is.
+
+**A filer's first period is not a flow.** Every position in it is `new`, and
+`prev_period_of_report` is null. `mv_quarter_flows` leaves those rows out. If it
+counted them, every filer added to the universe would be a market-wide buying
+spree in its first quarter.
+
+**Average and median weight both** are over the stock's holders, because they
+tell different stories. A stock held at 20% by one manager and 0.5% by thirty
+others averages 1.13% and has a median of 0.5%. The median is
+`PERCENTILE_CONT(0.5)`, which is double precision only. Converted back to
+`numeric`, it is the exact midpoint: a weight has at most nine significant
+digits, and the conversion keeps fifteen.
+
+**Refreshed by `whalewatch refresh-views` after each period's ingestion
+completes, not on a timer.** A timer would refresh mid-backfill and publish a
+quarter with a third of its filers in it. Until a refresh, each view is as of
+the last one. The refresh is `CONCURRENTLY`, so reads go on through it. That
+needs a unique index on plain columns, with no `WHERE`, on every view. The
+refresh holds the recompute lock, so no rebuild commits between one view and
+the next. A view that was never populated is refreshed plainly once. The
+migration creates them `WITH DATA`, so this happens only after a `REFRESH ...
+WITH NO DATA`.
 
 Alembic does not model views. They are `op.execute()` in a hand-written migration
 with a real `downgrade`, like everything else in
-[the migration rules](../README.md#migrations).
+[the migration rules](../README.md#migrations). Their handles in
+`app/derived/views.py` are `table()` constructs, kept off `Base.metadata` so that
+autogenerate does not draft a `CREATE TABLE` for them.
 
 ## Invariants
 
@@ -732,3 +804,8 @@ The ones worth a constraint rather than a convention. Everything marked
   (`0012_position_change`). An `exit` has zero shares, value and weight
   (`0013_position_change_exits`). A row whose action and figures disagree has
   every reader believing one of the two.
+- **enforced** — every materialised view has a unique index on plain columns,
+  with no `WHERE`, which is what `REFRESH ... CONCURRENTLY` needs
+  (`0014_materialised_views`). `test_materialised_views.py` checks every
+  materialised view in the database, so one added without an index fails there
+  rather than on its first refresh.

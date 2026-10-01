@@ -992,6 +992,9 @@ async def test_deleting_a_filing_takes_its_holdings(db_session: AsyncSession) ->
         ("holding", "ix_holding_filer_id_period_of_report"),
         ("filer_cik", "uq_filer_cik_cik"),
         ("filing", "uq_filing_accession_no"),
+        ("mv_consensus_holdings", "uq_mv_consensus_holdings_period_of_report"),
+        ("mv_quarter_flows", "uq_mv_quarter_flows_period_of_report"),
+        ("mv_filer_summary", "uq_mv_filer_summary_filer_id"),
     ],
 )
 async def test_the_index_exists(db_session: AsyncSession, table: str, index: str) -> None:
@@ -1163,9 +1166,9 @@ def _in_alembic(connection: Connection, action: AlembicAction) -> None:
 def _surviving_objects(url: str) -> list[str]:
     """Everything in ``public`` after a downgrade to base, ``alembic_version`` aside.
 
-    Tables, enum types and sequences, because those are the three things a
-    hand-written downgrade forgets. ``alembic_version`` is excluded because
-    Alembic owns it and does not drop it.
+    Tables, views, materialised views, enum types and sequences, because those
+    are the things a hand-written downgrade forgets. ``alembic_version`` is
+    excluded because Alembic owns it and does not drop it.
     """
 
     async def go() -> list[str]:
@@ -1176,6 +1179,11 @@ def _surviving_objects(url: str) -> list[str]:
                     text("""
                         SELECT 'table: ' || tablename FROM pg_tables
                         WHERE schemaname = 'public' AND tablename <> 'alembic_version'
+                        UNION ALL
+                        SELECT 'view: ' || viewname FROM pg_views WHERE schemaname = 'public'
+                        UNION ALL
+                        SELECT 'matview: ' || matviewname FROM pg_matviews
+                        WHERE schemaname = 'public'
                         UNION ALL
                         SELECT 'type: ' || t.typname FROM pg_type t
                         JOIN pg_namespace n ON n.oid = t.typnamespace

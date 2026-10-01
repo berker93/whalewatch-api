@@ -534,7 +534,47 @@ published with one. Exit 1 if `--filer` names no filer, and 2 without `--filer`,
 
 Migrations `0011` and `0012` create the two tables empty, in their current
 shape, and `0013` adds exits without writing any, so run `recompute --all` once
-after upgrading past them.
+after upgrading past them, and then `refresh-views`.
+
+### `refresh-views`
+
+Refreshes the three materialised views that the market-wide and per-filer reads
+are served from. Each aggregates the derived tables:
+
+| View | One row per | What it holds |
+| --- | --- | --- |
+| `mv_consensus_holdings` | security, period | holder count, total value and shares, average and median weight, rank by value |
+| `mv_quarter_flows` | security, period | bought, sold and net value, net shares, new positions, exits, buyers, sellers |
+| `mv_filer_summary` | filer, period | portfolio value, position count, top-10 weight, turnover |
+
+On a synthetic dataset the size of the curated universe, 100 filers over 20
+quarters with 1.6 million positions and 2.6 million changes, on stock Postgres
+settings:
+
+```
+refresh-views  3 materialised views refreshed in 4.5s
+  mv_consensus_holdings     80,000 rows    2.1s
+  mv_quarter_flows          76,000 rows    1.2s
+  mv_filer_summary           2,000 rows    1.2s
+```
+
+Each view's live query takes one to two seconds over the same data. The 50
+most-held stocks of one quarter, read from `mv_consensus_holdings`, take 2ms.
+
+**Run it when a period's ingestion is complete.** It is not on a timer, and
+`ingest-filing`, `backfill` and `recompute` do not run it. A refresh
+mid-backfill would publish a quarter with a third of its filers in it, as the
+consensus of all of them. Until it runs, each view is as of its last refresh.
+
+**Readers are not blocked.** Each view is refreshed `CONCURRENTLY`, which its
+unique index allows. The refresh waits for any `recompute` in progress, and
+holds off the next until it commits, so all three views are refreshed from the
+same tables.
+
+What the numbers mean, including turnover's formula and why flows count traded
+dollars rather than `value_delta`, is in
+[the data model](docs/data-model.md#materialised-views). Migration `0014`
+creates the views filled from whatever the derived tables held then.
 
 ### `runs [--job NAME] [--limit N]`
 
@@ -582,6 +622,7 @@ holds the run's parameters as `jsonb`, e.g. `WHERE context @> '{"force": true}'`
 | `ingest-filing` | 1 | 1 when it loaded, 0 when skipped or a dry run |
 | `seed-investors` | Filers in the list | Filers created or updated, 0 on a dry run |
 | `recompute` | Periods resolved, published or withheld | Periods published |
+| `refresh-views` | Materialised views to refresh | Materialised views refreshed |
 | `check-data`, `audit-*` | Findings reported | 0 |
 
 **Every verb records its run except two.** `runs` reads the record, and a

@@ -42,6 +42,7 @@ TRACKED: Final = {
     "audit-amendments": ("audit-amendments", [], "success"),
     "check-data": ("check-data", [], "success"),
     "recompute": ("recompute", ["--all"], "success"),
+    "refresh-views": ("refresh-views", [], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.
