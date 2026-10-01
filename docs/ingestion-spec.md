@@ -145,7 +145,7 @@ caller meant. See *Presentation rules* in the [product spec](product-spec.md).
   watch.
 
 So ingestion is not write-once. Re-ingesting a `(filer, period)` must be an
-upsert keyed on the natural keys, `holding_change` for that period and the next
+upsert keyed on the natural keys, `position_change` for that period and the next
 must be recomputable on demand, and nothing downstream may assume a period is
 final. `filing.filed_at` is retained so "what did we know, and when" is
 answerable — a backtest that uses a position on a date before it was disclosed is
@@ -252,9 +252,10 @@ Less dramatic, still enough to make a number wrong:
   `reportType` and `otherManager` counts the same position twice.
 - **Splits.** Share counts are as reported at the time. Comparing 2020-06-30 to
   2020-09-30 across Apple's 4-for-1 split, unadjusted, shows every holder
-  quadrupling their position. `holding_change` must compare split-adjusted
+  quadrupling their position. `position_change` must compare split-adjusted
   shares, which means the price/corporate-action feed is a dependency of the
-  delta table, not an optional enrichment.
+  delta table, not an optional enrichment. Until that feed exists it compares
+  shares as filed, and a split reads as every holder adding.
 - **Tickers are reused, CUSIPs change.** A CUSIP maps to different tickers over
   time and tickers get recycled between companies. Resolution is stored with
   `resolved_at`, and the join key inside the database is always `security_id`.
@@ -287,7 +288,7 @@ Celery, with Redis as the broker. Beat schedule in `app/jobs/schedule.py`:
 - **Daily during filing season** — poll tracked filers' submissions JSON for new
   13Fs. Outside the ~three weeks after each due date this finds nothing, so it
   drops to weekly.
-- **After a period completes** — recompute `holding_change`, then
+- **After a period completes** — recompute `position_change`, then
   `refresh-views`. Triggered by ingestion finishing, not by a clock.
 
 Everything is also a CLI verb (`app/cli.py`: `ingest-filing`, `backfill`,

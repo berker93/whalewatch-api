@@ -95,6 +95,7 @@ from app.db.queries.checks import DataCheckReport, check_data
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.queries.runs import RunSummary, job_names, recent_runs
 from app.db.session import create_engine, create_session_factory, session_scope
+from app.derived.position_change import ChangeRebuild, recompute_position_change
 from app.derived.position_snapshot import SnapshotRebuild, recompute_position_snapshot
 from app.ingestion.archive import archive_13f_documents, read_13f_documents
 from app.ingestion.backfill import (
@@ -1697,14 +1698,17 @@ def recompute_command(
         ),
     ] = False,
 ) -> None:
-    """Rebuild position_snapshot, the published portfolio, from the loaded holdings.
+    """Rebuild position_snapshot, the published portfolio, and position_change, what changed in it.
 
-    One row per security per filer and period, summed over the filings that
-    count once amendments and overlapping CIKs are resolved, with its weight as
-    a percentage of the period. Common stock only: option lines and principal
-    amounts are left out. A period that a suspect filing counts toward is
-    withheld unless --include-suspect, which publishes it with every row marked
-    suspect. Run check-data first. Exits 1 if --filer names no filer.
+    position_snapshot has one row per security per filer and period, summed over
+    the filings that count once amendments and overlapping CIKs are resolved,
+    with its weight as a percentage of the period. Common stock only: option
+    lines and principal amounts are left out. position_change classifies each
+    of those rows against the filer's previous period as new, add, trim or hold,
+    with the deltas. A period that a suspect filing counts toward is withheld
+    from both unless --include-suspect, which publishes it with every row
+    marked suspect. Both tables are rebuilt in one transaction. Run check-data
+    first. Exits 1 if --filer names no filer.
     """
     try:
         asyncio.run(_recompute(filer, include_suspect=include_suspect))
@@ -1723,6 +1727,9 @@ async def _recompute(slug: str | None, *, include_suspect: bool) -> None:
             rebuild = await recompute_position_snapshot(
                 session, filer_id=filer_id, include_suspect=include_suspect
             )
+            # From the snapshot rows just written, in the same transaction: a
+            # reader sees both tables rebuilt, or neither.
+            changes = await recompute_position_change(session, filer_id=filer_id)
         # Periods, not positions, so that the gap between the two is the
         # periods withheld for a suspect filing.
         run.items_seen = rebuild.periods + rebuild.withheld
@@ -1736,14 +1743,28 @@ async def _recompute(slug: str | None, *, include_suspect: bool) -> None:
             suspect_periods=rebuild.suspect_periods,
             include_suspect=include_suspect,
         )
-    _echo_rebuild(rebuild, scope=slug or "every filer")
+        logger.info(
+            "position_change.recomputed",
+            filer=slug,
+            new=changes.new,
+            add=changes.add,
+            trim=changes.trim,
+            hold=changes.hold,
+        )
+    _echo_rebuild(rebuild, changes, scope=slug or "every filer")
 
 
-def _echo_rebuild(rebuild: SnapshotRebuild, *, scope: str) -> None:
-    """What was published, then what was not — or was, without a check."""
+def _echo_rebuild(rebuild: SnapshotRebuild, changes: ChangeRebuild, *, scope: str) -> None:
+    """What was published and what changed in it, then what was not, or was without a check."""
     typer.echo(
         f"recompute  position_snapshot for {scope}: {_count(rebuild.positions, 'position')} "
         f"in {_count(rebuild.periods, 'period')} of {_count(rebuild.filers, 'filer')}"
+    )
+    # In the stored vocabulary, which is what a WHERE on the table will spell.
+    _line(
+        "changes",
+        f"position_change: {changes.new:,} new, {changes.add:,} add, "
+        f"{changes.trim:,} trim, {changes.hold:,} hold",
     )
     if not rebuild.suspect_periods:
         return

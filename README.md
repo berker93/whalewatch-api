@@ -457,13 +457,26 @@ Rebuilds `position_snapshot`, the published portfolio: one row per security per
 `(filer, period)`, summed over the filings that count once amendments and
 overlapping CIKs are resolved, with its `weight_pct` of the period and the
 `source_filing_id` it was read from. Common stock only: option lines and `PRN`
-principal amounts stay in `holding` and are not published. Wholesale and in one
-transaction, for every filer or just `--filer`'s rows. Same fixtures as above:
+principal amounts stay in `holding` and are not published.
+
+Then `position_change`, from the snapshot just built: each of those rows against
+the filer's previous published period, as `new`, `add`, `trim` or `hold`, with
+the previous shares, value and weight and the deltas. A change in shares within
+±0.01% is a `hold`, so the few shares a count drifts by between quarters do not
+read as trading. Exits are not rows yet.
+
+Both are rebuilt wholesale and in one transaction, for every filer or just
+`--filer`'s rows. Same fixtures as above:
 
 ```
 recompute  position_snapshot for every filer: 144 positions in 3 periods of 1 filer
+  changes     position_change: 62 new, 8 add, 15 trim, 59 hold
   withheld    1 period with a suspect filing — check-data lists them; --include-suspect publishes them
 ```
+
+The 49 positions of 2022Q3 are among the `new`: it is the first period loaded,
+and a null `prev_period_of_report` says so. 2023Q3 is compared with 2022Q4, the
+period before it that was loaded.
 
 **A period a suspect filing counts toward is withheld, all of it.** Not just
 that filing: 2023Q4's addition was fine, but the original without it is the
@@ -473,8 +486,8 @@ every row `suspect`, so data published without a check never looks like data
 published with one. It is not run on ingest: publishing is load, then
 `check-data`, then `recompute`. Exit 1 only if `--filer` names no filer.
 
-Migration `0011` recreates the table empty, in its current shape, so run
-`recompute` once after upgrading past it.
+Migrations `0011` and `0012` create the two tables empty, in their current
+shape, so run `recompute` once after upgrading past them.
 
 ### `runs [--job NAME] [--limit N]`
 

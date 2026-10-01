@@ -122,7 +122,9 @@ class Holding(Base):
 
     Reported as of the period end and never adjusted. Comparing two quarters
     across a split shows every holder's position multiplying, which is why
-    ``holding_change`` split-adjusts rather than subtracting these directly.
+    ``position_change`` has to split-adjust these rather than subtract them
+    directly. Until the corporate-action feed exists it cannot, and a split
+    reads as an add.
     """
 
     sshprnamt_type: Mapped[str] = mapped_column(Text)

@@ -36,6 +36,7 @@ from app.db.models import (
     ParseStatus,
     PendingFiling,
     PendingStatus,
+    PositionChange,
     PositionSnapshot,
     Security,
 )
@@ -315,7 +316,8 @@ async def test_every_money_and_share_column_is_numeric(db_session: AsyncSession)
                 WHERE table_schema = 'public'
                   AND column_name IN (
                       'value_usd', 'shares',
-                      'voting_sole', 'voting_shared', 'voting_none'
+                      'voting_sole', 'voting_shared', 'voting_none',
+                      'prev_value_usd', 'prev_shares', 'value_delta', 'shares_delta'
                   )
             """)
         )
@@ -669,6 +671,59 @@ async def test_a_snapshot_holds_one_row_per_security_per_period(db_session: Asyn
     with pytest.raises(IntegrityError, match="pk_position_snapshot"):
         async with db_session.begin_nested():
             await db_session.execute(insert(PositionSnapshot).values(row))
+
+
+async def _a_change_row(session: AsyncSession) -> None:
+    """One change, a position held unchanged from the quarter before, inserted."""
+    filer = await _a_filer(session)
+    security = await _a_security(session)
+    await session.execute(
+        insert(PositionChange).values(
+            filer_id=filer.id,
+            period_of_report=date(2024, 3, 31),
+            security_id=security.id,
+            action="hold",
+            shares=Decimal(100),
+            value_usd=Decimal(17_000),
+            weight_pct=Decimal(50),
+            prev_period_of_report=date(2023, 12, 31),
+            prev_shares=Decimal(100),
+            prev_value_usd=Decimal(17_000),
+            prev_weight_pct=Decimal(50),
+            shares_delta=Decimal(0),
+            shares_delta_pct=Decimal(0),
+            value_delta=Decimal(0),
+            weight_delta=Decimal(0),
+            suspect=False,
+        )
+    )
+
+
+async def test_a_change_action_is_one_the_table_knows(db_session: AsyncSession) -> None:
+    """``exit`` included, until DATA-3 decides what an exit row holds and
+    adds it to the vocabulary."""
+    await _a_change_row(db_session)
+
+    with pytest.raises(IntegrityError, match="action_is_known"):
+        async with db_session.begin_nested():
+            await db_session.execute(text("UPDATE position_change SET action = 'exit'"))
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    ["action = 'new'", "prev_shares = NULL"],
+    ids=["new-with-previous-shares", "held-without-them"],
+)
+async def test_new_is_exactly_the_action_with_no_previous_shares(
+    db_session: AsyncSession, assignment: str
+) -> None:
+    """A row whose action and previous figures disagree has every reader
+    believe one of the two."""
+    await _a_change_row(db_session)
+
+    with pytest.raises(IntegrityError, match="new_when_not_held_before"):
+        async with db_session.begin_nested():
+            await db_session.execute(text(f"UPDATE position_change SET {assignment}"))
 
 
 async def test_the_guards_findings_land_in_a_column_that_can_be_queried(

@@ -38,6 +38,7 @@ from app.db.models import (
     FilerCik,
     Filing,
     Holding,
+    PositionChange,
     PositionSnapshot,
     Security,
 )
@@ -580,8 +581,8 @@ def _truncate(engine: AsyncEngine) -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
-                    "TRUNCATE position_snapshot, holding, filing, security, filer_cik, filer "
-                    "RESTART IDENTITY CASCADE"
+                    "TRUNCATE position_change, position_snapshot, holding, filing, security, "
+                    "filer_cik, filer RESTART IDENTITY CASCADE"
                 )
             )
 
@@ -607,6 +608,14 @@ def _count_snapshot(engine: AsyncEngine) -> int:
     return asyncio.run(run())
 
 
+def _count_changes(engine: AsyncEngine) -> int:
+    async def run() -> int:
+        async with AsyncSession(engine) as session:
+            return await session.scalar(select(func.count()).select_from(PositionChange)) or 0
+
+    return asyncio.run(run())
+
+
 def test_recompute_says_what_it_published_and_what_it_withheld(committed: AsyncEngine) -> None:
     _commit(committed, ("berkshire-2022q4-dollars", False), (Q4_ORIGINAL, True))
 
@@ -615,10 +624,11 @@ def test_recompute_says_what_it_published_and_what_it_withheld(committed: AsyncE
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
         "recompute  position_snapshot for every filer: 49 positions in 1 period of 1 filer",
+        "  changes     position_change: 49 new, 0 add, 0 trim, 0 hold",
         "  withheld    1 period with a suspect filing — check-data lists them; "
         "--include-suspect publishes them",
     ]
-    assert _count_snapshot(committed) == 49
+    assert _count_snapshot(committed) == _count_changes(committed) == 49
 
 
 def test_recompute_include_suspect_says_what_it_published_unchecked(
@@ -633,6 +643,7 @@ def test_recompute_include_suspect_says_what_it_published_unchecked(
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
         "recompute  position_snapshot for berkshire-hathaway: 90 positions in 2 periods of 1 filer",
+        "  changes     position_change: 59 new, 4 add, 6 trim, 21 hold",
         "  suspect     1 period with a suspect filing published, every row marked suspect",
     ]
 
@@ -645,4 +656,4 @@ def test_recompute_refuses_a_filer_that_does_not_exist(committed: AsyncEngine) -
 
     assert result.exit_code == 1
     assert "no filer has the slug 'berkshire-hathway'" in result.stderr
-    assert _count_snapshot(committed) == 0
+    assert _count_snapshot(committed) == _count_changes(committed) == 0

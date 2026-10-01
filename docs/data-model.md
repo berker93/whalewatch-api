@@ -17,7 +17,7 @@ as three layers rather than one is what makes a parser bug survivable.
   filing / holding / insider_transaction      normalised, one row per fact
         |
         v
-  position_snapshot / holding_change /        derived, recomputable, droppable
+  position_snapshot / position_change /       derived, recomputable, droppable
   mv_market_flows
 ```
 
@@ -429,26 +429,84 @@ it was wrong. `recompute --include-suspect` publishes such periods anyway, with
 indistinguishable from what did not. A suspect filing that a later restatement
 replaced counts toward nothing and withholds nothing.
 
-### `holding_change`
+### `position_change`
 
-Derived. One row per `(filer, security, period)` describing the move from the
-previous period.
+Derived (`0012_position_change`). What each filer did to each position since its
+previous period: one row per row of `position_snapshot`, rebuilt from it by
+`whalewatch recompute` in the same transaction. The snapshot is what a manager
+holds, and this is what they did. The activity view and the `/changes`
+endpoints read it.
 
 ```
-filer_id, security_id, period
-shares_prev, shares_now, shares_delta
-value_prev, value_now
-change_type    -- 'new' | 'added' | 'trimmed' | 'exited' | 'unchanged'
+filer_id               bigint    fk -> filer, on delete cascade
+period_of_report       date      not null
+security_id            bigint    fk -> security, on delete restrict
+action                 text      not null, check   -- new | add | trim | hold
+shares                 numeric(20,4)  not null     -- this period's, as the snapshot has them
+value_usd              numeric(20,2)  not null
+weight_pct             numeric(9,6)
+prev_period_of_report  date                        -- the filer's previous published period
+prev_shares            numeric(20,4)               -- null exactly when action = 'new'
+prev_value_usd         numeric(20,2)
+prev_weight_pct        numeric(9,6)
+shares_delta           numeric(20,4)  not null     -- from zero when new
+shares_delta_pct       numeric(28,6)               -- null when new
+value_delta            numeric(20,2)  not null
+weight_delta           numeric(9,6)                -- percentage points
+suspect                boolean   not null          -- either end of the change is
+computed_at            timestamptz  not null default now()
+primary key (filer_id, period_of_report, security_id)
 ```
 
-`exited` rows are the reason this table exists rather than being a query: an exit
-is the *absence* of a row in the current period, and absence is not something you
-can index. Materialising it turns "what did they sell" from an anti-join over two
-partitions into a range scan.
+The previous shares, value, weight and period come from `LAG` over one window,
+`PARTITION BY filer_id, security_id ORDER BY period_of_report`. **Previous means
+the filer's previous published period**, which is not what `LAG` alone returns.
+`LAG` returns the last period in which the filer held the security. A stock sold
+in Q2 and bought back in Q3 lags to Q1, which would make Q3 an add to a position
+the filer did not have. So a lagged row counts only when it is from the filer's
+previous period, and the position is `new` otherwise. Across a quarter with
+nothing loaded, or one withheld for a suspect filing, the previous period is the
+last one before the gap, and `prev_period_of_report` says which on every row.
+Counting back one calendar quarter instead would make every position after a
+withheld quarter `new`, which reads as the manager who bought everything. In
+the filer's first period everything is `new` and `prev_period_of_report` is
+null: it is the first period we have, not a quarter in which the filer bought
+everything.
+
+**`hold` is a band**: a change in shares within ±0.01% of the previous count.
+Managers' reported share counts drift by a handful of shares between quarters,
+from dividend reinvestment and rounding. Without the band, half of every
+portfolio reads as an add or a trim. The band decides the action and nothing
+else. A hold's `shares_delta` is the drift, not zero, and the action is judged
+on shares alone, so a stock that doubled is still a hold, with a `value_delta`
+to show for it.
+
+**A `new` row's deltas count from zero.** So a filer's `shares_delta` summed
+over every period is what it holds, and the market-wide flow into a stock is a
+`SUM` that includes those who bought in fresh. `shares_delta_pct` is null there
+instead, since growth from nothing has no percentage. It is `numeric(28,6)`
+because growth has no ceiling. Twenty-two integer digits hold any change
+between two `numeric(20,4)` share counts, so no position, however strange, can
+overflow the column and fail the rebuild for every filer.
+
+`suspect` is true when either end of the change is: a change into or out of a
+period published with `--include-suspect`. That includes a `new`, which is a
+claim that the suspect filing did not list the security.
+
+Two things it does not do yet:
+
+- **Exits** are DATA-3. They are the reason this is a table rather than a
+  query. An exit is the *absence* of a row in the current period, and absence
+  is not something you can index or `LAG` from. Materialising it turns "what
+  did they sell" from an anti-join over two periods into a range scan.
+- **Splits.** Shares are compared as filed, so across a 4-for-1 split every
+  holder shows an `add` of 300%. Adjusting for splits needs the corporate-action
+  feed, which is Epic 4. Until then, `check-data` flags the extreme ones as
+  position jumps.
 
 Recomputed, never incrementally updated. An amendment landing months later
-changes a past period, and an incremental updater would have to find and fix
-every downstream row it already wrote.
+changes a past period and the comparison of the period after it, and an
+incremental updater would have to find and fix every row downstream.
 
 ### `insider` and `insider_transaction`
 
@@ -568,7 +626,7 @@ partitioning requires and what is expensive to add later.
 
 `mv_market_flows` — net share and dollar change per `(security, period)` across
 all filers, which is `/market/flows` and is otherwise an aggregate over the whole
-`holding_change` table per request.
+`position_change` table per request.
 
 Refreshed `CONCURRENTLY`, which requires a unique index on the view, by
 `whalewatch refresh-views` after each period's ingestion completes — not on a
@@ -617,3 +675,7 @@ The ones worth a constraint rather than a convention. Everything marked
 - **enforced** — `position_snapshot` has one row per `(filer_id,
   period_of_report, security_id)`, and `weight_pct` is between 0 and 100
   (`0011_position_snapshot_by_security`).
+- **enforced** — `position_change.action IN ('new','add','trim','hold')`, and
+  the action is `new` exactly when `prev_shares` is null (`0012_position_change`).
+  A row whose action and previous figures disagree has every reader believing
+  one of the two.
