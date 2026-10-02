@@ -51,7 +51,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 from fastapi import HTTPException, status
-from sqlalchemy import ColumnElement, Row, Select, and_, literal, or_, tuple_
+from sqlalchemy import ColumnElement, FromClause, Row, Select, and_, literal, or_, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.envelope import Page
@@ -119,8 +119,14 @@ class Keyset:
         if not self.keys:
             raise ValueError(f"keyset {self.name!r} has no keys")
 
-    def order_by(self) -> list[ColumnElement[Any]]:
-        return [key.expression.desc() if key.descending else key.expression for key in self.keys]
+    def order_by(self, on: FromClause | None = None) -> list[ColumnElement[Any]]:
+        """The ``ORDER BY``. With ``on``, by the columns of that name in it: the
+        order to restore on a query over a page, which a join does not keep."""
+        expressions = [key.expression if on is None else on.c[key.name] for key in self.keys]
+        return [
+            expression.desc() if key.descending else expression
+            for key, expression in zip(self.keys, expressions, strict=True)
+        ]
 
     def after(self, values: Sequence[object]) -> ColumnElement[bool]:
         """Rows that sort strictly after the row whose keys were ``values``.
@@ -257,12 +263,28 @@ async def paginate(
     page is known without a ``COUNT``. A last page that happens to be exactly
     full therefore says so, rather than handing out a cursor to an empty page.
     """
+    rows = list(await session.execute(page_statement(statement, keyset, params)))
+    return page_of(rows, keyset, params)
+
+
+def page_statement(statement: Select[Any], keyset: Keyset, params: PageParams) -> Select[Any]:
+    """:func:`paginate`'s query, unexecuted: ``statement``'s rows for one page, and one more.
+
+    For a listing that joins something per row it returns, which should be
+    joined to the page rather than to every row the page is cut from. Wrap
+    this in a CTE, join to that, restore the order with
+    ``keyset.order_by(on=cte)``, and hand what it returns to :func:`page_of`.
+    """
     if params.cursor is not None:
         statement = statement.where(keyset.after(position(params.cursor, keyset)))
-    statement = statement.order_by(*keyset.order_by()).limit(params.limit + 1)
+    return statement.order_by(*keyset.order_by()).limit(params.limit + 1)
 
-    rows = list(await session.execute(statement))
-    page = rows[: params.limit]
+
+def page_of(
+    rows: Sequence[Row[Any]], keyset: Keyset, params: PageParams
+) -> tuple[list[Row[Any]], Page]:
+    """The rows :func:`page_statement` returned, as a page and the cursor to the next."""
+    page = list(rows[: params.limit])
     next_cursor = None
     if len(rows) > params.limit:
         next_cursor = encode_cursor(keyset, keyset.position_of(page[-1]))

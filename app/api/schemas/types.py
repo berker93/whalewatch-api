@@ -1,7 +1,6 @@
 """Field types shared by every response model.
 
-One entry so far, and it is the one that would otherwise be got wrong
-independently in each router.
+Each is one that would otherwise be got wrong independently in each router.
 """
 
 from decimal import Decimal
@@ -34,3 +33,8 @@ Money = Annotated[Decimal, PlainSerializer(str, return_type=str, when_used="json
 #: name because the unit is not dollars and
 #: :attr:`~app.db.models.holding.Holding.sshprnamt_type` says which it is.
 Quantity = Annotated[Decimal, PlainSerializer(str, return_type=str, when_used="json")]
+
+#: A percentage, ``0`` to ``100``, as a string. ``numeric`` for the same
+#: reason, with six decimal places (see
+#: :data:`~app.db.models.position_snapshot.WEIGHT_PCT`).
+Percent = Annotated[Decimal, PlainSerializer(str, return_type=str, when_used="json")]

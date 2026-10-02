@@ -3,15 +3,19 @@
 docs/query-performance.md is the write-up. This is how its plans were captured,
 and how to capture them again after the data or an index changes::
 
-    make explain                                   # all ten: timing, then plan
+    make explain                                   # every one: timing, then plan
     make explain a="--only stock_holders --runs 50"
     make explain a="--filer renaissance --period 2025-06-30"
 
-Only ``GET /filings/{accession_no}`` is built. The other nine are the queries
-the endpoints sketched in docs/product-spec.md ("API surface") will issue:
-their ``WHERE`` and ``ORDER BY`` are what the indexes are designed against,
-and the select lists are a guess. When an endpoint is built, its query belongs
-in the app and this list should read it from there.
+``GET /filings/{accession_no}`` and the two ``/v1/investors`` endpoints are
+built, and the investors' queries are read from the app. The rest are the
+queries the endpoints sketched in docs/product-spec.md ("API surface") will
+issue: their ``WHERE`` and ``ORDER BY`` are what the indexes are designed
+against, and the select lists are a guess. When an endpoint is built, its query
+belongs in the app and this list should read it from there.
+
+Three more are not an endpoint's: the top holding of every filer's latest
+period, written the three ways :mod:`app.db.queries.top_holding` compares.
 
 Each query runs ``--runs`` times on one connection, as the API would run it: a
 prepared statement with bound parameters. So after five runs Postgres may
@@ -37,15 +41,19 @@ import statistics
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Final
 
-from sqlalchemy import text
+from sqlalchemy import Select, bindparam, select, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.api.pagination import PageParams
+from app.api.routers.investors import LATEST, detail_query, list_query
 from app.core.config import get_settings
+from app.db.queries.top_holding import top_holdings, top_holdings_ranked
 from app.db.session import create_engine
 
 
@@ -56,6 +64,18 @@ class Query:
     name: str
     endpoint: str
     sql: str
+    params: Mapping[str, Any] = field(default_factory=dict)
+    """Values the query binds whatever the parameters are, such as a page size."""
+
+    @classmethod
+    def from_app(cls, name: str, endpoint: str, statement: Select[Any]) -> Query:
+        """The query the app builds, as the app would send it. A parameter it
+        leaves unbound, as ``bindparam("filer_slug")``, takes that name's value
+        from :meth:`Parameters.bind`."""
+        dialect = postgresql.dialect(paramstyle="named")  # type: ignore[no-untyped-call]
+        compiled = statement.compile(dialect=dialect)
+        bound = {k: v for k, v in compiled.params.items() if v is not None}
+        return cls(name, endpoint, str(compiled), bound)
 
     @property
     def tag(self) -> str:
@@ -67,6 +87,9 @@ class Query:
     def statement(self) -> str:
         return f"{self.tag}\n{self.sql.strip()}"
 
+
+#: Every filer's latest published period: what the top holding is read for.
+_LATEST_PERIODS: Final = select(LATEST.c.filer_id, LATEST.c.period_of_report).subquery("periods")
 
 QUERIES: Final = (
     Query(
@@ -210,6 +233,42 @@ QUERIES: Final = (
         LIMIT :page_size
         """,
     ),
+    # The first page, at the default page size, largest first.
+    Query.from_app("investor_list", "GET /v1/investors", list_query(PageParams())[0]),
+    Query.from_app(
+        "investor_detail", "GET /v1/investors/{slug}", detail_query(bindparam("filer_slug"))
+    ),
+    Query.from_app(
+        "top_holding_distinct_on", "every filer's latest period", top_holdings(_LATEST_PERIODS)
+    ),
+    Query.from_app(
+        "top_holding_row_number",
+        "every filer's latest period",
+        top_holdings_ranked(_LATEST_PERIODS),
+    ),
+    Query(
+        "top_holding_lateral",
+        "every filer's latest period",
+        # Not in the app: the third way, which app.db.queries.top_holding
+        # compares the other two against.
+        """
+        WITH periods AS (
+            SELECT DISTINCT ON (filer_id) filer_id, period_of_report
+            FROM mv_filer_summary
+            ORDER BY filer_id, period_of_report DESC
+        )
+        SELECT periods.filer_id, top.security_id, top.weight_pct
+        FROM periods
+        CROSS JOIN LATERAL (
+            SELECT p.security_id, p.weight_pct
+            FROM position_snapshot p
+            WHERE p.filer_id = periods.filer_id
+              AND p.period_of_report = periods.period_of_report
+            ORDER BY p.value_usd DESC, p.security_id
+            LIMIT 1
+        ) top
+        """,
+    ),
 )
 
 
@@ -233,6 +292,7 @@ class Parameters:
         return {
             "period": self.period,
             "filer_id": self.filer_id,
+            "filer_slug": self.filer_slug,
             "security_id": self.security_id,
             "filing_id": self.filing_id,
             "q": self.q,
@@ -415,8 +475,9 @@ async def run(args: argparse.Namespace) -> int:
             bound = params.bind()
             slow = []
             for query in queries:
-                timing = await time_query(connection, query, bound, args.runs)
-                plan = await explain(connection, query, bound)
+                query_params = {**query.params, **bound}
+                timing = await time_query(connection, query, query_params, args.runs)
+                plan = await explain(connection, query, query_params)
                 # Read-only, but a transaction is open since the first statement.
                 # Ending it here keeps one query's snapshot out of the next.
                 await connection.rollback()

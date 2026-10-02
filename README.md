@@ -752,8 +752,9 @@ nor one of these. Jobs written later do the same, through
 
 ## The API
 
-One read endpoint so far, and it is the one everything else gets debugged
-through.
+Three read endpoints so far: one filing, which everything else gets debugged
+through, and the investors, listed and one at a time. The investors are under
+`/v1`, and the filing is not yet.
 
 ### Collections: `{data, meta, page}`
 
@@ -796,6 +797,9 @@ all of them:
 Endpoints get this from [`PageParamsDep`](app/api/deps.py) and
 [`paginate`](app/api/pagination.py), which takes a statement and a `Keyset`
 (the sort order, ending in a unique key) and returns the page and its cursor.
+A listing that joins something to each row it returns, like the investors'
+top holding, builds the page with `page_statement`, joins to that as a CTE,
+and hands the rows to `page_of`. The join then costs a page, not the table.
 
 ### `GET /filings/{accession_no}`
 
@@ -869,6 +873,58 @@ An empty `holdings` list means one of three things, and the rest of the response
 says which: a `13F-NT`, which reports no positions by design; a `parse_status` of
 `failed`, with `parse_error` saying why; or a filing whose `filer_id` is still
 null, whose positions are waiting on a CIK being resolved to a filer.
+
+### `GET /v1/investors` and `GET /v1/investors/{slug}`
+
+Every tracked investor, with its latest published portfolio; and one of them,
+with more.
+
+```bash
+curl "localhost:8000/v1/investors?sort=value&category=value&q=buff&limit=20"
+curl localhost:8000/v1/investors/berkshire-hathaway
+```
+
+```json
+{
+  "slug": "berkshire-hathaway",
+  "display_name": "Berkshire Hathaway",
+  "manager_name": "Warren Buffett",
+  "category": "value",
+  "latest_period": "2026-06-30",
+  "last_filed_at": "2026-08-14T20:05:04Z",
+  "portfolio_value_usd": "299253556246.00",
+  "position_count": 29,
+  "top_holding": { "cusip": "037833100", "ticker": null, "issuer_name": "APPLE INC", "weight_pct": "22.038267" },
+  "sparkline": ["266378900503.00", "267175474249.00", null, "...", "299253556246.00"],
+  "first_period": "2021-09-30",
+  "top10_weight_pct": "88.468905",
+  "turnover_pct": "4.418463",
+  "ciks": ["0001067983"]
+}
+```
+
+The last four are the detail's. The list's rows are the rest, in the envelope.
+
+- **Each row names its own period.** `latest_period` is the newest quarter
+  published for *that* investor, so two rows of one list can describe
+  different quarters. `meta.period` is null: the list is not about one.
+- **From `mv_filer_summary`**, so as of the last `refresh-views`. The top
+  holding is the exception, read from `position_snapshot` for the period the
+  view names.
+- **Investors with nothing published are listed**, with their figures null,
+  and last under `sort=value` and `sort=positions`. Not loaded yet and every
+  filing withheld look the same here. `check-data` tells them apart.
+- **`sparkline`** is eight quarters ending at `latest_period`, oldest first,
+  with `null` for a quarter with nothing published. It is not compacted: a gap
+  is a gap.
+- **`top_holding` carries the issuer name** because no ticker is resolved
+  until Epic 4. It is the largest position by value, and a tie goes to the
+  same security every time.
+- **`?q=`** matches our name, the EDGAR name and the manager's, ignoring case.
+  `%` and `_` match themselves. **`?category=`** is one of the six styles; any
+  other value is a `422`.
+- **One query per request**, page size notwithstanding. See
+  [query-performance.md](docs/query-performance.md#built-since-the-investor-list-and-detail).
 
 ## Data sources and limitations
 

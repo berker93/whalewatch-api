@@ -9,11 +9,14 @@ statement with bound parameters, then once more under
 `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)`. Run it again after changing an
 index, a derived table or one of these queries, and compare.
 
-Only `GET /filings/{accession_no}` is built. The other nine are the queries
-the endpoints in the [product spec](product-spec.md#api-surface) will issue.
+When these ten were measured only `GET /filings/{accession_no}` was built. The
+other nine are the queries the endpoints in the
+[product spec](product-spec.md#api-surface) will issue.
 Their select lists are a guess. Their `WHERE` and `ORDER BY` clauses are what
 the indexes were designed against, so when an endpoint is built, check its
-query against the one here.
+query against the one here. The investor list and detail, built since, are in
+[their own section](#built-since-the-investor-list-and-detail), with the
+per-filer top holding written three ways.
 
 ## Summary
 
@@ -820,6 +823,53 @@ Planning:
 Planning Time: 0.075 ms
 Execution Time: 5.009 ms
 ```
+
+## Built since: the investor list and detail
+
+`GET /v1/investors` and `GET /v1/investors/{slug}` are each one query, which
+`make explain` reads from the app (`investor_list`, `investor_detail`).
+Measured on the dev database as it is published by default: 471,032
+positions, with 84 of the 100 filers having a published period. That is a
+third of the data the ten above were measured on, for the reason in
+[The dataset](#the-dataset).
+
+| Query | Rows | Server mean |
+| --- | --- | --- |
+| `investor_list`, the first page of 50 by value | 51 | 40.95 ms |
+| `investor_detail`, Citadel (5,831 positions in its latest period) | 1 | 5.17 ms |
+
+The list pages its filers first, from `mv_filer_summary` (0.5 ms), and joins
+everything else to those 51 rows only. Of the rest, 33 ms is the top holding
+and 8 ms is `last_filed_at` through `effective_filing`. The sparkline is 51
+probes of the view's unique index, 0.1 ms in all.
+
+### The top holding, three ways
+
+"Each filer's largest position in its latest period" is a top-1 per group.
+[`app/db/queries/top_holding.py`](../app/db/queries/top_holding.py) has it as
+`DISTINCT ON` (what the endpoint uses) and as `row_number()`, and `make
+explain` also times a `LATERAL ... LIMIT 1`. Over all 84 filers' latest
+periods, 52,216 positions:
+
+| Query | Server mean | What the plan does |
+| --- | --- | --- |
+| `top_holding_distinct_on` | 31.23 ms | sorts all 52,216 rows, keeps the first per filer |
+| `top_holding_row_number` | 24.21 ms | the same sort, then numbers rows until each passes 1 |
+| `top_holding_lateral` | 8.42 ms | per filer, an index scan of its positions into a heap of one |
+
+`DISTINCT ON` and the window are the same plan. Both read every position and
+sort them on `(filer_id, value_usd DESC, security_id)`, and the sort is the
+cost. The difference between them here is noise. Run to run, either one is
+faster. The trade between them is how they read, not how fast they run. See
+the module's docstring.
+
+`LATERAL` is faster because it never sorts the group. `ORDER BY ... LIMIT 1`
+is a top-N heapsort, which keeps one row while it reads 622. It still reads
+every position, since nothing indexes `position_snapshot` by value within a
+period. On the list's page that would take the top holding from 33 ms to
+about 5. Kept as `DISTINCT ON` for now, under budget. If it ever matters,
+`mv_filer_summary` already ranks every period's positions for its top ten,
+and could carry the first of them as a column for nothing.
 
 ## Experiments
 
