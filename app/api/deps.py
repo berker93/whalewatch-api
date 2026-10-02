@@ -11,10 +11,11 @@ a fake without touching the rest of the app::
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Query, Request
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.api.pagination import DEFAULT_LIMIT, MAX_LIMIT, PageParams, decode_cursor
 from app.core.config import Settings
 
 
@@ -71,7 +72,37 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
+def get_page_params(
+    limit: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=MAX_LIMIT,
+            description=f"Rows per page. Above {MAX_LIMIT} is refused, not cut down.",
+        ),
+    ] = DEFAULT_LIMIT,
+    cursor: Annotated[
+        str | None,
+        Query(
+            description=(
+                "`page.next_cursor` from the previous page. Omit for the first page. "
+                "Keep the other parameters the same while paging."
+            ),
+        ),
+    ] = None,
+) -> PageParams:
+    """``?limit=`` and ``?cursor=``, for every paginated endpoint.
+
+    The cursor is unwrapped here, in front of the handler, so that a mangled
+    one is a 400 before any work starts. Whether it belongs to *this*
+    endpoint's ordering is checked by :func:`~app.api.pagination.paginate`,
+    which is the first place that knows the ordering.
+    """
+    return PageParams(limit=limit, cursor=decode_cursor(cursor) if cursor else None)
+
+
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 EngineDep = Annotated[AsyncEngine, Depends(get_engine)]
 RedisDep = Annotated[Redis, Depends(get_redis)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+PageParamsDep = Annotated[PageParams, Depends(get_page_params)]

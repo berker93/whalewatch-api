@@ -755,6 +755,48 @@ nor one of these. Jobs written later do the same, through
 One read endpoint so far, and it is the one everything else gets debugged
 through.
 
+### Collections: `{data, meta, page}`
+
+Every collection endpoint answers in one envelope
+([`Envelope`](app/api/schemas/envelope.py)), so a client handles one shape for
+all of them:
+
+```json
+{
+  "data": [ ... ],
+  "meta": {
+    "period": "2026Q1",
+    "period_end": "2026-03-31",
+    "latest_filing_at": "2026-08-14T13:34:05Z",
+    "coverage": { "filers_reported": 69, "filers_tracked": 100 },
+    "generated_at": "2026-10-02T09:12:44Z"
+  },
+  "page": { "limit": 50, "next_cursor": "eyJ2IjoxLCJrIjoi..." }
+}
+```
+
+- **`meta` states the period, always.** Nothing in this API is "current". A
+  13F describes the last day of a quarter and arrives up to 45 days later, so
+  a period's numbers are partial while its filings come in. `coverage` says how
+  partial: filers with a published portfolio for the period, out of all the
+  filers we track. `latest_filing_at` is the newest of those published filings.
+  Both are counted from `mv_filer_summary`, so they move when the views are
+  refreshed. For a collection that is not about a period, the period fields
+  are null.
+- **Pages are cursors, not offsets.** Pass `page.next_cursor` back as
+  `?cursor=` with the same filters until it comes back null. A cursor is a
+  position (the last row's sort values), so rows that are inserted or
+  deleted while you walk never cause a repeat or a skip, and page 200 costs
+  what page 1 does. The cursor is opaque, and one that is malformed, from
+  another sort order, or from an older version of the API is a `400` telling
+  you to start again.
+- **`?limit=` defaults to 50 and stops at 200.** Above 200 is a `422`, not a
+  shorter page.
+
+Endpoints get this from [`PageParamsDep`](app/api/deps.py) and
+[`paginate`](app/api/pagination.py), which takes a statement and a `Keyset`
+(the sort order, ending in a unique key) and returns the page and its cursor.
+
 ### `GET /filings/{accession_no}`
 
 A filing, its provenance, and every position it reports — largest first.
