@@ -871,6 +871,47 @@ about 5. Kept as `DISTINCT ON` for now, under budget. If it ever matters,
 `mv_filer_summary` already ranks every period's positions for its top ten,
 and could carry the first of them as a column for nothing.
 
+## Built since: portfolio, activity and history
+
+`GET /v1/investors/{slug}/portfolio`, `/activity` and `/history`, which
+`make explain` reads from the app. The portfolio and activity take the place
+of the planned `investor_holdings` (4) and `investor_changes` (5). Measured
+for Two Sigma, the largest filer (3,823 positions in 2026Q2, 46,303 over 14
+periods), on the default publication.
+
+| Query | Rows | Server mean |
+| --- | --- | --- |
+| `investor_portfolio`, the first page of 50 by weight | 51 | 6.33 ms |
+| `investor_portfolio_options`, the same with `include_options=true` | 51 | 7.65 ms |
+| `investor_activity`, the first page of 50, every action but `hold` | 51 | 3.00 ms |
+| `investor_history` | 14 | 0.02 ms |
+
+The portfolio's `first_period`, `MIN(period_of_report)` over the filer and
+the security, is the cost to watch. Written as a correlated subquery, it runs
+once per row, and each run scans the filer's slice of the primary key, since
+the security is only a filter within `(filer_id, period_of_report)`. That was
+120 ms for a page of 200. As a CTE that groups the filer's positions by
+security once and is hash-joined to the page, it is one index-only scan of
+the same 46,303 entries: about 5 ms of the 6. Storing it on
+`position_snapshot` would make it free to read, but it depends on every earlier
+period, so a scoped `recompute` would have to rewrite every later period of
+the filer. See [`app/api/routers/portfolio.py`](../app/api/routers/portfolio.py).
+
+The rest of the portfolio is a top-N heapsort of the period's positions,
+one primary-key probe of `position_change` per row on the page, and a hash
+of all of `security`, as in `filing_holdings`. Activity filters the filer's
+`position_change` rows on `action = ANY(:actions)` and sorts on the traded
+dollars, an expression, so no index supplies the order.
+
+The portfolio's `meta.caveats` are `audit-amendments`' concerns for the one
+period, from `audit_amendments(slug=, period=)`. That is 0.6 ms for a period
+with one filing, which is nearly all of them, and about 7 ms for one with
+several (139 of 1,324 published periods). Nearly all of the 7 ms is the two
+`effective_filing` views resolving every filing in the table. Their shared
+CTE is materialised, so the filer and period cannot be pushed into it.
+`meta.latest_filing_at` pays the same cost for the same reason, and the two
+are the first things to look at if the portfolio ever needs to be faster.
+
 ## Experiments
 
 Each was run on the full data and then undone. `DROP INDEX` and

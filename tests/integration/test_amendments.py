@@ -39,7 +39,7 @@ from app.cli import app
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.db.models import AmendmentKind, Filer, FilerCik, Filing, Holding
-from app.db.queries.amendments import PeriodResolution, Role, audit_amendments
+from app.db.queries.amendments import PeriodResolution, Role, audit_amendments, period_concerns
 from app.db.queries.effective import resolved_filings
 from app.ingestion.loaders import load_filing
 from app.ingestion.normalisation import normalise_filing
@@ -341,6 +341,28 @@ async def test_the_report_lists_every_period_with_more_than_one_filing(
     assert q4.concerns == ()
 
 
+async def test_the_report_narrowed_to_a_filer_or_period_resolves_it_the_same(
+    db_session: AsyncSession, berkshire: int
+) -> None:
+    """The narrowing filters filings before they are grouped: whole periods in or out."""
+    for slug in (*RESTATED_PERIOD, *ADDED_TO_PERIOD, "berkshire-2022q4-dollars"):
+        await _load(db_session, slug)
+
+    everything = await audit_amendments(db_session)
+
+    assert await audit_amendments(db_session, slug="berkshire-hathaway", period=Q3) == [
+        _period(everything, Q3)
+    ]
+    assert await audit_amendments(db_session, period=Q4) == [_period(everything, Q4)]
+    assert await audit_amendments(db_session, slug="berkshire-hathaway") == everything
+    assert await audit_amendments(db_session, slug="someone-else") == []
+    # One filing: nothing to resolve, so nothing to be concerned about.
+    assert (
+        await period_concerns(db_session, slug="berkshire-hathaway", period=date(2022, 12, 31))
+        == ()
+    )
+
+
 async def test_the_report_totals_agree_with_the_resolved_filings(
     db_session: AsyncSession, berkshire: int
 ) -> None:
@@ -366,6 +388,7 @@ async def test_an_amendment_of_unknown_kind_is_reported_as_left_out(
     (concern,) = q4.concerns
     assert _accession(Q4_NEW_HOLDINGS) in concern
     assert "no amendmentType" in concern
+    assert await period_concerns(db_session, slug="berkshire-hathaway", period=Q4) == q4.concerns
 
 
 async def test_a_gap_in_the_amendment_numbers_is_flagged(

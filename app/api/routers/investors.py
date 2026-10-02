@@ -47,6 +47,7 @@ from app.api.schemas.investor import (
     InvestorSummary,
     TopHolding,
 )
+from app.core.periods import quarters_ending
 from app.db.models import Filer, FilerCik, Filing, Security
 from app.db.models.filer import FilerCategory
 from app.db.queries.effective import EFFECTIVE_FILING
@@ -330,25 +331,6 @@ def _sparkline(
         return []
     published = dict(zip(periods or [], values or [], strict=True))
     return [published.get(quarter) for quarter in quarters_ending(latest, SPARKLINE_QUARTERS)]
-
-
-_QUARTER_END_DAY: Final = {3: 31, 6: 30, 9: 30, 12: 31}
-
-
-def quarters_ending(period: date, count: int) -> list[date]:
-    """The ``count`` quarter ends up to and including ``period``, oldest first.
-
-    :raises ValueError: ``period`` is not a quarter end.
-    """
-    if _QUARTER_END_DAY.get(period.month) != period.day:
-        raise ValueError(f"{period} is not a quarter end")
-    last = period.year * 4 + period.month // 3 - 1
-    quarters = []
-    for index in range(last - count + 1, last + 1):
-        year, quarter = divmod(index, 4)
-        month = 3 * (quarter + 1)
-        quarters.append(date(year, month, _QUARTER_END_DAY[month]))
-    return quarters
 
 
 def _escape_like(text: str) -> str:

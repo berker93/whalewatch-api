@@ -31,7 +31,7 @@ A change's ``value_delta`` includes the price move on every share held
 throughout. Summed as flows, a stock that doubled reads as bought by every
 holder who did nothing, and a trim during a rally as negative selling. So both
 the flows and the turnover count what each change *traded*: the shares bought
-or sold, at the period-end price (:func:`_traded_usd`). An exit has no price in
+or sold, at the period-end price (:func:`traded_usd`). An exit has no price in
 its own period, so it trades at the price it was last held at, which makes it
 its whole previous value. A new position trades its whole value. A ``hold``
 trades nothing, its few shares of drift included.
@@ -213,7 +213,7 @@ def quarter_flows() -> Select[Any]:
     selling = change.action.in_([ChangeAction.TRIM.value, ChangeAction.EXIT.value])
 
     def traded(which: ColumnElement[bool]) -> ColumnElement[Decimal]:
-        return func.round(func.coalesce(func.sum(_traded_usd()).filter(which), 0), 2, type_=Numeric)
+        return func.round(func.coalesce(func.sum(traded_usd()).filter(which), 0), 2, type_=Numeric)
 
     def filers(which: ColumnElement[bool]) -> ColumnElement[int]:
         # One row per filer per security per period: a count of rows is a
@@ -283,12 +283,12 @@ def filer_summary() -> Select[Any]:
         .cte("held")
     )
     # A hold traded nothing: its few shares of drift are not a trade.
-    traded_usd = func.sum(_traded_usd()).filter(change.action != ChangeAction.HOLD.value)
+    traded_total = func.sum(traded_usd()).filter(change.action != ChangeAction.HOLD.value)
     traded = (
         select(
             change.filer_id,
             change.period_of_report,
-            func.coalesce(traded_usd, 0).label("traded_usd"),
+            func.coalesce(traded_total, 0).label("traded_usd"),
             func.sum(change.prev_value_usd).label("prev_portfolio_value_usd"),
             func.bool_or(change.suspect).label("suspect"),
         )
@@ -321,7 +321,7 @@ def filer_summary() -> Select[Any]:
     )
 
 
-def _traded_usd() -> ColumnElement[Decimal]:
+def traded_usd() -> ColumnElement[Decimal]:
     """The dollars one ``position_change`` row traded: its shares, at the period-end price.
 
     This period's price, or, for an exit, which has none, the price the position

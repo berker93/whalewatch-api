@@ -15,7 +15,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.meta import period_meta, quarter_label
+from app.api.meta import period_meta
 from app.db.models import Filer, FilerCik, Filing, Holding, Security
 from app.derived.recompute import recompute
 from app.derived.scope import EVERYTHING
@@ -145,16 +145,3 @@ async def test_coverage_is_as_of_the_last_refresh(db_session: AsyncSession, univ
     meta = await period_meta(db_session, Q1)
 
     assert meta.coverage.filers_reported == 0  # type: ignore[union-attr]
-
-
-@pytest.mark.parametrize(
-    ("period", "label"),
-    [(date(2024, 3, 31), "2024Q1"), (date(2024, 6, 30), "2024Q2"), (date(2024, 12, 31), "2024Q4")],
-)
-def test_quarter_label(period: date, label: str) -> None:
-    assert quarter_label(period) == label
-
-
-def test_a_day_that_is_not_a_quarter_end_has_no_label() -> None:
-    with pytest.raises(ValueError, match="not a quarter end"):
-        quarter_label(date(2024, 3, 30))

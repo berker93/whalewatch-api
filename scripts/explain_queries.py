@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.api.pagination import PageParams
 from app.api.routers.investors import LATEST, detail_query, list_query
+from app.api.routers.portfolio import activity_query, history_query, portfolio_query
 from app.core.config import get_settings
 from app.db.queries.top_holding import top_holdings, top_holdings_ranked
 from app.db.session import create_engine
@@ -237,6 +238,30 @@ QUERIES: Final = (
     Query.from_app("investor_list", "GET /v1/investors", list_query(PageParams())[0]),
     Query.from_app(
         "investor_detail", "GET /v1/investors/{slug}", detail_query(bindparam("filer_slug"))
+    ),
+    # The first page, at the default page size and sort (weight, largest first).
+    Query.from_app(
+        "investor_portfolio",
+        "GET /v1/investors/{slug}/portfolio",
+        portfolio_query(bindparam("filer_id"), bindparam("period"), PageParams())[0],
+    ),
+    Query.from_app(
+        "investor_portfolio_options",
+        "GET /v1/investors/{slug}/portfolio?include_options=true",
+        portfolio_query(
+            bindparam("filer_id"), bindparam("period"), PageParams(), include_options=True
+        )[0],
+    ),
+    # Every period, every action but hold: the default.
+    Query.from_app(
+        "investor_activity",
+        "GET /v1/investors/{slug}/activity",
+        activity_query(bindparam("filer_id"), PageParams()),
+    ),
+    Query.from_app(
+        "investor_history",
+        "GET /v1/investors/{slug}/history",
+        history_query(bindparam("filer_slug")),
     ),
     Query.from_app(
         "top_holding_distinct_on", "every filer's latest period", top_holdings(_LATEST_PERIODS)

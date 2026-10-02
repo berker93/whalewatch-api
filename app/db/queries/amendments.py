@@ -159,7 +159,7 @@ class PeriodResolution:
 
 
 async def audit_amendments(
-    session: AsyncSession, *, slug: str | None = None
+    session: AsyncSession, *, slug: str | None = None, period: date | None = None
 ) -> list[PeriodResolution]:
     """Every ``(filer, period)`` with more than one 13F, each filing explained.
 
@@ -167,11 +167,24 @@ async def audit_amendments(
     filings that do not count are half of the answer to how it resolved. Only
     filings linked to a filer: one whose CIK is unresolved has no holdings and
     no filer to resolve a period for.
+
+    ``slug`` and ``period`` narrow it to one filer, one period, or both. Both
+    filter the filings before they are grouped, which keeps or drops each
+    ``(filer, period)`` whole, so a period resolves the same either way. And
+    the holdings counted are then only that period's, which is what makes one
+    period cheap enough to read per request.
     """
+    candidates = select(Filing.filer_id, Filing.period_of_report).where(
+        Filing.filer_id.is_not(None), Filing.form_type.startswith("13F")
+    )
+    if slug is not None:
+        candidates = candidates.where(
+            Filing.filer_id == select(Filer.id).where(Filer.slug == slug).scalar_subquery()
+        )
+    if period is not None:
+        candidates = candidates.where(Filing.period_of_report == period)
     shared = (
-        select(Filing.filer_id, Filing.period_of_report)
-        .where(Filing.filer_id.is_not(None), Filing.form_type.startswith("13F"))
-        .group_by(Filing.filer_id, Filing.period_of_report)
+        candidates.group_by(Filing.filer_id, Filing.period_of_report)
         .having(func.count() > 1)
         .subquery()
     )
@@ -214,9 +227,6 @@ async def audit_amendments(
         .where(Filing.form_type.startswith("13F"))
         .order_by(Filer.slug, Filing.period_of_report, Filing.filed_at, Filing.accession_no)
     )
-    if slug is not None:
-        statement = statement.where(Filer.slug == slug)
-
     periods: dict[tuple[str, date], list[_Row]] = defaultdict(list)
     policies: dict[str, OverlapPolicy] = {}
     for row in await session.execute(statement):
@@ -245,6 +255,13 @@ async def audit_amendments(
         )
         for (filer_slug, period), rows in periods.items()
     ]
+
+
+async def period_concerns(session: AsyncSession, *, slug: str, period: date) -> tuple[str, ...]:
+    """:attr:`PeriodResolution.concerns` for one filer's period: none for a
+    period with one filing, which has nothing to resolve."""
+    resolutions = await audit_amendments(session, slug=slug, period=period)
+    return resolutions[0].concerns if resolutions else ()
 
 
 @dataclass(frozen=True, slots=True)

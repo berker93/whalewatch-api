@@ -61,6 +61,24 @@ class Meta(BaseModel):
         ),
     )
     coverage: Coverage | None = Field(default=None, description="Null exactly when `period` is.")
+    caveats: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Why the rows may be wrong although every rule for reading the filings "
+            "was followed: an amendment left out because its cover page does not say "
+            "whether it restates or adds to the period, additions counting with no "
+            "original loaded, two originals filed for one period, or an amendment "
+            "number missing from those loaded. One sentence each, for a person to "
+            "read. Empty when nothing is known to be wrong, and on endpoints that do "
+            "not check."
+        ),
+        examples=[
+            [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is "
+                "left out: if it restates or adds to the period, the period is wrong"
+            ]
+        ],
+    )
     generated_at: datetime = Field(description="When this response was built.")
 
 
