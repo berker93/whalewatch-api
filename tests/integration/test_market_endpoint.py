@@ -468,7 +468,10 @@ async def test_a_sector_is_a_422_saying_there_are_none_yet(
     response = await client.get("/v1/flows", params={"sector": "Information Technology"})
 
     assert response.status_code == 422
-    assert "sector" in response.json()["detail"]
+    body = response.json()
+    assert "sector" in body["detail"]
+    # Shaped as a malformed parameter is, so a client handles both alike.
+    assert (body["code"], body["errors"][0]["loc"]) == ("validation_error", ["query", "sector"])
     assert all(row["sector"] is None for row in (await _get(client, "/v1/flows"))["data"])
 
 

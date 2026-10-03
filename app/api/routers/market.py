@@ -62,11 +62,20 @@ from sqlalchemy.sql.base import ReadOnlyColumnCollection
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
+from app.api.errors import INVALID, INVALID_CURSOR, invalid, not_found
 from app.api.meta import period_meta, refreshed_at, unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
 from app.api.routers.portfolio import SortOrder
 from app.api.schemas.envelope import Envelope, Meta
-from app.api.schemas.market import FeedFiling, LargestChange, MarketHolding, StockFlow
+from app.api.schemas.market import (
+    FeedFiling,
+    FeedFilingEnvelope,
+    LargestChange,
+    MarketHolding,
+    MarketHoldingEnvelope,
+    StockFlow,
+    StockFlowEnvelope,
+)
 from app.api.schemas.types import Period
 from app.core.periods import quarter_label, quarters_ending
 from app.db.models import Filer, Filing, Security
@@ -97,6 +106,8 @@ _NO_DOLLARS: Final = Decimal("0.00")
 
 
 class PeriodType(StrEnum):
+    """One quarter, or the four ending at it."""
+
     QUARTER = "quarter"
     YEAR = "year"
 
@@ -106,17 +117,23 @@ FLOWS: Final = {PeriodType.QUARTER: QUARTER_FLOWS, PeriodType.YEAR: YEAR_FLOWS}
 
 
 class HoldingMetric(StrEnum):
+    """What makes a stock most held: the filers holding it, or the dollars."""
+
     HOLDERS = "holders"
     VALUE = "value"
 
 
 class FlowMetric(StrEnum):
+    """What makes a stock most bought or sold."""
+
     VALUE = "value"
     NET_VALUE = "net_value"
     HOLDERS = "holders"
 
 
 class FlowSort(StrEnum):
+    """What the flows screen is ordered by."""
+
     NET_VALUE = "net_value"
     GROSS_BOUGHT = "gross_bought"
     GROSS_SOLD = "gross_sold"
@@ -129,6 +146,8 @@ class FlowSort(StrEnum):
 
 
 class Direction(StrEnum):
+    """Which way the stocks were traded on balance."""
+
     BUY = "buy"
     SELL = "sell"
 
@@ -452,16 +471,15 @@ FlowMetricParam = Annotated[
         )
     ),
 ]
-_NOT_PUBLISHED: Final[dict[int | str, dict[str, Any]]] = {
-    status.HTTP_404_NOT_FOUND: {"description": "Nothing published for the period."}
-}
+_NOT_PUBLISHED = not_found("Nothing published for the period.")
 
 
 @router.get(
     "/market/top-holdings",
-    response_model=Envelope[MarketHolding],
+    operation_id="getTopHoldings",
+    response_model=MarketHoldingEnvelope,
     summary="The most widely or most heavily held stocks",
-    responses=_NOT_PUBLISHED,
+    responses={**_NOT_PUBLISHED, **INVALID},
 )
 @cached(period="period")
 async def read_top_holdings(
@@ -497,9 +515,10 @@ async def read_top_holdings(
 
 @router.get(
     "/market/top-buys",
-    response_model=Envelope[StockFlow],
+    operation_id="getTopBuys",
+    response_model=StockFlowEnvelope,
     summary="The stocks the tracked investors bought most",
-    responses=_NOT_PUBLISHED,
+    responses={**_NOT_PUBLISHED, **INVALID},
 )
 @cached(period="period")
 async def read_top_buys(
@@ -518,9 +537,10 @@ async def read_top_buys(
 
 @router.get(
     "/market/top-sells",
-    response_model=Envelope[StockFlow],
+    operation_id="getTopSells",
+    response_model=StockFlowEnvelope,
     summary="The stocks the tracked investors sold most",
-    responses=_NOT_PUBLISHED,
+    responses={**_NOT_PUBLISHED, **INVALID},
 )
 @cached(period="period")
 async def read_top_sells(
@@ -539,9 +559,10 @@ async def read_top_sells(
 
 @router.get(
     "/market/new-positions",
-    response_model=Envelope[StockFlow],
+    operation_id="getNewPositions",
+    response_model=StockFlowEnvelope,
     summary="The stocks the most tracked investors opened a position in",
-    responses=_NOT_PUBLISHED,
+    responses={**_NOT_PUBLISHED, **INVALID},
 )
 @cached(period="period")
 async def read_new_positions(
@@ -560,8 +581,10 @@ async def read_new_positions(
 
 @router.get(
     "/market/activity",
-    response_model=Envelope[FeedFiling],
+    operation_id="getMarketActivity",
+    response_model=FeedFilingEnvelope,
     summary="Recent filings, with what each period holds and its largest trade",
+    responses={**INVALID_CURSOR, **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
 async def read_market_activity(session: SessionDep, page: PageParamsDep) -> Envelope[FeedFiling]:
@@ -577,12 +600,15 @@ async def read_market_activity(session: SessionDep, page: PageParamsDep) -> Enve
 
 @router.get(
     "/flows",
-    response_model=Envelope[StockFlow],
+    operation_id="getFlows",
+    response_model=StockFlowEnvelope,
     summary="Screen stocks by what the tracked investors bought and sold",
     responses={
         **_NOT_PUBLISHED,
+        **INVALID_CURSOR,
         status.HTTP_422_UNPROCESSABLE_CONTENT: {
-            "description": "A parameter is malformed, or `sector` was asked for."
+            **INVALID[status.HTTP_422_UNPROCESSABLE_CONTENT],
+            "description": "A parameter is malformed, or `sector` was asked for.",
         },
     },
 )
@@ -633,12 +659,10 @@ async def read_flows(
     """Every stock traded or held through the period that passes the filters,
     paginated. Exits included: a stock every holder sold has no holders left."""
     if sector is not None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                "Screening by sector is not available yet: no source of sectors is "
-                "loaded, so no stock has one. Leave sector out."
-            ),
+        raise invalid(
+            "sector",
+            "Screening by sector is not available yet: no source of sectors is "
+            "loaded, so no stock has one. Leave sector out.",
         )
     flows = FLOWS[period_type]
     period = await _period(session, flows, period, what="flows")

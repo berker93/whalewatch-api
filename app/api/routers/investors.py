@@ -39,6 +39,7 @@ from sqlalchemy.dialects.postgresql import aggregate_order_by
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
+from app.api.errors import INVALID, INVALID_CURSOR, not_found
 from app.api.meta import unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
 from app.api.schemas.envelope import Envelope
@@ -46,6 +47,7 @@ from app.api.schemas.investor import (
     SPARKLINE_QUARTERS,
     InvestorDetail,
     InvestorSummary,
+    InvestorSummaryEnvelope,
     TopHolding,
 )
 from app.core.periods import quarters_ending
@@ -74,6 +76,8 @@ _POSITIONS_KEY: Final = func.coalesce(LATEST.c.position_count, -1)
 
 
 class InvestorSort(StrEnum):
+    """What the investor list is ordered by."""
+
     VALUE = "value"
     POSITIONS = "positions"
     NAME = "name"
@@ -249,13 +253,21 @@ SearchParam = Annotated[
         examples=["buffett"],
     ),
 ]
-SlugParam = Annotated[str, Path(examples=["berkshire-hathaway"])]
+SlugParam = Annotated[
+    str,
+    Path(
+        description="The investor's slug, as `slug` on its row of `GET /v1/investors`.",
+        examples=["berkshire-hathaway"],
+    ),
+]
 
 
 @router.get(
     "/investors",
-    response_model=Envelope[InvestorSummary],
+    operation_id="listInvestors",
+    response_model=InvestorSummaryEnvelope,
     summary="Every tracked investor, with its latest published portfolio",
+    responses={**INVALID_CURSOR, **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
 async def list_investors(
@@ -278,9 +290,10 @@ async def list_investors(
 
 @router.get(
     "/investors/{slug}",
+    operation_id="getInvestor",
     response_model=InvestorDetail,
     summary="One investor",
-    responses={status.HTTP_404_NOT_FOUND: {"description": "No investor with that slug."}},
+    responses={**not_found("No investor with that slug."), **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
 async def read_investor(slug: SlugParam, session: SessionDep) -> InvestorDetail:

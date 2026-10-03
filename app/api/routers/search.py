@@ -95,6 +95,7 @@ from sqlalchemy.orm import QueryableAttribute
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import SessionDep
+from app.api.errors import INVALID
 from app.api.routers.investors import _escape_like
 from app.api.schemas.search import InvestorMatch, SearchResults, StockMatch
 from app.db.models import Filer, Security
@@ -326,8 +327,10 @@ LimitParam = Annotated[
 
 @router.get(
     "/search",
+    operation_id="search",
     response_model=SearchResults,
     summary="Investors and stocks by name or ticker",
+    responses=INVALID,
 )
 @cached(Lifetime.SEARCH)
 async def search(

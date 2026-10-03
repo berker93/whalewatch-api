@@ -67,6 +67,7 @@ class Meta(BaseModel):
             "When the most recently filed of this period's published filings "
             "reached EDGAR. Null when nothing for the period has been published."
         ),
+        examples=["2026-08-14T21:58:03Z"],
     )
     coverage: Coverage | None = Field(default=None, description="Null exactly when `period` is.")
     caveats: list[str] = Field(
@@ -94,8 +95,11 @@ class Meta(BaseModel):
             "refreshed: the rows are as of then, and a filing published since is not in "
             "them yet. Null for a response read live, and when the refresh is unrecorded."
         ),
+        examples=["2026-10-01T06:00:12Z"],
     )
-    generated_at: datetime = Field(description="When this response was built.")
+    generated_at: datetime = Field(
+        description="When this response was built.", examples=["2026-10-03T09:41:27Z"]
+    )
 
 
 class Page(BaseModel):
@@ -108,12 +112,28 @@ class Page(BaseModel):
             "Pass as `?cursor=` for the next page, with the same filters and "
             "sort. Null on the last page. Opaque: its contents are not a contract."
         ),
+        examples=["eyJ2IjoxLCJrIjpbIjE3NDM0NjA0ODQ3Mi4wMCIsNDJdfQ"],
     )
 
 
 class Envelope[T](BaseModel):
-    """``data``, what it describes, and how to page through it."""
+    """``data``, what it describes, and how to page through it.
 
-    data: list[T]
-    meta: Meta
-    page: Page | None = None
+    Each endpoint documents itself with a named subclass —
+    ``class InvestorSummaryEnvelope(Envelope[InvestorSummary])`` beside the row
+    model — and never with ``Envelope[InvestorSummary]`` itself. The OpenAPI
+    component is keyed by Pydantic's name for the class, which for a bare
+    parametrisation is ``Envelope_InvestorSummary_``, and a generated client
+    exposes that key as a type name. Neither ``title`` nor
+    ``model_parametrized_name`` changes the key; a subclass does.
+
+    Handlers still build a plain ``Envelope``: every enveloped endpoint is
+    ``@cached``, which serialises the answer itself, so the subclass is the
+    contract and never has to be constructed.
+    """
+
+    data: list[T] = Field(description="The rows, in the order the endpoint documents.")
+    meta: Meta = Field(description="What the rows describe, and when this answer was built.")
+    page: Page | None = Field(
+        default=None, description="How to get the next page. Null when the endpoint is not paged."
+    )

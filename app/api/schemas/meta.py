@@ -12,6 +12,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from app.api.schemas.envelope import Envelope
+
 
 class PeriodCoverage(BaseModel):
     """One quarter with published data, and how far it has filled in."""
@@ -63,6 +65,7 @@ class PeriodCoverage(BaseModel):
             "is not one. Null only when the published filings changed since the "
             "aggregates were last refreshed, and none of them is published any more."
         ),
+        examples=["2026-07-02T13:10:44Z"],
     )
     last_filed_at: datetime | None = Field(
         default=None,
@@ -71,10 +74,13 @@ class PeriodCoverage(BaseModel):
             "`meta.latest_filing_at` on the quarter's other endpoints. Null when "
             "`first_filed_at` is."
         ),
+        examples=["2026-08-14T21:58:03Z"],
     )
 
 
 class FreshnessKind(StrEnum):
+    """Whether a freshness row is a materialised view or a job."""
+
     VIEW = "view"
     JOB = "job"
 
@@ -89,7 +95,7 @@ class Freshness(BaseModel):
         ),
         examples=["view"],
     )
-    name: str = Field(examples=["mv_filer_summary"])
+    name: str = Field(description="The view's or the job's name.", examples=["mv_filer_summary"])
     last_success_at: datetime | None = Field(
         default=None,
         description=(
@@ -98,6 +104,7 @@ class Freshness(BaseModel):
             "which finished with some items undone, is not one. Null when a view's "
             "last refresh is unrecorded, or a job has never succeeded."
         ),
+        examples=["2026-10-01T06:00:12Z"],
     )
     run_id: uuid.UUID | None = Field(
         default=None,
@@ -106,4 +113,13 @@ class Freshness(BaseModel):
             "`refresh-views` run. Null when `last_success_at` is, and for a view "
             "refreshed outside a tracked run, which only tests do."
         ),
+        examples=["5f0c2a9e-3b1d-4c7a-9e2f-8d6b1a4c3e70"],
     )
+
+
+class PeriodCoverageEnvelope(Envelope[PeriodCoverage]):
+    """Every quarter with published data."""
+
+
+class FreshnessEnvelope(Envelope[Freshness]):
+    """When each view was refreshed and each job last succeeded."""

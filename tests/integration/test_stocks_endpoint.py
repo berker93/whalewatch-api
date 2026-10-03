@@ -240,11 +240,12 @@ async def test_an_unknown_ticker_is_a_404_suggesting_tickers_and_names_like_it(
     response = await client.get("/v1/stocks/acme")
 
     assert response.status_code == 404
-    detail = response.json()["detail"]
-    assert "acme" in detail["message"]
+    body = response.json()
+    assert body["code"] == "not_found"
+    assert "acme" in body["detail"]
     # A ticker starting with it first, then names alike, the most held first.
-    assert [s["cusip"] for s in detail["suggestions"]] == [CHARLIE, BRAVO, ALPHA]
-    assert detail["suggestions"][0] == {
+    assert [s["cusip"] for s in body["suggestions"]] == [CHARLIE, BRAVO, ALPHA]
+    assert body["suggestions"][0] == {
         "cusip": CHARLIE,
         "ticker": "ACMEX",
         "issuer_name": "UNRELATED HOLDINGS",
@@ -261,7 +262,7 @@ async def test_a_404_with_nothing_like_it_suggests_nothing(
     ):
         response = await client.get(path)
         assert response.status_code == 404, path
-        assert response.json()["detail"]["suggestions"] == [], path
+        assert response.json()["suggestions"] == [], path
 
 
 # --- the detail -----------------------------------------------------------------

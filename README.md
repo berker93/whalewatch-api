@@ -80,6 +80,7 @@ Then `make test`, and read the specs above.
 | `make test` | the whole pytest suite |
 | `make lint` / `make fmt` | ruff check + mypy --strict / ruff format + safe fixes |
 | `make check` | lint, then test — what CI runs |
+| `make openapi` | write `openapi.json` from the routes and models — commit it; CI fails when it is stale. See [The contract](#the-contract-openapijson) |
 | `make migrate` | `alembic upgrade head` |
 | `make revision m="add filings"` | autogenerate a draft migration |
 | `make reset-db` | **destructive** — drop the volume, recreate the stack, migrate |
@@ -812,6 +813,60 @@ A listing that joins something to each row it returns, like the investors'
 top holding, builds the page with `page_statement`, joins to that as a CTE,
 and hands the rows to `page_of`. The join then costs a page, not the table.
 
+### Errors: `{code, detail}`
+
+Every 4xx answers in one shape ([`Problem`](app/api/schemas/error.py)), so a
+client has one error type to handle:
+
+```json
+{ "code": "not_found", "detail": "No investor 'berkshire'. GET /v1/investors lists every one." }
+```
+
+- **`code` is for a program**, and stable: `invalid_cursor` (400),
+  `not_found` (404), `validation_error` (422), `method_not_allowed` (405).
+- **`detail` is for a person**, always a string, and not a contract.
+- **More specific errors add a field and change neither.** A `422` adds
+  `errors`, one `{loc, msg, type}` per parameter that failed, and that
+  includes a combination refused by hand, such as `from` after `to`. An
+  unknown stock's `404` adds `suggestions`.
+
+The handlers are in [`app/api/errors.py`](app/api/errors.py), beside the
+`responses=` fragments every route documents its errors with. The `500` is
+Starlette's plain text, by design: it is in no route's contract, and the
+`X-Request-ID` on it is what to quote.
+
+### The contract: `openapi.json`
+
+[`openapi.json`](openapi.json) is committed, and whalewatch-web generates its
+TypeScript types from it (`npm run gen:api` there, with openapi-typescript and
+openapi-fetch). Change a route or a response model, then `make openapi`, read
+the diff, and commit both. The diff *is* the API change. CI
+([`openapi.yml`](.github/workflows/openapi.yml)) regenerates it and fails
+when the file differs, and whalewatch-web's CI fails until its types are
+regenerated from it. So a breaking change surfaces as a compile error in the
+frontend, not in a user's browser.
+
+[`tests/test_openapi.py`](tests/test_openapi.py) holds the document to the
+rules a generated client depends on:
+
+- **Every route sets `operation_id`**, in camelCase (`getInvestorPortfolio`).
+  It becomes the client's method name, and FastAPI's default is
+  `read_portfolio_v1_investors__slug__portfolio_get`.
+- **Every operation has a summary, a description and a tag, and every
+  parameter is described.**
+- **Every field is described, and every value field has an example.**
+- **Every 4xx is documented as a `Problem`**: a `422` on any route with a
+  parameter, and a `400` on any route with a cursor.
+- **No component name is mangled.** A bare `Envelope[InvestorSummary]` is
+  keyed `Envelope_InvestorSummary_`, so each endpoint documents itself with a
+  named subclass, such as `InvestorSummaryEnvelope`.
+- **Decimals are `string`, `format: decimal`.** The format reaches the
+  generated type's doc comment. Parse one with a decimal library, not
+  `Number()`, before doing arithmetic.
+
+The export builds its own settings and reads neither `.env` nor the
+environment, so the file is the same on every machine.
+
 ### `GET /filings/{accession_no}`
 
 A filing, its provenance, and every position it reports — largest first.
@@ -955,7 +1010,7 @@ curl localhost:8000/v1/stocks/037833100/ownership-history
   names more than one security, recycled or across a CUSIP change, the one
   held most recently wins.
 - **An unknown one is a `404` with suggestions**, in
-  `detail: {message, suggestions}`: up to five stocks whose ticker starts with
+  `{code, detail, suggestions}`: up to five stocks whose ticker starts with
   what was asked for, then whose name has a word like it, the most dollars
   held first. `/v1/stocks/appl` suggests APPLE INC.
 - **The detail is the latest period published for anyone**, which it names

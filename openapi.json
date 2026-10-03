@@ -1,0 +1,5280 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "WhaleWatch API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Liveness probe",
+        "description": "Answer without touching Postgres or Redis, so this stays 200 while a\ndependency is down and ``/ready`` is the endpoint that says which one.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Readiness probe",
+        "description": "Check every dependency and report all of them.\n\nConcurrently and without short-circuiting: when both Postgres and Redis are\ndown, one probe telling you about both is the difference between one page\nand two. The body is the same shape on success and failure — only the status\ncode differs — so a client never has to branch on which it got.",
+        "operationId": "getReadiness",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one dependency is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/filings/{accession_no}": {
+      "get": {
+        "tags": [
+          "filings"
+        ],
+        "summary": "One filing, with its holdings",
+        "description": "Read a filing and every position it reports, largest first.\n\nTwo queries rather than one: a filing joined to its holdings repeats every\nfiling column on every row, and a large 13F is three thousand rows. The\nsecond query is a lookup on ``ix_holding_filing_id``.",
+        "operationId": "getFiling",
+        "parameters": [
+          {
+            "name": "accession_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "EDGAR accession number, with or without dashes: `##########-##-######`. Both spellings are in circulation — dashed in EDGAR's indexes, undashed in archive URLs — and both reach the same filing.",
+              "examples": [
+                "0001067983-24-000011"
+              ],
+              "title": "Accession No"
+            },
+            "description": "EDGAR accession number, with or without dashes: `##########-##-######`. Both spellings are in circulation — dashed in EDGAR's indexes, undashed in archive URLs — and both reach the same filing."
+          },
+          {
+            "name": "include_options",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Set `false` to drop option lines (`put_call` is not null). Their `value_usd` is the notional value of the underlying rather than a premium, so a portfolio total that includes them is inflated by the whole exposure.",
+              "default": true,
+              "title": "Include Options"
+            },
+            "description": "Set `false` to drop option lines (`put_call` is not null). Their `value_usd` is the notional value of the underlying rather than a premium, so a portfolio total that includes them is inflated by the whole exposure."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilingRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No filing with that accession number.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/investors": {
+      "get": {
+        "tags": [
+          "investors"
+        ],
+        "summary": "Every tracked investor, with its latest published portfolio",
+        "description": "List investors, paginated. Each row names its own ``latest_period``.",
+        "operationId": "listInvestors",
+        "parameters": [
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/InvestorSort",
+              "description": "`value` and `positions` largest first, as of each investor's latest period. `name` A to Z. Investors with nothing published come last under the first two.",
+              "default": "value"
+            },
+            "description": "`value` and `positions` largest first, as of each investor's latest period. `name` A to Z. Investors with nothing published come last under the first two."
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/FilerCategory"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only investors of this style.",
+              "title": "Category"
+            },
+            "description": "Only investors of this style."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Part of the investor's name, its name on EDGAR, or its manager's.",
+              "examples": [
+                "buffett"
+              ],
+              "title": "Q"
+            },
+            "description": "Part of the investor's name, its name on EDGAR, or its manager's."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestorSummaryEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/investors/{slug}": {
+      "get": {
+        "tags": [
+          "investors"
+        ],
+        "summary": "One investor",
+        "description": "One investor, with the list's fields and its concentration, turnover,\nfirst period and CIKs.",
+        "operationId": "getInvestor",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`.",
+              "examples": [
+                "berkshire-hathaway"
+              ],
+              "title": "Slug"
+            },
+            "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvestorDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No investor with that slug.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/investors/{slug}/portfolio": {
+      "get": {
+        "tags": [
+          "investors"
+        ],
+        "summary": "One investor's positions in one period",
+        "description": "The portfolio, paginated, with each position's change since the filer's\nprevious published period.\n\n``meta.caveats`` lists what ``audit-amendments`` would flag about the\nperiod, so a client sees it on every page.",
+        "operationId": "getInvestorPortfolio",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`.",
+              "examples": [
+                "berkshire-hathaway"
+              ],
+              "title": "Slug"
+            },
+            "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`."
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for this investor, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for this investor, which `meta.period` states."
+          },
+          {
+            "name": "include_options",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Add the period's option lines, one row per security and `put_call`. Their value is the notional of the underlying, so they have no weight, and weights stay shares of the common-stock portfolio.",
+              "default": false,
+              "title": "Include Options"
+            },
+            "description": "Add the period's option lines, one row per security and `put_call`. Their value is the notional of the underlying, so they have no weight, and weights stay shares of the common-stock portfolio."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PortfolioSort",
+              "description": "`weight` (the same order as `value`, with option lines after stock), `value`, `shares`, or `change`: `shares_delta_pct`, with new positions as the largest increase and option lines last.",
+              "default": "weight"
+            },
+            "description": "`weight` (the same order as `value`, with option lines after stock), `value`, `shares`, or `change`: `shares_delta_pct`, with new positions as the largest increase and option lines last."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Largest first by default.",
+              "default": "desc"
+            },
+            "description": "Largest first by default."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortfolioPositionEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No investor with that slug, or nothing published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/investors/{slug}/activity": {
+      "get": {
+        "tags": [
+          "investors"
+        ],
+        "summary": "What one investor opened, added to, trimmed and exited",
+        "description": "Changes, newest period first and largest trade first within one.\n\nEach row names its period, so ``meta`` names none.",
+        "operationId": "getInvestorActivity",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`.",
+              "examples": [
+                "berkshire-hathaway"
+              ],
+              "title": "Slug"
+            },
+            "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first quarter to include, as `2026Q1` or `2026-03-31`.",
+              "title": "From"
+            },
+            "description": "The first quarter to include, as `2026Q1` or `2026-03-31`."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last quarter to include, as `2026Q1` or `2026-03-31`.",
+              "title": "To"
+            },
+            "description": "The last quarter to include, as `2026Q1` or `2026-03-31`."
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "new,exit"
+                ]
+              ],
+              "title": "Action"
+            },
+            "description": "Any of `new`, `add`, `trim`, `hold`, `exit`, comma-separated or repeated. Every action but `hold` by default."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No investor with that slug.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/investors/{slug}/history": {
+      "get": {
+        "tags": [
+          "investors"
+        ],
+        "summary": "One investor's portfolio value, positions and concentration, quarter by quarter",
+        "description": "Every quarter from the first published to the latest, oldest first.\n\nA quarter in between with nothing published is a row of nulls, so a chart\nof it shows the gap rather than drawing across it. Empty for a filer with\nnothing published. As of the views' last refresh. Not paginated.",
+        "operationId": "getInvestorHistory",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`.",
+              "examples": [
+                "berkshire-hathaway"
+              ],
+              "title": "Slug"
+            },
+            "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryPointEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No investor with that slug.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stocks/{ticker}": {
+      "get": {
+        "tags": [
+          "stocks"
+        ],
+        "summary": "One stock, and how the tracked investors held and traded it",
+        "description": "The stock, with its holders, shares and dollars held, and the net\nchange in them, in the latest period published for any investor.",
+        "operationId": "getStock",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter.",
+              "examples": [
+                "AAPL",
+                "037833100"
+              ],
+              "title": "Ticker"
+            },
+            "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stocks/{ticker}/owners": {
+      "get": {
+        "tags": [
+          "stocks"
+        ],
+        "summary": "Every tracked investor holding one stock in one period",
+        "description": "Holders, largest position first, each with its change since that\ninvestor's previous published period. Exits are not owners, and are not\nlisted.",
+        "operationId": "getStockOwners",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter.",
+              "examples": [
+                "AAPL",
+                "037833100"
+              ],
+              "title": "Ticker"
+            },
+            "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter."
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for any investor, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for any investor, which `meta.period` states."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockOwnerEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP, with suggestions; or nothing published for the period, without.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/StockNotFound"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ],
+                  "title": "Response 404 Getstockowners"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stocks/{ticker}/ownership-history": {
+      "get": {
+        "tags": [
+          "stocks"
+        ],
+        "summary": "One stock's tracked ownership quarter by quarter, with its five largest holders",
+        "description": "Every quarter from the first the stock was held in to the latest\npublished, oldest first. Empty for a stock no investor's published\nportfolio has held. Not paginated.",
+        "operationId": "getStockOwnershipHistory",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter.",
+              "examples": [
+                "AAPL",
+                "037833100"
+              ],
+              "title": "Ticker"
+            },
+            "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnershipPointEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/market/top-holdings": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "summary": "The most widely or most heavily held stocks",
+        "description": "The top stocks at a quarter end. Not paginated.",
+        "operationId": "getTopHoldings",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published, which `meta.period` states."
+          },
+          {
+            "name": "metric",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/HoldingMetric",
+              "description": "`holders`: held by the most filers. `value`: the most dollars held.",
+              "default": "holders"
+            },
+            "description": "`holders`: held by the most filers. `value`: the most dollars held."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "How many stocks. Above 100 is refused.",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "How many stocks. Above 100 is refused."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketHoldingEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/market/top-buys": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "summary": "The stocks the tracked investors bought most",
+        "description": "Most bought first. Not paginated.",
+        "operationId": "getTopBuys",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states."
+          },
+          {
+            "name": "period_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PeriodType",
+              "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up.",
+              "default": "quarter"
+            },
+            "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up."
+          },
+          {
+            "name": "metric",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/FlowMetric",
+              "description": "`value`: gross dollars traded that way, so a position bought and sold again within a year still counts. `net_value`: bought less sold, so only stocks traded that way on balance. `holders`: filers trading that way.",
+              "default": "value"
+            },
+            "description": "`value`: gross dollars traded that way, so a position bought and sold again within a year still counts. `net_value`: bought less sold, so only stocks traded that way on balance. `holders`: filers trading that way."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "How many stocks. Above 100 is refused.",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "How many stocks. Above 100 is refused."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockFlowEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/market/top-sells": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "summary": "The stocks the tracked investors sold most",
+        "description": "Most sold first. Not paginated.",
+        "operationId": "getTopSells",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states."
+          },
+          {
+            "name": "period_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PeriodType",
+              "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up.",
+              "default": "quarter"
+            },
+            "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up."
+          },
+          {
+            "name": "metric",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/FlowMetric",
+              "description": "`value`: gross dollars traded that way, so a position bought and sold again within a year still counts. `net_value`: bought less sold, so only stocks traded that way on balance. `holders`: filers trading that way.",
+              "default": "value"
+            },
+            "description": "`value`: gross dollars traded that way, so a position bought and sold again within a year still counts. `net_value`: bought less sold, so only stocks traded that way on balance. `holders`: filers trading that way."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "How many stocks. Above 100 is refused.",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "How many stocks. Above 100 is refused."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockFlowEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/market/new-positions": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "summary": "The stocks the most tracked investors opened a position in",
+        "description": "Most often opened first, then most bought. A filer's first period is\nnot counted: every position is new to us there, not bought. Not paginated.",
+        "operationId": "getNewPositions",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states."
+          },
+          {
+            "name": "period_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PeriodType",
+              "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up.",
+              "default": "quarter"
+            },
+            "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "How many stocks. Above 100 is refused.",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "How many stocks. Above 100 is refused."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockFlowEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/market/activity": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "summary": "Recent filings, with what each period holds and its largest trade",
+        "description": "Filings newest first: those a published period was built from. One\nwithheld as suspect is left out until its period is published. Each row\nnames its period, so ``meta`` names none.",
+        "operationId": "getMarketActivity",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedFilingEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/flows": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "summary": "Screen stocks by what the tracked investors bought and sold",
+        "description": "Every stock traded or held through the period that passes the filters,\npaginated. Exits included: a stock every holder sold has no holders left.",
+        "operationId": "getFlows",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states."
+          },
+          {
+            "name": "period_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PeriodType",
+              "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up.",
+              "default": "quarter"
+            },
+            "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up."
+          },
+          {
+            "name": "sector",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Not available yet: no source of sectors is loaded, so every stock's `sector` is null, and asking for one is a 422 rather than an empty page.",
+              "title": "Sector"
+            },
+            "description": "Not available yet: no source of sectors is loaded, so every stock's `sector` is null, and asking for one is a 422 rather than an empty page."
+          },
+          {
+            "name": "min_investors",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only stocks held by at least this many filers at the period end.",
+              "title": "Min Investors"
+            },
+            "description": "Only stocks held by at least this many filers at the period end."
+          },
+          {
+            "name": "min_value",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0.0
+                },
+                {
+                  "type": "string",
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only stocks the filers hold at least this many dollars of at the period end.",
+              "title": "Min Value"
+            },
+            "description": "Only stocks the filers hold at least this many dollars of at the period end."
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Direction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`buy`: net bought (`net_value_usd` above zero). `sell`: net sold.",
+              "title": "Direction"
+            },
+            "description": "`buy`: net bought (`net_value_usd` above zero). `sell`: net sold."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/FlowSort",
+              "description": "`net_value`, `gross_bought`, `gross_sold`, `buyers`, `sellers`, `new_positions`, `exits`, `holders`, or `value_held`. Ties go to the larger holding.",
+              "default": "net_value"
+            },
+            "description": "`net_value`, `gross_bought`, `gross_sold`, `buyers`, `sellers`, `new_positions`, `exits`, `holders`, or `value_held`. Ties go to the larger holding."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Largest first by default.",
+              "default": "desc"
+            },
+            "description": "Largest first by default."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockFlowEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is malformed, or `sector` was asked for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Investors and stocks by name or ticker",
+        "description": "Best first in each group. Not paged: a palette shows the top few, and\nwhoever wants more types more.",
+        "operationId": "search",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 100,
+              "description": "A ticker, or part of a stock's, an investor's or a manager's name. At least 2 characters once trimmed; from 3, misspellings and words inside a name match too.",
+              "examples": [
+                "berkshire"
+              ],
+              "title": "Q"
+            },
+            "description": "A ticker, or part of a stock's, an investor's or a manager's name. At least 2 characters once trimmed; from 3, misspellings and words inside a name match too."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "description": "Most results in each group. Above 20 is refused, not cut down.",
+              "default": 5,
+              "title": "Limit"
+            },
+            "description": "Most results in each group. Above 20 is refused, not cut down."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResults"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/meta/periods": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Every quarter with data, and how far each has filled in",
+        "description": "Every quarter with a published portfolio, oldest first. A quarter\nnothing has been published for yet, such as one whose filings have not\nstarted arriving, is not listed. Not paginated: there are four a year.\nCached for five minutes.",
+        "operationId": "getPeriods",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeriodCoverageEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/meta/freshness": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "When each materialised view was refreshed, and each job last succeeded",
+        "description": "Every materialised view, then every job that has recorded a run,\nalphabetically. A view never refreshed since its refresh began to be\nrecorded, or a job that has never succeeded, is listed with nulls. Cached\nfor five minutes.",
+        "operationId": "getFreshness",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FreshnessEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Activity": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP, which identifies it everywhere here.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as the filing that first reported the CUSIP named it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "period": {
+            "type": "string",
+            "format": "date",
+            "title": "Period",
+            "description": "The quarter end the change is as of.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "prev_period": {
+            "type": "string",
+            "format": "date",
+            "title": "Prev Period",
+            "description": "The filer's previous published period, which the change is against. Usually the quarter before. Across a quarter with nothing published, the last one before the gap.",
+            "examples": [
+              "2026-03-31"
+            ]
+          },
+          "action": {
+            "$ref": "#/components/schemas/ChangeAction",
+            "description": "`new`, `add`, `trim` or `exit` against `prev_period`, judged on shares alone; `hold` only when asked for.",
+            "examples": [
+              "trim"
+            ]
+          },
+          "shares": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Shares",
+            "description": "Shares at `period`. Zero for an exit.",
+            "examples": [
+              "905560382.0000"
+            ]
+          },
+          "shares_delta": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Shares Delta",
+            "description": "Shares at `period` less shares at `prev_period`. Not necessarily a sale.",
+            "examples": [
+              "-10000000.0000"
+            ]
+          },
+          "shares_delta_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares Delta Pct",
+            "description": "`shares_delta` as a percentage of the previous shares. Null for `new`.",
+            "examples": [
+              "-1.092193"
+            ]
+          },
+          "value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Value Usd",
+            "description": "Whole dollars at `period`. Zero for an exit.",
+            "examples": [
+              "171459640000.00"
+            ]
+          },
+          "traded_value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Traded Value Usd",
+            "description": "The shares bought or sold, at the period-end price; for an exit, at the price it was last held at. An estimate: a 13F has no other prices. Zero for a `hold`. What the rows are ordered by within a period.",
+            "examples": [
+              "1893400000.00"
+            ]
+          },
+          "weight_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Pct",
+            "description": "Its weight at `period`, in percent. Zero for an exit.",
+            "examples": [
+              "44.682510"
+            ]
+          },
+          "weight_delta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Delta",
+            "description": "`weight_pct` less the weight at `prev_period`, in points.",
+            "examples": [
+              "-0.512300"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "period",
+          "prev_period",
+          "action",
+          "shares",
+          "shares_delta",
+          "value_usd",
+          "traded_value_usd"
+        ],
+        "title": "Activity",
+        "description": "One thing a filer did to one position, in one period."
+      },
+      "ActivityEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Activity"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "ActivityEnvelope",
+        "description": "One investor's changes, newest period first."
+      },
+      "AmendmentKind": {
+        "type": "string",
+        "enum": [
+          "restatement",
+          "new_holdings"
+        ],
+        "title": "AmendmentKind",
+        "description": "What a ``13F-HR/A`` claims to do to the period it amends.\n\nThis is the single most consequential field on an amendment, and getting it\nbackwards is silent. A **restatement** replaces the period's holdings\nwholesale: load it alongside the original and every position is counted\ntwice. A **new holdings** amendment adds rows the original omitted —\ntypically positions released from confidential treatment — and treating\n*that* as a restatement throws away everything the original reported.\n\nBoth failures produce a portfolio that looks entirely plausible. Neither\nraises anything.\n\nThe values are the normalised form of EDGAR's own ``<amendmentType>``:\n``RESTATEMENT`` and ``NEW HOLDINGS``. Normalised rather than raw because the\nspace in the second one makes every SQL literal in the codebase quotable but\nugly, and because these two are a closed set — unlike ``transaction_code``\non Form 4, which is stored exactly as filed precisely because it is not.\n\n``None`` on the column is the third state and the common one: the filing is\nnot an amendment at all."
+      },
+      "ChangeAction": {
+        "type": "string",
+        "enum": [
+          "new",
+          "add",
+          "trim",
+          "hold",
+          "exit"
+        ],
+        "title": "ChangeAction",
+        "description": "What a filer did to a position between its previous period and this one.\n\nText with a ``CHECK``, by the rule in :mod:`app.db.models.enums`: the set is\nours, and it has grown once already, by ``exit``.\n\n``new``\n    Not held in the filer's previous period, or the filer has no previous\n    period. A stock sold one quarter and bought back the next is new again.\n``add``\n    More shares than before, by more than the hold band.\n``trim``\n    Fewer shares than before, by more than the hold band. Not a sale: the\n    filer may have been assigned, distributed in kind, or moved the position\n    to an affiliate that files separately.\n``hold``\n    The same shares as before, within\n    :data:`~app.derived.position_change.HOLD_BAND_PCT` either way. Judged\n    on shares alone, so a stock that doubled in price is still a hold.\n``exit``\n    Held in the filer's previous period and not in this one. The row is a\n    position of nothing: no shares, no value, no weight, and the deltas\n    are the whole previous position, negative. Only in a period the filer\n    published, so a quarter it did not file, or one withheld, holds no\n    exits: a missing filing is not a sale. Nor is an exit, for ``trim``'s\n    reasons."
+      },
+      "Coverage": {
+        "properties": {
+          "filers_reported": {
+            "type": "integer",
+            "title": "Filers Reported",
+            "description": "Filers with a published portfolio for this period. A filer whose filing was withheld as suspect has not reported, for this count.",
+            "examples": [
+              69
+            ]
+          },
+          "filers_tracked": {
+            "type": "integer",
+            "title": "Filers Tracked",
+            "description": "Every filer this service tracks, whether or not it has filed yet.",
+            "examples": [
+              100
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "filers_reported",
+          "filers_tracked"
+        ],
+        "title": "Coverage",
+        "description": "How much of the tracked universe a period's numbers are made of.\n\n13Fs are due 45 days after the quarter end and arrive across those 45 days,\nso a period's aggregates are partial for weeks. The ratio is what tells a\nclient whether \"most owned\" means most owned, or most owned by the funds\nthat happen to have filed so far."
+      },
+      "Direction": {
+        "type": "string",
+        "enum": [
+          "buy",
+          "sell"
+        ],
+        "title": "Direction",
+        "description": "Which way the stocks were traded on balance."
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "invalid_cursor",
+          "not_found",
+          "method_not_allowed",
+          "validation_error",
+          "http_error"
+        ],
+        "title": "ErrorCode",
+        "description": "What went wrong, for a program to branch on. ``detail`` says it for a person."
+      },
+      "FeedFiling": {
+        "properties": {
+          "accession_no": {
+            "type": "string",
+            "title": "Accession No",
+            "description": "EDGAR's identifier for the filing: `GET /filings/{accession_no}`.",
+            "examples": [
+              "0001067983-26-000034"
+            ]
+          },
+          "form_type": {
+            "type": "string",
+            "title": "Form Type",
+            "description": "`13F-HR`, or `13F-HR/A` for an amendment.",
+            "examples": [
+              "13F-HR"
+            ]
+          },
+          "period": {
+            "type": "string",
+            "format": "date",
+            "title": "Period",
+            "description": "The quarter end the filing reports.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "filed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Filed At",
+            "description": "When it reached EDGAR.",
+            "examples": [
+              "2026-08-14T16:32:05Z"
+            ]
+          },
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "The investor's stable identifier: `/v1/investors/{slug}`.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "Our name for the institution, or the name on its latest cover page.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          },
+          "position_count": {
+            "type": "integer",
+            "title": "Position Count",
+            "description": "Positions in the period as published, of which this filing is one of the filings: an amendment adding holdings shows the period's count, not its own.",
+            "examples": [
+              41
+            ]
+          },
+          "largest_change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LargestChange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The period's largest trade. Null in the filer's first period, whose positions are all new only to us, and when it traded nothing."
+          }
+        },
+        "type": "object",
+        "required": [
+          "accession_no",
+          "form_type",
+          "period",
+          "filed_at",
+          "slug",
+          "display_name",
+          "position_count"
+        ],
+        "title": "FeedFiling",
+        "description": "One filing, and what the period it was filed for now holds."
+      },
+      "FeedFilingEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/FeedFiling"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "FeedFilingEnvelope",
+        "description": "Recent filings, newest first."
+      },
+      "FieldError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Loc",
+            "description": "Where the parameter is, then its name: `[\"query\", \"period\"]`.",
+            "examples": [
+              [
+                "query",
+                "period"
+              ]
+            ]
+          },
+          "msg": {
+            "type": "string",
+            "title": "Msg",
+            "description": "Why it was refused, for a person.",
+            "examples": [
+              "Value error, '2026Q5' has no quarter 5: quarters are 1 to 4"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "Pydantic's error type, such as `missing` or `value_error`.",
+            "examples": [
+              "value_error"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "FieldError",
+        "description": "One parameter that failed validation, and why."
+      },
+      "FilerCategory": {
+        "type": "string",
+        "enum": [
+          "value",
+          "activist",
+          "quant",
+          "macro",
+          "growth",
+          "multi_strategy"
+        ],
+        "title": "FilerCategory",
+        "description": "The investment style a filer is filed under on the site.\n\nText with a ``CHECK``, not a native enum, by the rule in\n:mod:`app.db.models.enums`: the set is ours, it is editorial, and the day a\nseventh style is wanted should be one line of DDL rather than an\n``ALTER TYPE`` that cannot be reversed.\n\nOne per filer, and deliberately coarse. It exists to group pages and to cut\nthe aggregate views, not to describe a strategy — a style label precise\nenough to be uncontroversial would be too fine to group anything by."
+      },
+      "FilingRead": {
+        "properties": {
+          "accession_no": {
+            "type": "string",
+            "title": "Accession No",
+            "description": "EDGAR's identifier, dashed: `##########-##-######`.",
+            "examples": [
+              "0001067983-24-000011"
+            ]
+          },
+          "cik": {
+            "type": "string",
+            "title": "Cik",
+            "description": "As EDGAR filed it, zero-padded to ten. Not necessarily a resolved filer.",
+            "examples": [
+              "0001067983"
+            ]
+          },
+          "form_type": {
+            "type": "string",
+            "title": "Form Type",
+            "description": "`13F-HR`, `13F-HR/A` for an amendment, or `13F-NT` for a notice.",
+            "examples": [
+              "13F-HR"
+            ]
+          },
+          "period_of_report": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Of Report",
+            "description": "The quarter end being reported — never the filing date, which is 45 days or more later.",
+            "examples": [
+              "2024-03-31"
+            ]
+          },
+          "quarter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarter",
+            "description": "Generated by Postgres from `period_of_report`; null exactly when it is.",
+            "examples": [
+              "2024Q1"
+            ]
+          },
+          "filed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Filed At",
+            "description": "When it reached EDGAR.",
+            "examples": [
+              "2024-05-15T16:05:22Z"
+            ]
+          },
+          "filer_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filer Id",
+            "description": "Null until this filing's CIK has been resolved to a filer.",
+            "examples": [
+              1
+            ]
+          },
+          "filer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filer Name",
+            "description": "The resolved filer's name. Null where `filer_id` is.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          },
+          "filer_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filer Slug",
+            "description": "The resolved filer's slug: `/v1/investors/{slug}`. Null where `filer_id` is.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "value_multiplier": {
+            "type": "integer",
+            "title": "Value Multiplier",
+            "description": "Which units the filing's own `value` field used: 1000 before the 2023-01-03 cutover, 1 on and after it. Recorded, not applied — `holdings[].value_usd` is already in whole dollars either way. This is the field to check first when a fund's total is out by 1000x.",
+            "examples": [
+              1
+            ]
+          },
+          "amendment_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amendment No",
+            "description": "The cover page's amendment number, as the filer wrote it. Null on an original. Amendments apply in `filed_at` order, not in this order.",
+            "examples": [
+              1
+            ]
+          },
+          "amendment_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AmendmentKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`restatement` replaces the original period; `new_holdings` adds to it.",
+            "examples": [
+              "restatement"
+            ]
+          },
+          "amends_accession_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amends Accession No",
+            "description": "The filing this one amends, if any.",
+            "examples": [
+              "0000950123-24-005032"
+            ]
+          },
+          "report_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Type",
+            "description": "Cover-page wording. A `NOTICE` reports no holdings at all; a `COMBINATION` reports only the part this manager holds directly.",
+            "examples": [
+              "13F HOLDINGS REPORT"
+            ]
+          },
+          "parse_status": {
+            "type": "string",
+            "title": "Parse Status",
+            "description": "`pending` (fetched, not parsed), `ok`, `suspect` (loaded, but a normalisation guard fired — see `parse_notes`), or `failed` (not parsed at all; `parse_error` says why and there are no holdings).",
+            "examples": [
+              "ok"
+            ]
+          },
+          "parse_notes": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parse Notes",
+            "description": "Why a filing is `suspect`: one object per finding, with the row and CUSIP. `severity` is `error` for a guard that failed, which is what makes the filing `suspect`, or `warning` for evidence beside it.",
+            "examples": [
+              [
+                {
+                  "cusip": "037833100",
+                  "detail": "...",
+                  "kind": "implied_price",
+                  "severity": "error"
+                }
+              ]
+            ]
+          },
+          "parse_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parse Error",
+            "description": "Set only alongside `parse_status: failed`.",
+            "examples": [
+              null
+            ]
+          },
+          "parsed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsed At",
+            "description": "When it was last parsed. Null while `parse_status` is `pending`.",
+            "examples": [
+              "2024-05-15T16:20:41Z"
+            ]
+          },
+          "ingested_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Ingested At",
+            "description": "When we first fetched it.",
+            "examples": [
+              "2024-05-15T16:20:39Z"
+            ]
+          },
+          "raw_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Key",
+            "description": "Where the archived documents live: a prefix in the raw store.",
+            "examples": [
+              "raw/13f/1067983/0001067983-24-000011/"
+            ]
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url",
+            "description": "The URL it was fetched from, stored rather than reconstructed.",
+            "examples": [
+              "https://www.sec.gov/Archives/edgar/data/1067983/000106798324000011/"
+            ]
+          },
+          "holdings": {
+            "items": {
+              "$ref": "#/components/schemas/HoldingRead"
+            },
+            "type": "array",
+            "title": "Holdings",
+            "description": "Sorted by `value_usd` descending, largest position first. Empty for a 13F-NT, for a filing that failed to parse, and for one whose holdings have not been loaded yet."
+          }
+        },
+        "type": "object",
+        "required": [
+          "accession_no",
+          "cik",
+          "form_type",
+          "filed_at",
+          "value_multiplier",
+          "parse_status",
+          "ingested_at"
+        ],
+        "title": "FilingRead",
+        "description": "A filing, its provenance, and every position it reports."
+      },
+      "FlowMetric": {
+        "type": "string",
+        "enum": [
+          "value",
+          "net_value",
+          "holders"
+        ],
+        "title": "FlowMetric",
+        "description": "What makes a stock most bought or sold."
+      },
+      "FlowSort": {
+        "type": "string",
+        "enum": [
+          "net_value",
+          "gross_bought",
+          "gross_sold",
+          "buyers",
+          "sellers",
+          "new_positions",
+          "exits",
+          "holders",
+          "value_held"
+        ],
+        "title": "FlowSort",
+        "description": "What the flows screen is ordered by."
+      },
+      "Freshness": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/FreshnessKind",
+            "description": "`view`: a materialised view the aggregate endpoints read. `job`: a job that records its runs, such as `backfill_13f` or `refresh-views`.",
+            "examples": [
+              "view"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The view's or the job's name.",
+            "examples": [
+              "mv_filer_summary"
+            ]
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At",
+            "description": "For a view, when its last refresh finished: what its rows are as of. For a job, when its latest run that finished `success` did; a `partial` run, which finished with some items undone, is not one. Null when a view's last refresh is unrecorded, or a job has never succeeded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id",
+            "description": "The run that did it: the `run_id` on its log lines. For a view, the `refresh-views` run. Null when `last_success_at` is, and for a view refreshed outside a tracked run, which only tests do.",
+            "examples": [
+              "5f0c2a9e-3b1d-4c7a-9e2f-8d6b1a4c3e70"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "name"
+        ],
+        "title": "Freshness",
+        "description": "When one materialised view was last refreshed, or one job last succeeded."
+      },
+      "FreshnessEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Freshness"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "FreshnessEnvelope",
+        "description": "When each view was refreshed and each job last succeeded."
+      },
+      "FreshnessKind": {
+        "type": "string",
+        "enum": [
+          "view",
+          "job"
+        ],
+        "title": "FreshnessKind",
+        "description": "Whether a freshness row is a materialised view or a job."
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status",
+            "description": "Always `ok`: answering at all is the check.",
+            "default": "ok",
+            "examples": [
+              "ok"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "description": "The release, from `pyproject.toml`.",
+            "examples": [
+              "0.1.0"
+            ]
+          },
+          "git_sha": {
+            "type": "string",
+            "title": "Git Sha",
+            "description": "The commit the image was built from, or `unknown`.",
+            "examples": [
+              "9f2c1a0"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "git_sha"
+        ],
+        "title": "HealthResponse",
+        "description": "Liveness answer, plus the two things you want when a deploy looks wrong."
+      },
+      "HistoryPoint": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "format": "date",
+            "title": "Period",
+            "description": "The quarter end.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "portfolio_value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Value Usd",
+            "description": "Whole dollars, common stock only. Null for a quarter between the first and last we have published with nothing published for it: not filed, not loaded, or withheld.",
+            "examples": [
+              "263479238410.00"
+            ]
+          },
+          "position_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Count",
+            "description": "Common-stock positions. Null where `portfolio_value_usd` is.",
+            "examples": [
+              41
+            ]
+          },
+          "top10_weight_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top10 Weight Pct",
+            "description": "How much of the value is in the ten largest positions, in percent.",
+            "examples": [
+              "88.112045"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "period"
+        ],
+        "title": "HistoryPoint",
+        "description": "One quarter of a filer's portfolio, in summary."
+      },
+      "HistoryPointEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryPoint"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "HistoryPointEnvelope",
+        "description": "One investor's portfolio, a quarter a row."
+      },
+      "HolderPoint": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "The investor's stable identifier: `/v1/investors/{slug}`.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "Our name for the institution, or the name on its latest cover page.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          },
+          "shares": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares",
+            "description": "Zero when the filer published the quarter without the stock in it. Null when it published nothing for the quarter, so a chart shows a gap.",
+            "examples": [
+              "300000000.0000"
+            ]
+          },
+          "value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Usd",
+            "description": "Whole dollars at the quarter end. Null when `shares` is.",
+            "examples": [
+              "57039000000.00"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "display_name"
+        ],
+        "title": "HolderPoint",
+        "description": "One of the five named holders, in one quarter."
+      },
+      "HoldingMetric": {
+        "type": "string",
+        "enum": [
+          "holders",
+          "value"
+        ],
+        "title": "HoldingMetric",
+        "description": "What makes a stock most held: the filers holding it, or the dollars."
+      },
+      "HoldingRead": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The nine characters this filing reported, as it reported them.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "From `security`, our resolution — not the issuer name this filing printed.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "From `security`, our resolution. Null while the CUSIP is unresolved.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Value Usd",
+            "description": "Whole dollars, always — already multiplied through by `value_multiplier`. Not comparable across `put_call`: an option line reports the notional value of the underlying, not a premium.",
+            "examples": [
+              "2040000000.00"
+            ]
+          },
+          "shares": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Shares",
+            "description": "A share count or a principal amount; `sshprnamt_type` says which.",
+            "examples": [
+              "12000000.0000"
+            ]
+          },
+          "sshprnamt_type": {
+            "type": "string",
+            "title": "Sshprnamt Type",
+            "description": "`SH` for shares, `PRN` for principal.",
+            "examples": [
+              "SH"
+            ]
+          },
+          "put_call": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Put Call",
+            "description": "`Put`, `Call`, or null for the underlying itself.",
+            "examples": [
+              null
+            ]
+          },
+          "investment_discretion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Investment Discretion",
+            "description": "As the filing wrote it: `SOLE`, `DFND` (shared, defined) or `OTR` (shared, other).",
+            "examples": [
+              "SOLE"
+            ]
+          },
+          "voting_sole": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voting Sole",
+            "description": "Shares the manager votes alone. Null when the filing left it out.",
+            "examples": [
+              "12000000.0000"
+            ]
+          },
+          "voting_shared": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voting Shared",
+            "description": "Shares the manager votes with others. Null when the filing left it out.",
+            "examples": [
+              "0.0000"
+            ]
+          },
+          "voting_none": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voting None",
+            "description": "Shares the manager does not vote. Null when the filing left it out.",
+            "examples": [
+              "0.0000"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "value_usd",
+          "shares",
+          "sshprnamt_type"
+        ],
+        "title": "HoldingRead",
+        "description": "One reported position, as the filing wrote it plus what we resolved it to.\n\n``cusip`` is the filing's own nine characters and ``issuer_name``/``ticker``\nare our interpretation of them, which is exactly the pair you want side by\nside when a position is attributed to the wrong company: a null ticker is an\nunresolved security, a wrong one is a bad resolution, and the CUSIP tells\nyou which of the two you are looking at."
+      },
+      "InvestorDetail": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "The investor's stable identifier: `/v1/investors/{slug}`.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "Our name for the institution, or the name on its latest cover page.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          },
+          "manager_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Name",
+            "description": "The person the institution is known by, where there is one.",
+            "examples": [
+              "Warren Buffett"
+            ]
+          },
+          "category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FilerCategory"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The investment style we file it under. Null when we have not chosen one.",
+            "examples": [
+              "value"
+            ]
+          },
+          "latest_period": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Period",
+            "description": "The newest quarter end we have published for this filer, which every figure below describes. Null when nothing is published yet.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "last_filed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Filed At",
+            "description": "When the most recently filed of the filings behind `latest_period` reached EDGAR: a later amendment, if one counts.",
+            "examples": [
+              "2026-08-14T16:32:05Z"
+            ]
+          },
+          "portfolio_value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Value Usd",
+            "description": "Whole dollars, common stock only: no options, no principal amounts.",
+            "examples": [
+              "263479238410"
+            ]
+          },
+          "position_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Count",
+            "description": "Common-stock positions in `latest_period`.",
+            "examples": [
+              41
+            ]
+          },
+          "top_holding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TopHolding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when `latest_period` is, and when the portfolio is empty."
+          },
+          "sparkline": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "decimal"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Sparkline",
+            "description": "Portfolio value for the 8 quarters ending at `latest_period`, oldest first, so the last entry is `portfolio_value_usd`. Null for a quarter with nothing published. Empty when `latest_period` is null.",
+            "examples": [
+              [
+                "231000000000",
+                null,
+                "240000000000",
+                "263479238410"
+              ]
+            ]
+          },
+          "first_period": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Period",
+            "description": "The oldest quarter end we have published for this filer.",
+            "examples": [
+              "2021-09-30"
+            ]
+          },
+          "top10_weight_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top10 Weight Pct",
+            "description": "How much of `latest_period`'s value is in its ten largest positions, in %.",
+            "examples": [
+              "88.112045"
+            ]
+          },
+          "turnover_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turnover Pct",
+            "description": "Shares bought and sold in `latest_period`, valued at its prices, halved, as a percentage of the previous period's value. Null in the filer's first period, which has no previous one.",
+            "examples": [
+              "4.381002"
+            ]
+          },
+          "ciks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ciks",
+            "description": "Every CIK the filer files under, oldest entity first.",
+            "examples": [
+              [
+                "0001067983"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "display_name",
+          "sparkline",
+          "ciks"
+        ],
+        "title": "InvestorDetail",
+        "description": "One filer, with what the list leaves out."
+      },
+      "InvestorMatch": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "The investor's stable identifier: `/v1/investors/{slug}`.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "Our name for the institution, or the name on its latest cover page.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          },
+          "manager_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Name",
+            "description": "The person the institution is known by, where there is one.",
+            "examples": [
+              "Warren Buffett"
+            ]
+          },
+          "category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FilerCategory"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The investment style we file it under. Null when we have not chosen one.",
+            "examples": [
+              "value"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "display_name"
+        ],
+        "title": "InvestorMatch",
+        "description": "An investor, with enough to show it and to link to ``/v1/investors/{slug}``."
+      },
+      "InvestorSort": {
+        "type": "string",
+        "enum": [
+          "value",
+          "positions",
+          "name"
+        ],
+        "title": "InvestorSort",
+        "description": "What the investor list is ordered by."
+      },
+      "InvestorSummary": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "The investor's stable identifier: `/v1/investors/{slug}`.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "Our name for the institution, or the name on its latest cover page.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          },
+          "manager_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manager Name",
+            "description": "The person the institution is known by, where there is one.",
+            "examples": [
+              "Warren Buffett"
+            ]
+          },
+          "category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FilerCategory"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The investment style we file it under. Null when we have not chosen one.",
+            "examples": [
+              "value"
+            ]
+          },
+          "latest_period": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Period",
+            "description": "The newest quarter end we have published for this filer, which every figure below describes. Null when nothing is published yet.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "last_filed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Filed At",
+            "description": "When the most recently filed of the filings behind `latest_period` reached EDGAR: a later amendment, if one counts.",
+            "examples": [
+              "2026-08-14T16:32:05Z"
+            ]
+          },
+          "portfolio_value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Value Usd",
+            "description": "Whole dollars, common stock only: no options, no principal amounts.",
+            "examples": [
+              "263479238410"
+            ]
+          },
+          "position_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Count",
+            "description": "Common-stock positions in `latest_period`.",
+            "examples": [
+              41
+            ]
+          },
+          "top_holding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TopHolding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when `latest_period` is, and when the portfolio is empty."
+          },
+          "sparkline": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "decimal"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Sparkline",
+            "description": "Portfolio value for the 8 quarters ending at `latest_period`, oldest first, so the last entry is `portfolio_value_usd`. Null for a quarter with nothing published. Empty when `latest_period` is null.",
+            "examples": [
+              [
+                "231000000000",
+                null,
+                "240000000000",
+                "263479238410"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "display_name",
+          "sparkline"
+        ],
+        "title": "InvestorSummary",
+        "description": "One filer, as a row of the list."
+      },
+      "InvestorSummaryEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/InvestorSummary"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "InvestorSummaryEnvelope",
+        "description": "Every tracked investor, a row each."
+      },
+      "LargestChange": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP, which identifies it everywhere here.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as the filing that first reported the CUSIP named it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "action": {
+            "$ref": "#/components/schemas/ChangeAction",
+            "description": "`new`, `add`, `trim` or `exit`. Never `hold`.",
+            "examples": [
+              "trim"
+            ]
+          },
+          "shares_delta": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Shares Delta",
+            "description": "Shares now, less shares the period before.",
+            "examples": [
+              "-10000000.0000"
+            ]
+          },
+          "traded_value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Traded Value Usd",
+            "description": "The shares that changed hands, at the period-end price (an exit, its last).",
+            "examples": [
+              "1893400000.00"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "action",
+          "shares_delta",
+          "traded_value_usd"
+        ],
+        "title": "LargestChange",
+        "description": "The largest trade in a filer's period, by traded dollars."
+      },
+      "MarketHolding": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP, which identifies it everywhere here.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as the filing that first reported the CUSIP named it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "sector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sector",
+            "description": "Null for every stock for now. No source of sectors is loaded yet: a 13F does not carry one, and neither does the CUSIP-to-ticker resolution.",
+            "examples": [
+              "Information Technology"
+            ]
+          },
+          "holder_count": {
+            "type": "integer",
+            "title": "Holder Count",
+            "description": "Filers holding it at the period end.",
+            "examples": [
+              61
+            ]
+          },
+          "total_shares": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Total Shares",
+            "description": "Their shares, added up.",
+            "examples": [
+              "2390441842.0000"
+            ]
+          },
+          "total_value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Total Value Usd",
+            "description": "Their positions' value, in whole dollars.",
+            "examples": [
+              "454441236095.00"
+            ]
+          },
+          "avg_weight_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Weight Pct",
+            "description": "Its average weight in the portfolios that hold it, in percent. Null only when none of them has a weight.",
+            "examples": [
+              "4.127035"
+            ]
+          },
+          "median_weight_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Weight Pct",
+            "description": "The median of the same weights. Well below the average when one holder means it and the rest hold a sliver.",
+            "examples": [
+              "1.902114"
+            ]
+          },
+          "value_rank": {
+            "type": "integer",
+            "title": "Value Rank",
+            "description": "1 for the most dollars held in the period. Ties share a rank.",
+            "examples": [
+              1
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "holder_count",
+          "total_shares",
+          "total_value_usd",
+          "value_rank"
+        ],
+        "title": "MarketHolding",
+        "description": "One stock, and how widely and how heavily the tracked filers hold it."
+      },
+      "MarketHoldingEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/MarketHolding"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "MarketHoldingEnvelope",
+        "description": "The most widely or heavily held stocks."
+      },
+      "Meta": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the data belongs to. Null only for a collection that is not about a period, such as a list of filers.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "quarters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarters",
+            "description": "For figures over more than one quarter, such as a year's flows, every quarter they cover, oldest first, ending with `period`. Null for one quarter.",
+            "examples": [
+              [
+                "2025Q3",
+                "2025Q4",
+                "2026Q1",
+                "2026Q2"
+              ]
+            ]
+          },
+          "latest_filing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing At",
+            "description": "When the most recently filed of this period's published filings reached EDGAR. Null when nothing for the period has been published.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `period` is."
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats",
+            "description": "Why the rows may be wrong although every rule for reading the filings was followed: an amendment left out because its cover page does not say whether it restates or adds to the period, additions counting with no original loaded, two originals filed for one period, or an amendment number missing from those loaded. One sentence each, for a person to read. Empty when nothing is known to be wrong, and on endpoints that do not check.",
+            "examples": [
+              [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is left out: if it restates or adds to the period, the period is wrong"
+              ]
+            ]
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At",
+            "description": "For a response read from the materialised aggregates, when they were last refreshed: the rows are as of then, and a filing published since is not in them yet. Null for a response read live, and when the refresh is unrecorded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At",
+            "description": "When this response was built.",
+            "examples": [
+              "2026-10-03T09:41:27Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at"
+        ],
+        "title": "Meta",
+        "description": "What the rows in ``data`` describe, and when this answer was produced."
+      },
+      "OtherHolders": {
+        "properties": {
+          "holder_count": {
+            "type": "integer",
+            "title": "Holder Count",
+            "description": "Filers holding it besides the five.",
+            "examples": [
+              16
+            ]
+          },
+          "shares": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Shares",
+            "description": "Their shares, added up.",
+            "examples": [
+              "612440131.0000"
+            ]
+          },
+          "value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Value Usd",
+            "description": "Their positions' value, in whole dollars.",
+            "examples": [
+              "116441236095.00"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "holder_count",
+          "shares",
+          "value_usd"
+        ],
+        "title": "OtherHolders",
+        "description": "Everyone holding the stock in a quarter who is not one of the five."
+      },
+      "OwnershipPoint": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "format": "date",
+            "title": "Period",
+            "description": "The quarter end.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "holder_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Count",
+            "description": "Filers holding it. Zero in a quarter that was published without anyone holding it. Null in one with nothing published at all.",
+            "examples": [
+              21
+            ]
+          },
+          "total_shares": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Shares",
+            "description": "Every holder's shares, added up. Null where `holder_count` is.",
+            "examples": [
+              "2390441842.0000"
+            ]
+          },
+          "total_value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Value Usd",
+            "description": "Their positions' value, in whole dollars. Null where `holder_count` is.",
+            "examples": [
+              "454441236095.00"
+            ]
+          },
+          "top_holders": {
+            "items": {
+              "$ref": "#/components/schemas/HolderPoint"
+            },
+            "type": "array",
+            "title": "Top Holders",
+            "description": "The same filers, in the same order, on every row: the five largest holders by value in the latest quarter anyone held the stock. Fewer when fewer held it then."
+          },
+          "other": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OtherHolders"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The total less the five. Null where the total is. The two always add up to the total."
+          }
+        },
+        "type": "object",
+        "required": [
+          "period",
+          "top_holders"
+        ],
+        "title": "OwnershipPoint",
+        "description": "The stock's tracked ownership in one quarter, in total and by its largest holders."
+      },
+      "OwnershipPointEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/OwnershipPoint"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "OwnershipPointEnvelope",
+        "description": "One stock's tracked ownership, a quarter a row."
+      },
+      "Page": {
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "The page size this response was built with.",
+            "examples": [
+              50
+            ]
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor",
+            "description": "Pass as `?cursor=` for the next page, with the same filters and sort. Null on the last page. Opaque: its contents are not a contract.",
+            "examples": [
+              "eyJ2IjoxLCJrIjpbIjE3NDM0NjA0ODQ3Mi4wMCIsNDJdfQ"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "limit"
+        ],
+        "title": "Page",
+        "description": "Where this page ends, as an opaque token to send back for the next one."
+      },
+      "PeriodCoverage": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "title": "Period",
+            "description": "The quarter.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "type": "string",
+            "format": "date",
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "filing_deadline": {
+            "type": "string",
+            "format": "date",
+            "title": "Filing Deadline",
+            "description": "When the quarter's 13Fs are due: 45 calendar days after `period_end`. Approximate: the real deadline moves to the next business day when that is a weekend or a federal holiday, and this one does not, so it can be up to three days early.",
+            "examples": [
+              "2026-08-14"
+            ]
+          },
+          "filers_reported": {
+            "type": "integer",
+            "title": "Filers Reported",
+            "description": "Filers with a published portfolio for this quarter. A filer whose filing was withheld as suspect has not reported, for this count. The same number as `meta.coverage.filers_reported` on the quarter's other endpoints.",
+            "examples": [
+              69
+            ]
+          },
+          "filers_tracked": {
+            "type": "integer",
+            "title": "Filers Tracked",
+            "description": "Every filer this service tracks today, whether or not it has filed. Not the filers that existed in the quarter: a fund tracked now that did not file then counts against an old quarter too.",
+            "examples": [
+              100
+            ]
+          },
+          "is_complete": {
+            "type": "boolean",
+            "title": "Is Complete",
+            "description": "The filing deadline has passed, in New York, and at least 95% of the tracked filers have reported. A quarter can be complete with filings still to come, since late filings and amendments arrive for months.",
+            "examples": [
+              false
+            ]
+          },
+          "first_filed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Filed At",
+            "description": "When the earliest of the quarter's published filings reached EDGAR. Of those the figures are built from: an original replaced by a restatement is not one. Null only when the published filings changed since the aggregates were last refreshed, and none of them is published any more.",
+            "examples": [
+              "2026-07-02T13:10:44Z"
+            ]
+          },
+          "last_filed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Filed At",
+            "description": "When the latest of the same filings reached EDGAR: `meta.latest_filing_at` on the quarter's other endpoints. Null when `first_filed_at` is.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "period",
+          "period_end",
+          "filing_deadline",
+          "filers_reported",
+          "filers_tracked",
+          "is_complete"
+        ],
+        "title": "PeriodCoverage",
+        "description": "One quarter with published data, and how far it has filled in."
+      },
+      "PeriodCoverageEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/PeriodCoverage"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "PeriodCoverageEnvelope",
+        "description": "Every quarter with published data."
+      },
+      "PeriodType": {
+        "type": "string",
+        "enum": [
+          "quarter",
+          "year"
+        ],
+        "title": "PeriodType",
+        "description": "One quarter, or the four ending at it."
+      },
+      "PortfolioPosition": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP, which identifies it everywhere here.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as the filing that first reported the CUSIP named it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "put_call": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "Put",
+                  "Call"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Put Call",
+            "description": "Null for common stock: the only kind of row by default.",
+            "examples": [
+              null
+            ]
+          },
+          "shares": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Shares",
+            "description": "Shares, or for an option line the shares underlying it.",
+            "examples": [
+              "915560382.0000"
+            ]
+          },
+          "value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Value Usd",
+            "description": "Whole dollars at the period end. An option line's is the notional of the underlying.",
+            "examples": [
+              "174346048472.00"
+            ]
+          },
+          "weight_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Pct",
+            "description": "Its share of the common-stock portfolio's value, in percent. Null on option lines, and on every row of a period whose positions are all worth nothing.",
+            "examples": [
+              "44.682510"
+            ]
+          },
+          "shares_delta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares Delta",
+            "description": "Shares now, less shares in the filer's previous published period: the whole position for a `new` one. A fall is not necessarily a sale.",
+            "examples": [
+              "-10000000.0000"
+            ]
+          },
+          "shares_delta_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares Delta Pct",
+            "description": "`shares_delta` as a percentage of the previous shares. Null for a `new` position, which grew from nothing, and on option lines.",
+            "examples": [
+              "-1.080000"
+            ]
+          },
+          "weight_delta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Delta",
+            "description": "`weight_pct` less the previous period's, in percentage points: the whole weight for a `new` position. Moves with the price, too.",
+            "examples": [
+              "2.311400"
+            ]
+          },
+          "action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Against the filer's previous published period: `new`, `add`, `trim` or `hold`, judged on shares alone. Every position in the first period we have for a filer is `new`. Null on option lines.",
+            "examples": [
+              "trim"
+            ]
+          },
+          "first_period": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Period",
+            "description": "The oldest quarter end we have published this filer holding this security in. Not reset by a quarter it went unheld. Null on option lines.",
+            "examples": [
+              "2021-09-30"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "shares",
+          "value_usd"
+        ],
+        "title": "PortfolioPosition",
+        "description": "One security in the portfolio, and what changed in it since the filer's previous period.\n\nCommon stock, unless ``put_call`` says otherwise. Option lines are rows\nonly under ``?include_options=true``, and carry no weight and no change:\ntheir value is the notional of the underlying, so it is not a share of the\nportfolio, and the changes are only tracked for stock."
+      },
+      "PortfolioPositionEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/PortfolioPosition"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "PortfolioPositionEnvelope",
+        "description": "One investor's positions in one period."
+      },
+      "PortfolioSort": {
+        "type": "string",
+        "enum": [
+          "weight",
+          "value",
+          "shares",
+          "change"
+        ],
+        "title": "PortfolioSort",
+        "description": "What a portfolio is ordered by."
+      },
+      "Problem": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `errors` says which.",
+            "examples": [
+              "not_found"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "description": "What went wrong, in a sentence for a person. Not a contract: do not parse it.",
+            "examples": [
+              "No investor 'berkshire'. GET /v1/investors lists every one."
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "Problem",
+        "description": "Why the request was refused."
+      },
+      "ReadinessResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "title": "Status",
+            "description": "`ok` when every check is, `degraded` otherwise, with a 503.",
+            "examples": [
+              "degraded"
+            ]
+          },
+          "checks": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Checks",
+            "description": "Each dependency, `ok` or `error: <reason>`.",
+            "examples": [
+              {
+                "postgres": "ok",
+                "redis": "error: timeout"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "checks"
+        ],
+        "title": "ReadinessResponse",
+        "description": "``checks`` maps dependency name to ``\"ok\"`` or ``\"error: <reason>\"``."
+      },
+      "SearchResults": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "What was searched for: `q` with its outer whitespace removed. For a client typing ahead to tell which of its requests this answers.",
+            "examples": [
+              "berkshire"
+            ]
+          },
+          "investors": {
+            "items": {
+              "$ref": "#/components/schemas/InvestorMatch"
+            },
+            "type": "array",
+            "title": "Investors",
+            "description": "Investors whose name or manager's name matches, at most `limit`. Names starting with `q` first, then the rest by how alike they are; ties by portfolio value in the investor's latest period."
+          },
+          "securities": {
+            "items": {
+              "$ref": "#/components/schemas/StockMatch"
+            },
+            "type": "array",
+            "title": "Securities",
+            "description": "Stocks whose ticker or issuer name matches, at most `limit`. An exact ticker first, then tickers starting with `q`, then names starting with it, then the rest by how alike they are; ties by dollars held in the latest published period."
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "investors",
+          "securities"
+        ],
+        "title": "SearchResults",
+        "description": "What matched, best first, in a group per kind of thing."
+      },
+      "SortOrder": {
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc"
+        ],
+        "title": "SortOrder",
+        "description": "Ascending or descending."
+      },
+      "StockDetail": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP, which identifies it everywhere here.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as the filing that first reported the CUSIP named it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "sector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sector",
+            "description": "Null for every stock for now. No source of sectors is loaded yet: a 13F does not carry one, and neither does the CUSIP-to-ticker resolution.",
+            "examples": [
+              "Information Technology"
+            ]
+          },
+          "period": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The latest quarter end published for any filer, which every figure below describes. Null only when nothing is published at all.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many tracked filers `period` includes so far. Null exactly when it is."
+          },
+          "holder_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Count",
+            "description": "Filers holding it at `period`. Zero when none does.",
+            "examples": [
+              21
+            ]
+          },
+          "total_shares": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Shares",
+            "description": "Their shares, added up.",
+            "examples": [
+              "2390441842.0000"
+            ]
+          },
+          "total_value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Value Usd",
+            "description": "Their positions' value at `period`, in whole dollars.",
+            "examples": [
+              "110777862687.00"
+            ]
+          },
+          "net_shares": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Shares",
+            "description": "Net change in their shares in `period`, against each filer's previous published period. Filers in their first period are left out: every position is new to us there, not bought. Zero when nobody changed it.",
+            "examples": [
+              "-31200000.0000"
+            ]
+          },
+          "net_value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Value Usd",
+            "description": "Dollars bought less dollars sold in `period`, at its period-end prices. An estimate: a 13F has no other prices. A price move is not counted as buying.",
+            "examples": [
+              "-6011544800.00"
+            ]
+          },
+          "new_positions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Positions",
+            "description": "Filers that opened a position in `period`.",
+            "examples": [
+              2
+            ]
+          },
+          "exits": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exits",
+            "description": "Filers that held it before `period` and not at it.",
+            "examples": [
+              1
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip"
+        ],
+        "title": "StockDetail",
+        "description": "One stock, and how the tracked filers held and traded it in the latest period."
+      },
+      "StockFlow": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP, which identifies it everywhere here.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as the filing that first reported the CUSIP named it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "sector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sector",
+            "description": "Null for every stock for now. No source of sectors is loaded yet: a 13F does not carry one, and neither does the CUSIP-to-ticker resolution.",
+            "examples": [
+              "Information Technology"
+            ]
+          },
+          "gross_bought_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Gross Bought Usd",
+            "description": "Dollars of opening and adding, every quarter's added up: shares bought at each quarter-end price. Not reduced by anything sold.",
+            "examples": [
+              "5210000000.00"
+            ]
+          },
+          "gross_sold_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Gross Sold Usd",
+            "description": "Dollars of trimming and exiting, as a positive number. An exit is valued at the price it was last held at.",
+            "examples": [
+              "1890000000.00"
+            ]
+          },
+          "net_value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Net Value Usd",
+            "description": "`gross_bought_usd` less `gross_sold_usd`: negative when more was sold.",
+            "examples": [
+              "3320000000.00"
+            ]
+          },
+          "net_shares": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Net Shares",
+            "description": "How far the shares the filers hold moved, every change included. Over a year, the four quarters' added up.",
+            "examples": [
+              "14200000.0000"
+            ]
+          },
+          "buyer_count": {
+            "type": "integer",
+            "title": "Buyer Count",
+            "description": "Filers that opened or added to it. Over a year, each one once however many quarters it bought in.",
+            "examples": [
+              14
+            ]
+          },
+          "seller_count": {
+            "type": "integer",
+            "title": "Seller Count",
+            "description": "Filers that trimmed or exited it, counted as `buyer_count` is.",
+            "examples": [
+              6
+            ]
+          },
+          "new_positions": {
+            "type": "integer",
+            "title": "New Positions",
+            "description": "Filers that opened a position.",
+            "examples": [
+              3
+            ]
+          },
+          "exits": {
+            "type": "integer",
+            "title": "Exits",
+            "description": "Filers that sold out of it.",
+            "examples": [
+              1
+            ]
+          },
+          "holder_count": {
+            "type": "integer",
+            "title": "Holder Count",
+            "description": "Filers holding it at the period end. Zero when every holder exited.",
+            "examples": [
+              48
+            ]
+          },
+          "total_value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Total Value Usd",
+            "description": "Their positions' value at the period end, in whole dollars.",
+            "examples": [
+              "80112003000.00"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "gross_bought_usd",
+          "gross_sold_usd",
+          "net_value_usd",
+          "net_shares",
+          "buyer_count",
+          "seller_count",
+          "new_positions",
+          "exits",
+          "holder_count",
+          "total_value_usd"
+        ],
+        "title": "StockFlow",
+        "description": "What the tracked filers bought and sold of one stock over the period.\n\n``gross_bought_usd`` and ``net_value_usd`` answer different questions, and\nover a year they can be far apart: a position bought in Q1 and sold in Q3\nis all of its cost in ``gross_bought_usd`` and about nothing in\n``net_value_usd``. The first ranks the biggest accumulations, the second\nthe net flow."
+      },
+      "StockFlowEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/StockFlow"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "StockFlowEnvelope",
+        "description": "Stocks by what the tracked investors bought and sold."
+      },
+      "StockMatch": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP, which identifies it everywhere here.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as the filing that first reported the CUSIP named it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip"
+        ],
+        "title": "StockMatch",
+        "description": "A stock. Link to ``/v1/stocks/{ticker}`` or, while ``ticker`` is null,\n``/v1/stocks/{cusip}``."
+      },
+      "StockNotFound": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `errors` says which.",
+            "examples": [
+              "not_found"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "description": "What went wrong, in a sentence for a person. Not a contract: do not parse it.",
+            "examples": [
+              "No investor 'berkshire'. GET /v1/investors lists every one."
+            ]
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/StockSuggestion"
+            },
+            "type": "array",
+            "title": "Suggestions",
+            "description": "Up to five stocks whose ticker starts with what was asked for, or whose name has a word like it, most widely held first. Possibly empty."
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "detail",
+          "suggestions"
+        ],
+        "title": "StockNotFound",
+        "description": "The 404 body when nothing is found by that ticker, alias or CUSIP."
+      },
+      "StockOwner": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "The investor's stable identifier: `/v1/investors/{slug}`.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "Our name for the institution, or the name on its latest cover page.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          },
+          "shares": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Shares",
+            "description": "Shares held at the period end.",
+            "examples": [
+              "300000000.0000"
+            ]
+          },
+          "value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Value Usd",
+            "description": "Whole dollars at the period end.",
+            "examples": [
+              "57039000000.00"
+            ]
+          },
+          "weight_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Pct",
+            "description": "Its share of that filer's common-stock portfolio, in percent. Null only when every position in the portfolio is worth nothing.",
+            "examples": [
+              "22.038267"
+            ]
+          },
+          "shares_delta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares Delta",
+            "description": "Shares now, less shares in the filer's previous published period: the whole position for a `new` one. A fall is not necessarily a sale.",
+            "examples": [
+              "-100000000.0000"
+            ]
+          },
+          "shares_delta_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares Delta Pct",
+            "description": "`shares_delta` as a percentage of the previous shares. Null for `new`.",
+            "examples": [
+              "-25.000000"
+            ]
+          },
+          "weight_delta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Delta",
+            "description": "`weight_pct` less the previous period's, in points. Moves with the price.",
+            "examples": [
+              "-6.103412"
+            ]
+          },
+          "action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Against the filer's previous published period: `new`, `add`, `trim` or `hold`, judged on shares alone. Every position in a filer's first period is `new`.",
+            "examples": [
+              "trim"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "display_name",
+          "shares",
+          "value_usd"
+        ],
+        "title": "StockOwner",
+        "description": "One filer's position in the stock in one period."
+      },
+      "StockOwnerEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/StockOwner"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "StockOwnerEnvelope",
+        "description": "Every tracked investor holding one stock in one period."
+      },
+      "StockSuggestion": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP, which identifies it everywhere here.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as the filing that first reported the CUSIP named it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip"
+        ],
+        "title": "StockSuggestion",
+        "description": "A stock the caller may have meant."
+      },
+      "TopHolding": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP, which identifies it everywhere here.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as the filing that first reported the CUSIP named it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "weight_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Pct",
+            "description": "Its share of the portfolio's value, in percent.",
+            "examples": [
+              "21.453170"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip"
+        ],
+        "title": "TopHolding",
+        "description": "The largest position, by dollars, in the filer's latest period.\n\nNamed as well as tickered. No CUSIP is resolved to a ticker until\nenrichment runs, and a ticker is null for good for some, so a ticker\nalone would leave this unreadable on most rows."
+      },
+      "ValidationProblem": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `errors` says which.",
+            "examples": [
+              "not_found"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "description": "What went wrong, in a sentence for a person. Not a contract: do not parse it.",
+            "examples": [
+              "No investor 'berkshire'. GET /v1/investors lists every one."
+            ]
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            },
+            "type": "array",
+            "title": "Errors",
+            "description": "Every parameter that failed, each once. Never empty."
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "detail",
+          "errors"
+        ],
+        "title": "ValidationProblem",
+        "description": "The 422 body: a parameter is missing or malformed."
+      }
+    }
+  }
+}

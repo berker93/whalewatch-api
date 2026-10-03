@@ -511,6 +511,7 @@ async def test_a_cursor_from_one_sort_is_refused_by_another(
 
     assert response.status_code == 400
     assert "different listing or sort order" in response.json()["detail"]
+    assert response.json()["code"] == "invalid_cursor"
 
 
 async def test_category_narrows_the_list(client: AsyncClient, universe: dict[str, int]) -> None:

@@ -13,7 +13,8 @@ from datetime import date
 
 from pydantic import BaseModel, Field
 
-from app.api.schemas.envelope import Coverage
+from app.api.schemas.envelope import Coverage, Envelope
+from app.api.schemas.error import Problem
 from app.api.schemas.types import Money, Percent, Quantity
 from app.db.models.position_change import ChangeAction
 
@@ -21,7 +22,10 @@ from app.db.models.position_change import ChangeAction
 class StockRef(BaseModel):
     """A security, named three ways, any of which may be what a reader knows it by."""
 
-    cusip: str = Field(examples=["037833100"])
+    cusip: str = Field(
+        description="The security's nine-character CUSIP, which identifies it everywhere here.",
+        examples=["037833100"],
+    )
     ticker: str | None = Field(
         default=None,
         description="Null while the CUSIP is unresolved, and for good for some.",
@@ -99,10 +103,20 @@ class StockDetail(StockRef):
 class StockOwner(BaseModel):
     """One filer's position in the stock in one period."""
 
-    slug: str = Field(examples=["berkshire-hathaway"])
-    display_name: str = Field(examples=["Berkshire Hathaway"])
-    shares: Quantity = Field(examples=["300000000.0000"])
-    value_usd: Money = Field(description="Whole dollars at the period end.")
+    slug: str = Field(
+        description="The investor's stable identifier: `/v1/investors/{slug}`.",
+        examples=["berkshire-hathaway"],
+    )
+    display_name: str = Field(
+        description="Our name for the institution, or the name on its latest cover page.",
+        examples=["Berkshire Hathaway"],
+    )
+    shares: Quantity = Field(
+        description="Shares held at the period end.", examples=["300000000.0000"]
+    )
+    value_usd: Money = Field(
+        description="Whole dollars at the period end.", examples=["57039000000.00"]
+    )
     weight_pct: Percent | None = Field(
         default=None,
         description=(
@@ -117,14 +131,17 @@ class StockOwner(BaseModel):
             "Shares now, less shares in the filer's previous published period: the "
             "whole position for a `new` one. A fall is not necessarily a sale."
         ),
+        examples=["-100000000.0000"],
     )
     shares_delta_pct: Percent | None = Field(
         default=None,
         description="`shares_delta` as a percentage of the previous shares. Null for `new`.",
+        examples=["-25.000000"],
     )
     weight_delta: Percent | None = Field(
         default=None,
         description="`weight_pct` less the previous period's, in points. Moves with the price.",
+        examples=["-6.103412"],
     )
     action: ChangeAction | None = Field(
         default=None,
@@ -133,45 +150,68 @@ class StockOwner(BaseModel):
             "`hold`, judged on shares alone. Every position in a filer's first period "
             "is `new`."
         ),
+        examples=["trim"],
     )
 
 
 class HolderPoint(BaseModel):
     """One of the five named holders, in one quarter."""
 
-    slug: str = Field(examples=["berkshire-hathaway"])
-    display_name: str = Field(examples=["Berkshire Hathaway"])
+    slug: str = Field(
+        description="The investor's stable identifier: `/v1/investors/{slug}`.",
+        examples=["berkshire-hathaway"],
+    )
+    display_name: str = Field(
+        description="Our name for the institution, or the name on its latest cover page.",
+        examples=["Berkshire Hathaway"],
+    )
     shares: Quantity | None = Field(
         default=None,
         description=(
             "Zero when the filer published the quarter without the stock in it. Null "
             "when it published nothing for the quarter, so a chart shows a gap."
         ),
+        examples=["300000000.0000"],
     )
-    value_usd: Money | None = Field(default=None, description="Null when `shares` is.")
+    value_usd: Money | None = Field(
+        default=None,
+        description="Whole dollars at the quarter end. Null when `shares` is.",
+        examples=["57039000000.00"],
+    )
 
 
 class OtherHolders(BaseModel):
     """Everyone holding the stock in a quarter who is not one of the five."""
 
-    holder_count: int
-    shares: Quantity
-    value_usd: Money
+    holder_count: int = Field(description="Filers holding it besides the five.", examples=[16])
+    shares: Quantity = Field(description="Their shares, added up.", examples=["612440131.0000"])
+    value_usd: Money = Field(
+        description="Their positions' value, in whole dollars.", examples=["116441236095.00"]
+    )
 
 
 class OwnershipPoint(BaseModel):
     """The stock's tracked ownership in one quarter, in total and by its largest holders."""
 
-    period: date = Field(examples=["2026-06-30"])
+    period: date = Field(description="The quarter end.", examples=["2026-06-30"])
     holder_count: int | None = Field(
         default=None,
         description=(
             "Filers holding it. Zero in a quarter that was published without anyone "
             "holding it. Null in one with nothing published at all."
         ),
+        examples=[21],
     )
-    total_shares: Quantity | None = None
-    total_value_usd: Money | None = None
+    total_shares: Quantity | None = Field(
+        default=None,
+        description="Every holder's shares, added up. Null where `holder_count` is.",
+        examples=["2390441842.0000"],
+    )
+    total_value_usd: Money | None = Field(
+        default=None,
+        description="Their positions' value, in whole dollars. Null where `holder_count` is.",
+        examples=["454441236095.00"],
+    )
     top_holders: list[HolderPoint] = Field(
         description=(
             "The same filers, in the same order, on every row: the five largest "
@@ -191,8 +231,9 @@ class StockSuggestion(StockRef):
     """A stock the caller may have meant."""
 
 
-class StockNotFoundDetail(BaseModel):
-    message: str
+class StockNotFound(Problem):
+    """The 404 body when nothing is found by that ticker, alias or CUSIP."""
+
     suggestions: list[StockSuggestion] = Field(
         description=(
             "Up to five stocks whose ticker starts with what was asked for, or whose "
@@ -201,7 +242,9 @@ class StockNotFoundDetail(BaseModel):
     )
 
 
-class StockNotFound(BaseModel):
-    """The 404 body when nothing is found by that ticker, alias or CUSIP."""
+class StockOwnerEnvelope(Envelope[StockOwner]):
+    """Every tracked investor holding one stock in one period."""
 
-    detail: StockNotFoundDetail
+
+class OwnershipPointEnvelope(Envelope[OwnershipPoint]):
+    """One stock's tracked ownership, a quarter a row."""

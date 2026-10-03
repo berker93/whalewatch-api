@@ -1,0 +1,44 @@
+# Fails when the committed openapi.json is not what the code generates.
+#
+# openapi.json is the contract whalewatch-web's types are generated from. A
+# route or response model changed without regenerating it would ship an API
+# the frontend's types do not describe, and the first sign would be a runtime
+# error in a browser. This turns that into a red check on the PR instead.
+#
+# Needs no services and no secrets: the export builds the app to read its
+# schema but never starts it, so nothing connects to Postgres, Redis or EDGAR.
+
+name: openapi
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version-file: .python-version
+
+      - run: uv sync --frozen
+
+      - run: make openapi
+
+      # git status rather than git diff --exit-code alone: diff is silent about
+      # a file that was never committed, which is the stalest schema of all.
+      - name: Require the committed schema to be current
+        run: |
+          if [ -n "$(git status --porcelain -- openapi.json)" ]; then
+            git --no-pager diff -- openapi.json
+            echo "::error file=openapi.json::openapi.json is stale. Run 'make openapi', read the diff, and commit it."
+            exit 1
+          fi

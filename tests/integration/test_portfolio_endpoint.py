@@ -372,7 +372,7 @@ async def test_a_period_that_is_not_one_is_a_422_saying_why(
     response = await client.get("/v1/investors/strict/portfolio", params={"period": period})
 
     assert response.status_code == 422
-    assert message in response.json()["detail"][0]["msg"]
+    assert message in response.json()["errors"][0]["msg"]
 
 
 async def test_404s_for_an_unknown_investor_or_period_or_nothing_published(

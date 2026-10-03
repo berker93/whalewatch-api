@@ -30,17 +30,27 @@ from app.core.periods import parse_period
 #: out anyway: the default is a default, this is a wire contract, and the pattern
 #: constraint Pydantic infers for the implicit case makes the OpenAPI schema
 #: harder to read than the explicit one.
-Money = Annotated[Decimal, PlainSerializer(str, return_type=str, when_used="json")]
+#:
+#: ``format: decimal`` is what says so in the schema. A generated TypeScript type
+#: can only say ``string``; the format reaches its doc comment, which is where a
+#: frontend reader learns this is a number to parse with a decimal library, not
+#: with ``Number()``.
+_DECIMAL_STRING = (
+    PlainSerializer(str, return_type=str, when_used="json"),
+    WithJsonSchema({"type": "string", "format": "decimal"}, mode="serialization"),
+)
+
+Money = Annotated[Decimal, *_DECIMAL_STRING]
 
 #: Share counts and principal amounts. Same treatment, same reason; a separate
 #: name because the unit is not dollars and
 #: :attr:`~app.db.models.holding.Holding.sshprnamt_type` says which it is.
-Quantity = Annotated[Decimal, PlainSerializer(str, return_type=str, when_used="json")]
+Quantity = Annotated[Decimal, *_DECIMAL_STRING]
 
 #: A percentage, ``0`` to ``100``, as a string. ``numeric`` for the same
 #: reason, with six decimal places (see
 #: :data:`~app.db.models.position_snapshot.WEIGHT_PCT`).
-Percent = Annotated[Decimal, PlainSerializer(str, return_type=str, when_used="json")]
+Percent = Annotated[Decimal, *_DECIMAL_STRING]
 
 
 def _period(value: object) -> date:

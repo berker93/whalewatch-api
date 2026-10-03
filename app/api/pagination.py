@@ -50,11 +50,13 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
-from fastapi import HTTPException, status
+from fastapi import status
 from sqlalchemy import ColumnElement, FromClause, Row, Select, and_, literal, or_, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.errors import ApiError
 from app.api.schemas.envelope import Page
+from app.api.schemas.error import ErrorCode, Problem
 
 #: Bumped whenever the encoding changes. A cursor of any other version is
 #: refused, not interpreted: the client loses its place and starts again,
@@ -78,17 +80,22 @@ _MAX_CURSOR_LENGTH: Final = 1024
 KeyType = type[Decimal] | type[int] | type[str] | type[date] | type[datetime]
 
 
-class InvalidCursorError(HTTPException):
+class InvalidCursorError(ApiError):
     """A ``?cursor=`` that this endpoint cannot resume from. Always a 400.
 
-    An ``HTTPException`` so that FastAPI renders it as one with no handler to
-    register, and raised as itself so the reason stays specific.
+    An ``HTTPException`` so that FastAPI renders it as one with no handler of
+    its own, and raised as itself so the reason stays specific.
     """
 
     def __init__(self, reason: str) -> None:
         super().__init__(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid cursor: {reason}. Start again from the first page, without ?cursor=.",
+            status.HTTP_400_BAD_REQUEST,
+            Problem(
+                code=ErrorCode.INVALID_CURSOR,
+                detail=(
+                    f"Invalid cursor: {reason}. Start again from the first page, without ?cursor=."
+                ),
+            ),
         )
 
 

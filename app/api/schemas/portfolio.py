@@ -14,12 +14,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.api.schemas.envelope import Envelope
 from app.api.schemas.types import Money, Percent, Quantity
 from app.db.models.position_change import ChangeAction
 
 
 class _Security(BaseModel):
-    cusip: str = Field(examples=["037833100"])
+    cusip: str = Field(
+        description="The security's nine-character CUSIP, which identifies it everywhere here.",
+        examples=["037833100"],
+    )
     ticker: str | None = Field(
         default=None,
         description="Null while the CUSIP is unresolved, and for good for some.",
@@ -42,7 +46,9 @@ class PortfolioPosition(_Security):
     """
 
     put_call: Literal["Put", "Call"] | None = Field(
-        default=None, description="Null for common stock: the only kind of row by default."
+        default=None,
+        description="Null for common stock: the only kind of row by default.",
+        examples=[None],
     )
     shares: Quantity = Field(
         description="Shares, or for an option line the shares underlying it.",
@@ -94,6 +100,7 @@ class PortfolioPosition(_Security):
             "`hold`, judged on shares alone. Every position in the first period we "
             "have for a filer is `new`. Null on option lines."
         ),
+        examples=["trim"],
     )
     first_period: date | None = Field(
         default=None,
@@ -119,35 +126,53 @@ class Activity(_Security):
         ),
         examples=["2026-03-31"],
     )
-    action: ChangeAction
-    shares: Quantity = Field(description="Shares at `period`. Zero for an exit.")
+    action: ChangeAction = Field(
+        description=(
+            "`new`, `add`, `trim` or `exit` against `prev_period`, judged on shares "
+            "alone; `hold` only when asked for."
+        ),
+        examples=["trim"],
+    )
+    shares: Quantity = Field(
+        description="Shares at `period`. Zero for an exit.", examples=["905560382.0000"]
+    )
     shares_delta: Quantity = Field(
-        description="Shares at `period` less shares at `prev_period`. Not necessarily a sale."
+        description="Shares at `period` less shares at `prev_period`. Not necessarily a sale.",
+        examples=["-10000000.0000"],
     )
     shares_delta_pct: Percent | None = Field(
         default=None,
         description="`shares_delta` as a percentage of the previous shares. Null for `new`.",
+        examples=["-1.092193"],
     )
-    value_usd: Money = Field(description="Whole dollars at `period`. Zero for an exit.")
+    value_usd: Money = Field(
+        description="Whole dollars at `period`. Zero for an exit.",
+        examples=["171459640000.00"],
+    )
     traded_value_usd: Money = Field(
         description=(
             "The shares bought or sold, at the period-end price; for an exit, at the "
             "price it was last held at. An estimate: a 13F has no other prices. Zero "
             "for a `hold`. What the rows are ordered by within a period."
         ),
+        examples=["1893400000.00"],
     )
     weight_pct: Percent | None = Field(
-        default=None, description="Its weight at `period`, in percent. Zero for an exit."
+        default=None,
+        description="Its weight at `period`, in percent. Zero for an exit.",
+        examples=["44.682510"],
     )
     weight_delta: Percent | None = Field(
-        default=None, description="`weight_pct` less the weight at `prev_period`, in points."
+        default=None,
+        description="`weight_pct` less the weight at `prev_period`, in points.",
+        examples=["-0.512300"],
     )
 
 
 class HistoryPoint(BaseModel):
     """One quarter of a filer's portfolio, in summary."""
 
-    period: date = Field(examples=["2026-06-30"])
+    period: date = Field(description="The quarter end.", examples=["2026-06-30"])
     portfolio_value_usd: Money | None = Field(
         default=None,
         description=(
@@ -157,9 +182,25 @@ class HistoryPoint(BaseModel):
         ),
         examples=["263479238410.00"],
     )
-    position_count: int | None = Field(default=None, examples=[41])
+    position_count: int | None = Field(
+        default=None,
+        description="Common-stock positions. Null where `portfolio_value_usd` is.",
+        examples=[41],
+    )
     top10_weight_pct: Percent | None = Field(
         default=None,
         description="How much of the value is in the ten largest positions, in percent.",
         examples=["88.112045"],
     )
+
+
+class PortfolioPositionEnvelope(Envelope[PortfolioPosition]):
+    """One investor's positions in one period."""
+
+
+class ActivityEnvelope(Envelope[Activity]):
+    """One investor's changes, newest period first."""
+
+
+class HistoryPointEnvelope(Envelope[HistoryPoint]):
+    """One investor's portfolio, a quarter a row."""

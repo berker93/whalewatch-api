@@ -15,6 +15,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
+from app.api.schemas.envelope import Envelope
 from app.api.schemas.types import Money, Percent
 from app.db.models.filer import FilerCategory
 
@@ -30,9 +31,20 @@ class TopHolding(BaseModel):
     alone would leave this unreadable on most rows.
     """
 
-    cusip: str = Field(examples=["037833100"])
-    ticker: str | None = Field(default=None, examples=["AAPL"])
-    issuer_name: str | None = Field(default=None, examples=["APPLE INC"])
+    cusip: str = Field(
+        description="The security's nine-character CUSIP, which identifies it everywhere here.",
+        examples=["037833100"],
+    )
+    ticker: str | None = Field(
+        default=None,
+        description="Null while the CUSIP is unresolved, and for good for some.",
+        examples=["AAPL"],
+    )
+    issuer_name: str | None = Field(
+        default=None,
+        description="The issuer, as the filing that first reported the CUSIP named it.",
+        examples=["APPLE INC"],
+    )
     weight_pct: Percent | None = Field(
         default=None,
         description="Its share of the portfolio's value, in percent.",
@@ -43,13 +55,24 @@ class TopHolding(BaseModel):
 class InvestorSummary(BaseModel):
     """One filer, as a row of the list."""
 
-    slug: str = Field(examples=["berkshire-hathaway"])
+    slug: str = Field(
+        description="The investor's stable identifier: `/v1/investors/{slug}`.",
+        examples=["berkshire-hathaway"],
+    )
     display_name: str = Field(
         description="Our name for the institution, or the name on its latest cover page.",
         examples=["Berkshire Hathaway"],
     )
-    manager_name: str | None = Field(default=None, examples=["Warren Buffett"])
-    category: FilerCategory | None = None
+    manager_name: str | None = Field(
+        default=None,
+        description="The person the institution is known by, where there is one.",
+        examples=["Warren Buffett"],
+    )
+    category: FilerCategory | None = Field(
+        default=None,
+        description="The investment style we file it under. Null when we have not chosen one.",
+        examples=["value"],
+    )
 
     latest_period: date | None = Field(
         default=None,
@@ -65,14 +88,22 @@ class InvestorSummary(BaseModel):
             "When the most recently filed of the filings behind `latest_period` "
             "reached EDGAR: a later amendment, if one counts."
         ),
+        examples=["2026-08-14T16:32:05Z"],
     )
     portfolio_value_usd: Money | None = Field(
         default=None,
         description="Whole dollars, common stock only: no options, no principal amounts.",
         examples=["263479238410"],
     )
-    position_count: int | None = Field(default=None, examples=[41])
-    top_holding: TopHolding | None = None
+    position_count: int | None = Field(
+        default=None,
+        description="Common-stock positions in `latest_period`.",
+        examples=[41],
+    )
+    top_holding: TopHolding | None = Field(
+        default=None,
+        description="Null when `latest_period` is, and when the portfolio is empty.",
+    )
     sparkline: list[Money | None] = Field(
         description=(
             f"Portfolio value for the {SPARKLINE_QUARTERS} quarters ending at "
@@ -110,3 +141,7 @@ class InvestorDetail(InvestorSummary):
         description="Every CIK the filer files under, oldest entity first.",
         examples=[["0001067983"]],
     )
+
+
+class InvestorSummaryEnvelope(Envelope[InvestorSummary]):
+    """Every tracked investor, a row each."""

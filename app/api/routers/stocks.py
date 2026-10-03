@@ -61,17 +61,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
+from app.api.errors import INVALID, INVALID_CURSOR, ApiError, not_found
 from app.api.meta import period_meta, unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
 from app.api.routers.investors import _escape_like
 from app.api.schemas.envelope import Coverage, Envelope
+from app.api.schemas.error import ErrorCode, Problem
 from app.api.schemas.stock import (
     HolderPoint,
     OtherHolders,
     OwnershipPoint,
+    OwnershipPointEnvelope,
     StockDetail,
     StockNotFound,
     StockOwner,
+    StockOwnerEnvelope,
     StockSuggestion,
 )
 from app.api.schemas.types import Period
@@ -222,7 +226,7 @@ def suggestions_query(key: str) -> Select[Any]:
 async def _resolve(session: AsyncSession, ticker: str) -> Row[Any]:
     """The security ``ticker`` names: ``id``, ``cusip``, ``ticker``, ``name``.
 
-    :raises HTTPException: 404, with suggestions, when it names none.
+    :raises ApiError: 404, with suggestions, when it names none.
     """
     key = _key(ticker)
     row = (await session.execute(lookup_query(key, cusip=len(key) == 9))).one_or_none()
@@ -230,18 +234,19 @@ async def _resolve(session: AsyncSession, ticker: str) -> Row[Any]:
         return row
 
     suggested: list[Row[Any]] = list(await session.execute(suggestions_query(key))) if key else []
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail={
-            "message": (
+    raise ApiError(
+        status.HTTP_404_NOT_FOUND,
+        StockNotFound(
+            code=ErrorCode.NOT_FOUND,
+            detail=(
                 f"No stock {ticker!r}: not a ticker, alias or CUSIP we have. Few CUSIPs "
                 "have a ticker resolved yet, so a stock may only be found by its CUSIP."
             ),
-            "suggestions": [
-                StockSuggestion(cusip=s.cusip, ticker=s.ticker, issuer_name=s.name).model_dump()
+            suggestions=[
+                StockSuggestion(cusip=s.cusip, ticker=s.ticker, issuer_name=s.name)
                 for s in suggested
             ],
-        },
+        ),
     )
 
 
@@ -573,19 +578,18 @@ PeriodParam = Annotated[
         )
     ),
 ]
-_NOT_FOUND: Final[dict[int | str, dict[str, Any]]] = {
-    status.HTTP_404_NOT_FOUND: {
-        "model": StockNotFound,
-        "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
-    }
-}
+_NOT_FOUND = not_found(
+    "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+    StockNotFound,
+)
 
 
 @router.get(
     "/stocks/{ticker}",
+    operation_id="getStock",
     response_model=StockDetail,
     summary="One stock, and how the tracked investors held and traded it",
-    responses=_NOT_FOUND,
+    responses={**_NOT_FOUND, **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
 async def read_stock(ticker: TickerParam, session: SessionDep) -> StockDetail:
@@ -613,16 +617,17 @@ async def read_stock(ticker: TickerParam, session: SessionDep) -> StockDetail:
 
 @router.get(
     "/stocks/{ticker}/owners",
-    response_model=Envelope[StockOwner],
+    operation_id="getStockOwners",
+    response_model=StockOwnerEnvelope,
     summary="Every tracked investor holding one stock in one period",
     responses={
-        status.HTTP_404_NOT_FOUND: {
-            **_NOT_FOUND[status.HTTP_404_NOT_FOUND],
-            "description": (
-                "Nothing by that ticker, alias or CUSIP, with suggestions; or nothing "
-                "published for the period."
-            ),
-        }
+        **not_found(
+            "Nothing by that ticker, alias or CUSIP, with suggestions; or nothing "
+            "published for the period, without.",
+            StockNotFound | Problem,
+        ),
+        **INVALID_CURSOR,
+        **INVALID,
     },
 )
 @cached(period="period")
@@ -662,9 +667,10 @@ async def read_owners(
 
 @router.get(
     "/stocks/{ticker}/ownership-history",
-    response_model=Envelope[OwnershipPoint],
+    operation_id="getStockOwnershipHistory",
+    response_model=OwnershipPointEnvelope,
     summary="One stock's tracked ownership quarter by quarter, with its five largest holders",
-    responses=_NOT_FOUND,
+    responses={**_NOT_FOUND, **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
 async def read_ownership_history(

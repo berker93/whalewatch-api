@@ -14,13 +14,24 @@ from app.db.models.filer import FilerCategory
 class InvestorMatch(BaseModel):
     """An investor, with enough to show it and to link to ``/v1/investors/{slug}``."""
 
-    slug: str = Field(examples=["berkshire-hathaway"])
+    slug: str = Field(
+        description="The investor's stable identifier: `/v1/investors/{slug}`.",
+        examples=["berkshire-hathaway"],
+    )
     display_name: str = Field(
         description="Our name for the institution, or the name on its latest cover page.",
         examples=["Berkshire Hathaway"],
     )
-    manager_name: str | None = Field(default=None, examples=["Warren Buffett"])
-    category: FilerCategory | None = None
+    manager_name: str | None = Field(
+        default=None,
+        description="The person the institution is known by, where there is one.",
+        examples=["Warren Buffett"],
+    )
+    category: FilerCategory | None = Field(
+        default=None,
+        description="The investment style we file it under. Null when we have not chosen one.",
+        examples=["value"],
+    )
 
 
 class StockMatch(StockRef):

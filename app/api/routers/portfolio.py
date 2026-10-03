@@ -41,7 +41,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Final
 
-from fastapi import APIRouter, HTTPException, Path, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import PlainValidator, WithJsonSchema
 from sqlalchemy import (
     ARRAY,
@@ -66,10 +66,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
+from app.api.errors import INVALID, INVALID_CURSOR, invalid, not_found
 from app.api.meta import period_meta, unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
+from app.api.routers.investors import SlugParam
 from app.api.schemas.envelope import Envelope
-from app.api.schemas.portfolio import Activity, HistoryPoint, PortfolioPosition
+from app.api.schemas.portfolio import (
+    Activity,
+    ActivityEnvelope,
+    HistoryPoint,
+    HistoryPointEnvelope,
+    PortfolioPosition,
+    PortfolioPositionEnvelope,
+)
 from app.api.schemas.types import Period
 from app.core.periods import quarter_label, quarters_between
 from app.db.models import Filer, Holding, Security
@@ -89,6 +98,8 @@ PeriodEnd = date | BindParameter[date]
 
 
 class PortfolioSort(StrEnum):
+    """What a portfolio is ordered by."""
+
     WEIGHT = "weight"
     VALUE = "value"
     SHARES = "shares"
@@ -96,6 +107,8 @@ class PortfolioSort(StrEnum):
 
 
 class SortOrder(StrEnum):
+    """Ascending or descending."""
+
     ASC = "asc"
     DESC = "desc"
 
@@ -447,7 +460,6 @@ def _actions(value: object) -> frozenset[ChangeAction]:
     return frozenset(ChangeAction(name) for name in names)
 
 
-SlugParam = Annotated[str, Path(examples=["berkshire-hathaway"])]
 PeriodParam = Annotated[
     Period | None,
     Query(
@@ -501,12 +513,13 @@ ActionsParam = Annotated[
 
 @router.get(
     "/investors/{slug}/portfolio",
-    response_model=Envelope[PortfolioPosition],
+    operation_id="getInvestorPortfolio",
+    response_model=PortfolioPositionEnvelope,
     summary="One investor's positions in one period",
     responses={
-        status.HTTP_404_NOT_FOUND: {
-            "description": "No investor with that slug, or nothing published for the period."
-        }
+        **not_found("No investor with that slug, or nothing published for the period."),
+        **INVALID_CURSOR,
+        **INVALID,
     },
 )
 @cached(period="period")
@@ -539,9 +552,10 @@ async def read_portfolio(
 
 @router.get(
     "/investors/{slug}/activity",
-    response_model=Envelope[Activity],
+    operation_id="getInvestorActivity",
+    response_model=ActivityEnvelope,
     summary="What one investor opened, added to, trimmed and exited",
-    responses={status.HTTP_404_NOT_FOUND: {"description": "No investor with that slug."}},
+    responses={**not_found("No investor with that slug."), **INVALID_CURSOR, **INVALID},
 )
 @cached(period="end")
 async def read_activity(
@@ -557,10 +571,7 @@ async def read_activity(
     Each row names its period, so ``meta`` names none.
     """
     if start is not None and end is not None and start > end:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"from ({quarter_label(start)}) is after to ({quarter_label(end)}).",
-        )
+        raise invalid("from", f"from ({quarter_label(start)}) is after to ({quarter_label(end)}).")
     filer_id = await _filer_id(session, slug)
     statement = activity_query(
         filer_id, page, start=start, end=end, actions=action or DEFAULT_ACTIONS
@@ -593,9 +604,10 @@ async def read_activity(
 
 @router.get(
     "/investors/{slug}/history",
-    response_model=Envelope[HistoryPoint],
+    operation_id="getInvestorHistory",
+    response_model=HistoryPointEnvelope,
     summary="One investor's portfolio value, positions and concentration, quarter by quarter",
-    responses={status.HTTP_404_NOT_FOUND: {"description": "No investor with that slug."}},
+    responses={**not_found("No investor with that slug."), **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
 async def read_history(slug: SlugParam, session: SessionDep) -> Envelope[HistoryPoint]:

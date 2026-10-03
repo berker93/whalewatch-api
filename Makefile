@@ -21,7 +21,7 @@ COMPOSE := docker compose
 s ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down build ps logs shell psql cli explain reconcile verify-investors test lint fmt check fixtures fixtures-fetch migrate revision reset-db
+.PHONY: help up down build ps logs shell psql cli explain reconcile verify-investors test lint fmt check openapi fixtures fixtures-fetch migrate revision reset-db
 
 help:  ## List the targets in this file
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -E 's/:[^#]*## /|/' | awk -F'|' '{printf "  %-9s %s\n", $$1, $$2}'
@@ -91,6 +91,14 @@ fmt:  ## Format, and apply ruff's safe fixes
 	uv run ruff check --fix .
 
 check: lint test  ## Lint then test — what CI runs
+
+# On the host, like `test`: it builds the app to read its schema and never starts
+# it, so it needs neither Postgres nor Redis, nor a .env. Commit what it writes and
+# read the diff — it is the change to the API contract. CI regenerates it and fails
+# on any difference (.github/workflows/openapi.yml); whalewatch-web's
+# `npm run gen:api` turns it into the frontend's types.
+openapi:  ## Write openapi.json from the routes and models — commit it
+	uv run python -m scripts.export_openapi
 
 # --- golden fixtures ---------------------------------------------------------
 

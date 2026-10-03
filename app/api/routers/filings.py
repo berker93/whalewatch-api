@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.api.deps import SessionDep
+from app.api.errors import INVALID, not_found
 from app.api.schemas.filing import FilingRead, HoldingRead
 from app.core.accession import ACCESSION_SHAPE, normalise_accession
 from app.db.models import Filer, Filing, Holding, Security
@@ -70,11 +71,10 @@ IncludeOptions = Annotated[
 
 @router.get(
     "/filings/{accession_no}",
+    operation_id="getFiling",
     response_model=FilingRead,
     summary="One filing, with its holdings",
-    responses={
-        status.HTTP_404_NOT_FOUND: {"description": "No filing with that accession number."},
-    },
+    responses={**not_found("No filing with that accession number."), **INVALID},
 )
 async def read_filing(
     accession_no: AccessionNo,

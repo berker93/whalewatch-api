@@ -15,7 +15,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException
 
+from app.api.errors import http_error, validation_error
 from app.api.middleware import RequestContextMiddleware, request_id_on_server_error
 from app.api.routers import filings, health, investors, market, meta, portfolio, search, stocks
 from app.core.config import Settings, get_settings
@@ -91,6 +94,11 @@ def create_app(settings: Settings) -> FastAPI:
     # Not a middleware, because the layer that renders unhandled exceptions sits
     # outside every middleware this app can add. See the handler's docstring.
     app.add_exception_handler(Exception, request_id_on_server_error)
+    # Every 4xx in one shape, the one the routes document. Starlette's
+    # HTTPException rather than FastAPI's subclass, so the 404 for an unknown
+    # path and the 405 that routing raises are rendered here too.
+    app.add_exception_handler(HTTPException, http_error)
+    app.add_exception_handler(RequestValidationError, validation_error)
 
     app.include_router(health.router)
     app.include_router(filings.router)

@@ -32,7 +32,13 @@ from app.api.cache import Lifetime, cached
 from app.api.deps import SessionDep
 from app.api.meta import refreshed_at, unscoped_meta
 from app.api.schemas.envelope import Envelope
-from app.api.schemas.meta import Freshness, FreshnessKind, PeriodCoverage
+from app.api.schemas.meta import (
+    Freshness,
+    FreshnessEnvelope,
+    FreshnessKind,
+    PeriodCoverage,
+    PeriodCoverageEnvelope,
+)
 from app.core.periods import filing_deadline, quarter_label
 from app.db.models import Filer, Filing, MatviewRefresh
 from app.db.queries.effective import EFFECTIVE_FILING
@@ -127,7 +133,8 @@ async def build_periods(session: AsyncSession) -> Envelope[PeriodCoverage]:
 
 @router.get(
     "/meta/periods",
-    response_model=Envelope[PeriodCoverage],
+    operation_id="getPeriods",
+    response_model=PeriodCoverageEnvelope,
     summary="Every quarter with data, and how far each has filled in",
 )
 @cached(Lifetime.METADATA)
@@ -175,7 +182,8 @@ async def build_freshness(session: AsyncSession) -> Envelope[Freshness]:
 
 @router.get(
     "/meta/freshness",
-    response_model=Envelope[Freshness],
+    operation_id="getFreshness",
+    response_model=FreshnessEnvelope,
     summary="When each materialised view was refreshed, and each job last succeeded",
 )
 @cached(Lifetime.METADATA)

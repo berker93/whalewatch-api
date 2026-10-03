@@ -40,16 +40,26 @@ CHECK_TIMEOUT_SECONDS = 2.0
 class HealthResponse(BaseModel):
     """Liveness answer, plus the two things you want when a deploy looks wrong."""
 
-    status: Literal["ok"] = "ok"
-    version: str = Field(examples=["0.1.0"])
-    git_sha: str = Field(examples=["9f2c1a0"])
+    status: Literal["ok"] = Field(
+        default="ok", description="Always `ok`: answering at all is the check.", examples=["ok"]
+    )
+    version: str = Field(description="The release, from `pyproject.toml`.", examples=["0.1.0"])
+    git_sha: str = Field(
+        description="The commit the image was built from, or `unknown`.", examples=["9f2c1a0"]
+    )
 
 
 class ReadinessResponse(BaseModel):
     """``checks`` maps dependency name to ``"ok"`` or ``"error: <reason>"``."""
 
-    status: Literal["ok", "degraded"]
-    checks: dict[str, str] = Field(examples=[{"postgres": "ok", "redis": "error: timeout"}])
+    status: Literal["ok", "degraded"] = Field(
+        description="`ok` when every check is, `degraded` otherwise, with a 503.",
+        examples=["degraded"],
+    )
+    checks: dict[str, str] = Field(
+        description="Each dependency, `ok` or `error: <reason>`.",
+        examples=[{"postgres": "ok", "redis": "error: timeout"}],
+    )
 
 
 async def _run_check(name: str, probe: Callable[[], Awaitable[Any]]) -> str:
@@ -82,6 +92,7 @@ async def _ping_postgres(engine: AsyncEngine) -> None:
 
 @router.get(
     "/health",
+    operation_id="getHealth",
     response_model=HealthResponse,
     summary="Liveness probe",
 )
@@ -93,6 +104,7 @@ async def health(settings: SettingsDep) -> HealthResponse:
 
 @router.get(
     "/ready",
+    operation_id="getReadiness",
     response_model=ReadinessResponse,
     summary="Readiness probe",
     responses={
