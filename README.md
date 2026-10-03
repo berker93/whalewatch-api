@@ -1017,6 +1017,37 @@ curl "localhost:8000/v1/flows?period_type=year&direction=buy&min_investors=5&sor
   and paged. `?sector=` is a `422` for now: no source of sectors is loaded,
   and an empty page would say no stock is in it.
 
+### `GET /v1/meta/periods` and `GET /v1/meta/freshness`
+
+What the frontend's quarter rail is drawn from, and how old everything is.
+Both are cached in Redis for five minutes, and say so in `Cache-Control`,
+counting down from when the answer was built. If Redis is down they are
+built for every request instead of failing.
+
+```bash
+curl localhost:8000/v1/meta/periods
+curl localhost:8000/v1/meta/freshness
+```
+
+- **`periods` lists every quarter with a published portfolio**, oldest first,
+  unpaged. A quarter whose filings have not started arriving is not listed.
+  Each row has `filers_reported` and `filers_tracked`, the same numbers as
+  `meta.coverage` on that quarter's other endpoints, and `first_filed_at` and
+  `last_filed_at`, the span of the filings its figures are built from (so not
+  an original a restatement replaced, nor a filing withheld as suspect).
+- **`filing_deadline` is 45 calendar days after the quarter end**, which is
+  an approximation: the real deadline moves to the next business day when
+  that lands on a weekend or federal holiday. 2025Q4's computed deadline is
+  Saturday 14 February 2026; the real one was Tuesday the 17th.
+- **`is_complete`** is the deadline passed, on EDGAR's clock in New York, and
+  at least 95% of tracked filers reported. On the dev data no quarter is:
+  nearly all 100 filers file every quarter, but about a third of the filings
+  are withheld as suspect, so the best quarter has 75 reported.
+- **`freshness`** lists every materialised view with its last refresh, then
+  every job that has recorded a run with its latest `success` and that run's
+  `run_id`. A `partial` run is not a success. Never refreshed, or never
+  succeeded, is a null.
+
 ### `GET /v1/search`
 
 The ⌘K palette: investors and stocks by name or ticker, in one response,

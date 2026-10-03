@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from app.core.periods import (
+    filing_deadline,
     is_quarter_end,
     parse_period,
     quarter_end,
@@ -177,3 +178,27 @@ def test_quarters_between_one_quarter_and_itself_is_that_quarter() -> None:
 
 def test_quarters_between_backwards_is_empty() -> None:
     assert quarters_between(date(2025, 3, 31), date(2024, 12, 31)) == []
+
+
+# --- filing_deadline -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("period", "deadline"),
+    [
+        (date(2026, 3, 31), date(2026, 5, 15)),
+        (date(2026, 6, 30), date(2026, 8, 14)),
+        (date(2026, 9, 30), date(2026, 11, 14)),
+        (date(2024, 12, 31), date(2025, 2, 14)),
+        # Not rolled to the next business day: a Saturday, and the Monday is
+        # Presidents' Day, so the filings were due on the 17th.
+        (date(2025, 12, 31), date(2026, 2, 14)),
+    ],
+)
+def test_a_deadline_is_45_calendar_days_after_the_quarter(period: date, deadline: date) -> None:
+    assert filing_deadline(period) == deadline
+
+
+def test_a_day_that_is_not_a_quarter_end_has_no_deadline() -> None:
+    with pytest.raises(ValueError, match="not a quarter end"):
+        filing_deadline(date(2026, 3, 30))

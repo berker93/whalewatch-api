@@ -1091,6 +1091,22 @@ the 6,800 candidates, and it took the request from 48 ms to 35 ms. Adding
 the same regular expression to the `WHERE`, as a third index arm, made the
 planner choose a sequential scan, 41 ms, so it is in the score only.
 
+## Built since: the meta endpoints
+
+`GET /v1/meta/periods`, which `make explain` reads from the app as
+`meta_periods`, and `GET /v1/meta/freshness`, which reads two tables of a few
+rows each and is not measured. Both are kept in Redis for five minutes, so the
+query runs at most once per five minutes per release, whatever the traffic.
+
+| Query | Rows | Client median | Server mean |
+| --- | --- | --- | --- |
+| `meta_periods`, every quarter | 24 | 5.08 ms | 4.85 ms |
+
+Nearly all of it is `effective_filing` resolving every period's amendments,
+2,143 effective filings, for the first and last filing times; the counts are
+an index-only scan of `mv_filer_summary`. Over HTTP on the dev stack a miss
+is about 10 ms and a hit 1.5 ms.
+
 ## Experiments
 
 Each was run on the full data and then undone. `DROP INDEX` and

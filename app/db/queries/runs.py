@@ -1,4 +1,5 @@
-"""What ``runs`` lists: the latest rows of ``ingestion_run``, newest first."""
+"""What ``runs`` lists, the latest rows of ``ingestion_run`` newest first, and
+what ``/v1/meta/freshness`` serves, each job's latest success."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.ingestion_run import IngestionRun
+from app.db.models.ingestion_run import IngestionRun, RunStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,32 @@ async def recent_runs(
     if job_name is not None:
         statement = statement.where(IngestionRun.job_name == job_name)
     return [RunSummary(**row._mapping) for row in await session.execute(statement)]
+
+
+@dataclass(frozen=True, slots=True)
+class LastSuccess:
+    """A job's latest run that finished ``success``."""
+
+    run_id: uuid.UUID
+    finished_at: datetime
+
+
+async def last_successes(session: AsyncSession) -> dict[str, LastSuccess]:
+    """Each job's latest successful run, by job name. A job that has never
+    succeeded is not a key."""
+    statement = (
+        select(IngestionRun.job_name, IngestionRun.id, IngestionRun.finished_at)
+        .where(IngestionRun.status == RunStatus.SUCCESS)
+        .distinct(IngestionRun.job_name)
+        .order_by(IngestionRun.job_name, IngestionRun.finished_at.desc(), IngestionRun.id)
+    )
+    successes: dict[str, LastSuccess] = {}
+    for job_name, run_id, finished_at in (await session.execute(statement)).tuples():
+        # A finished run has a finish time: ingestion_run's
+        # finished_when_not_running constraint.
+        assert finished_at is not None
+        successes[job_name] = LastSuccess(run_id=run_id, finished_at=finished_at)
+    return successes
 
 
 async def job_names(session: AsyncSession) -> list[str]:

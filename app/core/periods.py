@@ -13,11 +13,14 @@ somewhere else and has misunderstood what a period is, and an answer for
 """
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Final
 
 #: The last day of each quarter's last month, by month.
 _QUARTER_END_DAY: Final = {3: 31, 6: 30, 9: 30, 12: 31}
+
+#: A 13F is due this many calendar days after the quarter it reports on.
+FILING_DEADLINE_DAYS: Final = 45
 
 # Four-digit years, both spellings. Matched in full, so nothing either side of
 # the period (whitespace included) is quietly ignored. The quarter's letter in
@@ -81,6 +84,23 @@ def parse_period(text: str) -> date:
         return day
 
     raise ValueError(f"{text!r} is not a period: send a quarter as 2026Q1 or as 2026-03-31")
+
+
+def filing_deadline(period: date) -> date:
+    """The day a 13F for ``period`` is due: 45 calendar days after it.
+
+    An approximation, and knowingly so. The real deadline is rolled forward to
+    the next business day when the 45th day is a weekend or a federal holiday,
+    and this does not roll it. So it can be up to three days early: 2025Q4's
+    45th day is Saturday 14 February 2026, and with Presidents' Day on the
+    Monday the filings were due on Tuesday the 17th. Anything that decides a
+    period is finished on this date decides it that much too soon.
+
+    :raises ValueError: ``period`` is not a quarter end.
+    """
+    if not is_quarter_end(period):
+        raise ValueError(f"{period} is not a quarter end")
+    return period + timedelta(days=FILING_DEADLINE_DAYS)
 
 
 def quarters_ending(period: date, count: int) -> list[date]:

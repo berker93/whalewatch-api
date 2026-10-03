@@ -66,6 +66,7 @@ from app.api.routers.market import (
     top_holdings_query,
     top_sells_query,
 )
+from app.api.routers.meta import periods_query
 from app.api.routers.portfolio import activity_query, history_query, portfolio_query
 from app.api.routers.search import (
     DEFAULT_LIMIT as SEARCH_LIMIT,
@@ -406,6 +407,7 @@ QUERIES: Final = (
         "GET /v1/search?q=square",
         investor_fuzzy_query("square", SEARCH_LIMIT),
     ),
+    Query.from_app("meta_periods", "GET /v1/meta/periods", periods_query()),
     Query.from_app(
         "top_holding_distinct_on", "every filer's latest period", top_holdings(_LATEST_PERIODS)
     ),
