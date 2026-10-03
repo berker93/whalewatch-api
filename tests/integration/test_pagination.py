@@ -279,7 +279,7 @@ async def test_a_cursor_from_another_sort_order_is_a_400(
     response = await client.get("/probe", params={"cursor": cursor})
 
     assert response.status_code == 400
-    assert "different listing or sort order" in response.json()["detail"]
+    assert "different listing or sort order" in response.json()["error"]["message"]
 
 
 @pytest.mark.parametrize(

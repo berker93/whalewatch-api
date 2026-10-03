@@ -332,8 +332,8 @@ async def test_the_default_steps_over_a_withheld_latest_filing(
 
     response = await client.get("/v1/investors/careful/portfolio", params={"period": "2024Q2"})
     assert response.status_code == 404
-    assert "2024Q2" in response.json()["detail"]
-    assert "Its latest is 2024Q1" in response.json()["detail"]
+    assert "2024Q2" in response.json()["error"]["message"]
+    assert "Its latest is 2024Q1" in response.json()["error"]["message"]
 
 
 async def test_a_period_can_be_named_either_way(
@@ -372,7 +372,7 @@ async def test_a_period_that_is_not_one_is_a_422_saying_why(
     response = await client.get("/v1/investors/strict/portfolio", params={"period": period})
 
     assert response.status_code == 422
-    assert message in response.json()["errors"][0]["msg"]
+    assert message in response.json()["error"]["detail"]["errors"][0]["msg"]
 
 
 async def test_404s_for_an_unknown_investor_or_period_or_nothing_published(
@@ -394,7 +394,7 @@ async def test_404s_for_an_unknown_investor_or_period_or_nothing_published(
     for path, params, message in cases:
         response = await client.get(path, params=params)
         assert response.status_code == 404, (path, params)
-        assert message in response.json()["detail"], (path, params)
+        assert message in response.json()["error"]["message"], (path, params)
 
 
 async def test_the_portfolio_is_live_while_the_views_are_stale(
@@ -594,7 +594,7 @@ async def test_a_cursor_from_one_sort_or_order_is_refused_by_another(
     for params in ({"sort": "shares"}, {"sort": "value", "order": "asc"}):
         response = await client.get(path, params={**params, "cursor": cursor})
         assert response.status_code == 400, params
-        assert "different listing or sort order" in response.json()["detail"]
+        assert "different listing or sort order" in response.json()["error"]["message"]
 
 
 async def test_an_unknown_sort_or_order_is_a_422(

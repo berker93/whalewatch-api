@@ -17,9 +17,19 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
+from starlette.middleware.cors import CORSMiddleware
 
-from app.api.errors import http_error, validation_error
-from app.api.middleware import RequestContextMiddleware, request_id_on_server_error
+from app.api.errors import RATE_LIMITED, http_error, validation_error
+from app.api.middleware import (
+    REQUEST_ID_HEADER,
+    BodySizeLimitMiddleware,
+    RequestContextMiddleware,
+    SecurityHeadersMiddleware,
+    TimeoutMiddleware,
+    UnhandledErrorMiddleware,
+    request_id_on_server_error,
+)
+from app.api.rate_limit import RateLimitMiddleware, SlidingWindowLimiter
 from app.api.routers import filings, health, investors, market, meta, portfolio, search, stocks
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
@@ -49,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # handler can construct a session configured differently.
     app.state.session_factory = create_session_factory(app.state.engine)
     app.state.redis = create_redis(settings)
+    app.state.rate_limiter = SlidingWindowLimiter(app.state.redis, settings.rate_limit_per_minute)
     try:
         yield
     finally:
@@ -75,7 +86,10 @@ def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(
         title=f"{settings.app_name} API",
         version=VERSION,
-        debug=settings.debug,
+        # Never settings.debug. Starlette's debug mode answers an unhandled
+        # exception with its traceback, to whoever asked; DEBUG is for log
+        # verbosity, and a traceback belongs in the log, under the request id.
+        debug=False,
         lifespan=lifespan,
         docs_url="/docs" if docs_enabled else None,
         redoc_url="/redoc" if docs_enabled else None,
@@ -86,13 +100,41 @@ def create_app(settings: Settings) -> FastAPI:
     # which is why this has to happen before the app is started, not inside it.
     app.state.settings = settings
 
-    # Outermost middleware this app installs, so the request_id is bound before
-    # any other middleware runs and the duration covers all of them rather than
-    # just the handler. (Starlette applies add_middleware in reverse, so the
-    # first one added ends up nearest the network.)
+    # Each add_middleware wraps everything added before it, so the last added
+    # is the outermost: the list below reads from the route outwards. The order
+    # is argued in app.api.middleware's docstring.
+    app.add_middleware(TimeoutMiddleware, seconds=settings.request_timeout_seconds)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
+    app.add_middleware(UnhandledErrorMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins or [],
+        # Everything here is a read. A preflight for anything else is refused
+        # by the browser, before the request is sent.
+        allow_methods=["GET", "HEAD", "OPTIONS"],
+        # Not safelisted, so without these a browser revalidating by ETag, or
+        # passing on a trace id, would be refused at the preflight.
+        allow_headers=["If-None-Match", REQUEST_ID_HEADER],
+        # What a script on the frontend may read off a response. Cache-Control
+        # is safelisted already; these are not.
+        expose_headers=[
+            "ETag",
+            "Retry-After",
+            REQUEST_ID_HEADER,
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+        ],
+        # No cookies, no auth: nothing a credentialed request would add.
+        allow_credentials=False,
+        max_age=600,
+    )
+    app.add_middleware(SecurityHeadersMiddleware, environment=settings.environment)
+    # Outermost, so the request_id is bound before any other middleware runs,
+    # every refusal below carries it, and the duration covers all of them.
     app.add_middleware(RequestContextMiddleware)
-    # Not a middleware, because the layer that renders unhandled exceptions sits
-    # outside every middleware this app can add. See the handler's docstring.
+    # Not a middleware: the fallback for an exception raised outside
+    # UnhandledErrorMiddleware, which only an exception handler can reach.
     app.add_exception_handler(Exception, request_id_on_server_error)
     # Every 4xx in one shape, the one the routes document. Starlette's
     # HTTPException rather than FastAPI's subclass, so the 404 for an unknown
@@ -100,14 +142,11 @@ def create_app(settings: Settings) -> FastAPI:
     app.add_exception_handler(HTTPException, http_error)
     app.add_exception_handler(RequestValidationError, validation_error)
 
+    # The probes are not rate limited; everything else documents its 429.
     app.include_router(health.router)
-    app.include_router(filings.router)
-    app.include_router(investors.router, prefix="/v1")
-    app.include_router(portfolio.router, prefix="/v1")
-    app.include_router(stocks.router, prefix="/v1")
-    app.include_router(market.router, prefix="/v1")
-    app.include_router(search.router, prefix="/v1")
-    app.include_router(meta.router, prefix="/v1")
+    app.include_router(filings.router, responses=RATE_LIMITED)
+    for router in (investors, portfolio, stocks, market, search, meta):
+        app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)
 
     return app
 

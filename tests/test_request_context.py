@@ -10,6 +10,7 @@ import structlog
 from fastapi import FastAPI, HTTPException, Request
 from httpx import ASGITransport, AsyncClient
 
+from app.api.errors import INTERNAL_ERROR_MESSAGE
 from app.api.middleware import REQUEST_ID_HEADER
 from app.core.config import Settings
 from app.core.logging import configure_logging
@@ -245,6 +246,13 @@ async def test_request_id_survives_every_response_path(settings: Settings) -> No
     assert [r.status_code for r in results.values()] == [200, 403, 500]
     for path, response in results.items():
         assert response.headers.get(REQUEST_ID_HEADER) == "probe-1", path
-    # The 500 body is left exactly as Starlette would have rendered it; the
-    # handler exists to add a header, not to redesign the error response.
-    assert results["/boom-2"].text == "Internal Server Error"
+    # The 500 says which request, so it can be reported, and nothing else.
+    assert results["/boom-2"].json() == {
+        "error": {
+            "code": "internal_error",
+            "message": INTERNAL_ERROR_MESSAGE,
+            "detail": {},
+            "request_id": "probe-1",
+        }
+    }
+    assert "kaboom" not in results["/boom-2"].text

@@ -164,14 +164,22 @@ async def test_an_unknown_path_is_a_problem(client: AsyncClient) -> None:
     response = await client.get("/v1/nothing-here")
 
     assert response.status_code == 404
-    assert response.json() == {"code": "not_found", "detail": "Not Found"}
+    assert response.json() == {
+        "error": {
+            "code": "not_found",
+            "message": "Not Found",
+            "detail": {},
+            "request_id": response.headers["x-request-id"],
+        }
+    }
 
 
 async def test_a_wrong_method_is_a_problem(client: AsyncClient) -> None:
     response = await client.post("/health")
 
     assert response.status_code == 405
-    assert response.json() == {"code": "method_not_allowed", "detail": "Method Not Allowed"}
+    assert response.json()["error"]["code"] == "method_not_allowed"
+    assert response.json()["error"]["message"] == "Method Not Allowed"
 
 
 async def test_a_malformed_parameter_is_a_validation_problem(
@@ -183,10 +191,10 @@ async def test_a_malformed_parameter_is_a_validation_problem(
     response = await client.get("/v1/search", params={"q": "berkshire", "limit": 0})
 
     assert response.status_code == 422
-    body = response.json()
+    body = response.json()["error"]
     assert body["code"] == "validation_error"
-    assert body["detail"].startswith("limit: ")
-    assert [(e["loc"], e["type"]) for e in body["errors"]] == [
+    assert body["message"].startswith("limit: ")
+    assert [(e["loc"], e["type"]) for e in body["detail"]["errors"]] == [
         (["query", "limit"], "greater_than_equal")
     ]
 

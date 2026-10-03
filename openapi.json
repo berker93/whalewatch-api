@@ -106,6 +106,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "No filing with that accession number.",
             "content": {
@@ -117,7 +135,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -234,6 +252,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "400": {
             "description": "`cursor` is malformed, or came from a different listing or sort order.",
             "content": {
@@ -245,7 +281,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -292,6 +328,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "No investor with that slug.",
             "content": {
@@ -303,7 +357,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -439,6 +493,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "No investor with that slug, or nothing published for the period.",
             "content": {
@@ -460,7 +532,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -603,6 +675,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "No investor with that slug.",
             "content": {
@@ -624,7 +714,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -671,6 +761,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "No investor with that slug.",
             "content": {
@@ -682,7 +790,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -732,6 +840,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
             "content": {
@@ -743,7 +869,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -848,6 +974,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Nothing by that ticker, alias or CUSIP, with suggestions; or nothing published for the period, without.",
             "content": {
@@ -877,7 +1021,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -927,6 +1071,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
             "content": {
@@ -938,7 +1100,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1019,6 +1181,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Nothing published for the period.",
             "content": {
@@ -1030,7 +1210,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1122,6 +1302,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Nothing published for the period.",
             "content": {
@@ -1133,7 +1331,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1225,6 +1423,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Nothing published for the period.",
             "content": {
@@ -1236,7 +1452,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1317,6 +1533,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Nothing published for the period.",
             "content": {
@@ -1328,7 +1562,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1393,6 +1627,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "400": {
             "description": "`cursor` is malformed, or came from a different listing or sort order.",
             "content": {
@@ -1404,7 +1656,7 @@
             }
           },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1603,6 +1855,24 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Nothing published for the period.",
             "content": {
@@ -1687,8 +1957,26 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "422": {
-            "description": "A parameter is missing or malformed. `errors` says which.",
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1718,6 +2006,24 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       }
@@ -1737,6 +2043,24 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/FreshnessEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -2008,11 +2332,15 @@
           "invalid_cursor",
           "not_found",
           "method_not_allowed",
+          "payload_too_large",
           "validation_error",
+          "rate_limited",
+          "internal_error",
+          "timeout",
           "http_error"
         ],
         "title": "ErrorCode",
-        "description": "What went wrong, for a program to branch on. ``detail`` says it for a person."
+        "description": "What went wrong, for a program to branch on. ``message`` says it for a person."
       },
       "FeedFiling": {
         "properties": {
@@ -4389,29 +4717,67 @@
       },
       "Problem": {
         "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ProblemError",
+            "description": "What went wrong, and in which request."
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "Problem",
+        "description": "Why the request was refused, or failed."
+      },
+      "ProblemError": {
+        "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `errors` says which.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it.",
             "examples": [
               "not_found"
             ]
           },
-          "detail": {
+          "message": {
             "type": "string",
-            "title": "Detail",
+            "title": "Message",
             "description": "What went wrong, in a sentence for a person. Not a contract: do not parse it.",
             "examples": [
               "No investor 'berkshire'. GET /v1/investors lists every one."
+            ]
+          },
+          "detail": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Detail",
+            "description": "Anything more specific than `code`, by field. Empty unless the error's own schema says what it holds.",
+            "examples": [
+              {}
+            ]
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id",
+            "description": "This request's id, also sent as the `X-Request-ID` header. Quote it when reporting a problem: it finds the request in the server's logs.",
+            "examples": [
+              "3f2c9a7e5b1d4c0e8a6f2d9b7c5e1a30"
             ]
           }
         },
         "type": "object",
         "required": [
           "code",
-          "detail"
+          "message"
         ],
-        "title": "Problem",
-        "description": "Why the request was refused."
+        "title": "ProblemError",
+        "description": "What went wrong."
       },
       "ReadinessResponse": {
         "properties": {
@@ -4936,21 +5302,20 @@
       },
       "StockNotFound": {
         "properties": {
-          "code": {
-            "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `errors` says which.",
-            "examples": [
-              "not_found"
-            ]
-          },
-          "detail": {
-            "type": "string",
-            "title": "Detail",
-            "description": "What went wrong, in a sentence for a person. Not a contract: do not parse it.",
-            "examples": [
-              "No investor 'berkshire'. GET /v1/investors lists every one."
-            ]
-          },
+          "error": {
+            "$ref": "#/components/schemas/StockNotFoundError",
+            "description": "What went wrong, with suggestions in `detail.suggestions`."
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "StockNotFound",
+        "description": "The 404 body when nothing is found by that ticker, alias or CUSIP."
+      },
+      "StockNotFoundDetail": {
+        "properties": {
           "suggestions": {
             "items": {
               "$ref": "#/components/schemas/StockSuggestion"
@@ -4962,12 +5327,56 @@
         },
         "type": "object",
         "required": [
-          "code",
-          "detail",
           "suggestions"
         ],
-        "title": "StockNotFound",
-        "description": "The 404 body when nothing is found by that ticker, alias or CUSIP."
+        "title": "StockNotFoundDetail",
+        "description": "The stocks a caller asking for one we do not have may have meant."
+      },
+      "StockNotFoundError": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it.",
+            "examples": [
+              "not_found"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "What went wrong, in a sentence for a person. Not a contract: do not parse it.",
+            "examples": [
+              "No investor 'berkshire'. GET /v1/investors lists every one."
+            ]
+          },
+          "detail": {
+            "$ref": "#/components/schemas/StockNotFoundDetail",
+            "description": "What the caller may have meant."
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id",
+            "description": "This request's id, also sent as the `X-Request-ID` header. Quote it when reporting a problem: it finds the request in the server's logs.",
+            "examples": [
+              "3f2c9a7e5b1d4c0e8a6f2d9b7c5e1a30"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "detail"
+        ],
+        "title": "StockNotFoundError",
+        "description": "Nothing by that ticker, alias or CUSIP."
       },
       "StockOwner": {
         "properties": {
@@ -5240,23 +5649,8 @@
         "title": "TopHolding",
         "description": "The largest position, by dollars, in the filer's latest period.\n\nNamed as well as tickered. No CUSIP is resolved to a ticker until\nenrichment runs, and a ticker is null for good for some, so a ticker\nalone would leave this unreadable on most rows."
       },
-      "ValidationProblem": {
+      "ValidationDetail": {
         "properties": {
-          "code": {
-            "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `errors` says which.",
-            "examples": [
-              "not_found"
-            ]
-          },
-          "detail": {
-            "type": "string",
-            "title": "Detail",
-            "description": "What went wrong, in a sentence for a person. Not a contract: do not parse it.",
-            "examples": [
-              "No investor 'berkshire'. GET /v1/investors lists every one."
-            ]
-          },
           "errors": {
             "items": {
               "$ref": "#/components/schemas/FieldError"
@@ -5268,12 +5662,70 @@
         },
         "type": "object",
         "required": [
-          "code",
-          "detail",
           "errors"
+        ],
+        "title": "ValidationDetail",
+        "description": "The parameters that failed."
+      },
+      "ValidationProblem": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ValidationProblemError",
+            "description": "What went wrong, with the failing parameters in `detail.errors`."
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
         ],
         "title": "ValidationProblem",
         "description": "The 422 body: a parameter is missing or malformed."
+      },
+      "ValidationProblemError": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it.",
+            "examples": [
+              "not_found"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "What went wrong, in a sentence for a person. Not a contract: do not parse it.",
+            "examples": [
+              "No investor 'berkshire'. GET /v1/investors lists every one."
+            ]
+          },
+          "detail": {
+            "$ref": "#/components/schemas/ValidationDetail",
+            "description": "Which parameters failed, and why."
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id",
+            "description": "This request's id, also sent as the `X-Request-ID` header. Quote it when reporting a problem: it finds the request in the server's logs.",
+            "examples": [
+              "3f2c9a7e5b1d4c0e8a6f2d9b7c5e1a30"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "detail"
+        ],
+        "title": "ValidationProblemError",
+        "description": "A parameter is missing or malformed."
       }
     }
   }

@@ -240,12 +240,12 @@ async def test_an_unknown_ticker_is_a_404_suggesting_tickers_and_names_like_it(
     response = await client.get("/v1/stocks/acme")
 
     assert response.status_code == 404
-    body = response.json()
+    body = response.json()["error"]
     assert body["code"] == "not_found"
-    assert "acme" in body["detail"]
+    assert "acme" in body["message"]
     # A ticker starting with it first, then names alike, the most held first.
-    assert [s["cusip"] for s in body["suggestions"]] == [CHARLIE, BRAVO, ALPHA]
-    assert body["suggestions"][0] == {
+    assert [s["cusip"] for s in body["detail"]["suggestions"]] == [CHARLIE, BRAVO, ALPHA]
+    assert body["detail"]["suggestions"][0] == {
         "cusip": CHARLIE,
         "ticker": "ACMEX",
         "issuer_name": "UNRELATED HOLDINGS",
@@ -262,7 +262,7 @@ async def test_a_404_with_nothing_like_it_suggests_nothing(
     ):
         response = await client.get(path)
         assert response.status_code == 404, path
-        assert response.json()["suggestions"] == [], path
+        assert response.json()["error"]["detail"]["suggestions"] == [], path
 
 
 # --- the detail -----------------------------------------------------------------
@@ -392,7 +392,7 @@ async def test_owners_404_for_a_period_nobody_published(
     response = await client.get(f"/v1/stocks/{ALPHA}/owners", params={"period": "2023Q4"})
 
     assert response.status_code == 404
-    assert response.json()["detail"] == (
+    assert response.json()["error"]["message"] == (
         "Nothing is published for 2023Q4. The latest quarter published is 2024Q2."
     )
 

@@ -334,7 +334,7 @@ async def test_an_unknown_accession_number_is_404_and_says_what_to_do(
     response = await client.get("/filings/0000000000-99-000001")
 
     assert response.status_code == 404
-    detail = response.json()["detail"]
+    detail = response.json()["error"]["message"]
     assert "0000000000-99-000001" in detail
     assert "ingest-filing" in detail
 

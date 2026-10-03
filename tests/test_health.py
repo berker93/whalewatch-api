@@ -72,6 +72,14 @@ class StubRedis:
             raise self.error
         return True
 
+    def register_script(self, script: str) -> Any:
+        """The rate limiter's, admitting every request: these tests are about pools."""
+
+        async def admit(*, keys: list[str], args: list[object]) -> list[int]:
+            return [1, 59, 0]
+
+        return admit
+
     async def aclose(self) -> None:
         self.closed = True
 

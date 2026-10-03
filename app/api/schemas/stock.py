@@ -14,7 +14,7 @@ from datetime import date
 from pydantic import BaseModel, Field
 
 from app.api.schemas.envelope import Coverage, Envelope
-from app.api.schemas.error import Problem
+from app.api.schemas.error import Problem, ProblemError
 from app.api.schemas.types import Money, Percent, Quantity
 from app.db.models.position_change import ChangeAction
 
@@ -231,14 +231,30 @@ class StockSuggestion(StockRef):
     """A stock the caller may have meant."""
 
 
-class StockNotFound(Problem):
-    """The 404 body when nothing is found by that ticker, alias or CUSIP."""
+class StockNotFoundDetail(BaseModel):
+    """The stocks a caller asking for one we do not have may have meant."""
 
     suggestions: list[StockSuggestion] = Field(
         description=(
             "Up to five stocks whose ticker starts with what was asked for, or whose "
             "name has a word like it, most widely held first. Possibly empty."
         )
+    )
+
+
+class StockNotFoundError(ProblemError):
+    """Nothing by that ticker, alias or CUSIP."""
+
+    detail: StockNotFoundDetail = Field(  # type: ignore[assignment]
+        description="What the caller may have meant.",
+    )
+
+
+class StockNotFound(Problem):
+    """The 404 body when nothing is found by that ticker, alias or CUSIP."""
+
+    error: StockNotFoundError = Field(
+        description="What went wrong, with suggestions in `detail.suggestions`.",
     )
 
 

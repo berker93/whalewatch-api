@@ -74,6 +74,7 @@ from app.api.schemas.stock import (
     OwnershipPointEnvelope,
     StockDetail,
     StockNotFound,
+    StockNotFoundDetail,
     StockOwner,
     StockOwnerEnvelope,
     StockSuggestion,
@@ -236,12 +237,10 @@ async def _resolve(session: AsyncSession, ticker: str) -> Row[Any]:
     suggested: list[Row[Any]] = list(await session.execute(suggestions_query(key))) if key else []
     raise ApiError(
         status.HTTP_404_NOT_FOUND,
-        StockNotFound(
-            code=ErrorCode.NOT_FOUND,
-            detail=(
-                f"No stock {ticker!r}: not a ticker, alias or CUSIP we have. Few CUSIPs "
-                "have a ticker resolved yet, so a stock may only be found by its CUSIP."
-            ),
+        ErrorCode.NOT_FOUND,
+        f"No stock {ticker!r}: not a ticker, alias or CUSIP we have. Few CUSIPs "
+        "have a ticker resolved yet, so a stock may only be found by its CUSIP.",
+        detail=StockNotFoundDetail(
             suggestions=[
                 StockSuggestion(cusip=s.cusip, ticker=s.ticker, issuer_name=s.name)
                 for s in suggested

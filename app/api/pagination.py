@@ -56,7 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.errors import ApiError
 from app.api.schemas.envelope import Page
-from app.api.schemas.error import ErrorCode, Problem
+from app.api.schemas.error import ErrorCode
 
 #: Bumped whenever the encoding changes. A cursor of any other version is
 #: refused, not interpreted: the client loses its place and starts again,
@@ -90,12 +90,8 @@ class InvalidCursorError(ApiError):
     def __init__(self, reason: str) -> None:
         super().__init__(
             status.HTTP_400_BAD_REQUEST,
-            Problem(
-                code=ErrorCode.INVALID_CURSOR,
-                detail=(
-                    f"Invalid cursor: {reason}. Start again from the first page, without ?cursor=."
-                ),
-            ),
+            ErrorCode.INVALID_CURSOR,
+            f"Invalid cursor: {reason}. Start again from the first page, without ?cursor=.",
         )
 
 

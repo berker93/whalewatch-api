@@ -186,9 +186,46 @@ class TestValidation:
             RAW_STORE_S3_BUCKET="whalewatch-raw",
             RAW_STORE_S3_ENDPOINT_URL="https://account.r2.cloudflarestorage.com",
             RAW_STORE_S3_REGION="auto",
+            CORS_ORIGINS="https://whalewatch.io",
         )
 
         assert settings.raw_store_s3_bucket == "whalewatch-raw"
+
+    def test_cors_origins_default_to_the_frontends_dev_servers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert "http://localhost:5173" in (build(monkeypatch).cors_origins or [])
+
+    def test_cors_origins_are_comma_separated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        settings = build(
+            monkeypatch, CORS_ORIGINS="https://whalewatch.io, https://www.whalewatch.io"
+        )
+
+        assert settings.cors_origins == ["https://whalewatch.io", "https://www.whalewatch.io"]
+
+    @pytest.mark.parametrize("environment", ["staging", "production"])
+    def test_cors_origins_are_required_in_a_deployed_environment(
+        self, monkeypatch: pytest.MonkeyPatch, environment: str
+    ) -> None:
+        """The dev servers' origins would be a frontend that cannot reach its API."""
+        with pytest.raises(ValidationError, match="CORS_ORIGINS must be set"):
+            build(
+                monkeypatch,
+                ENVIRONMENT=environment,
+                RAW_STORE_BACKEND="s3",
+                RAW_STORE_S3_BUCKET="whalewatch-raw",
+            )
+
+    @pytest.mark.parametrize(
+        "origins",
+        ["*", "https://whalewatch.io,*", "https://whalewatch.io/", "whalewatch.io"],
+    )
+    def test_cors_origins_must_be_origins(
+        self, monkeypatch: pytest.MonkeyPatch, origins: str
+    ) -> None:
+        """'*' allows any site; a path or trailing slash never matches an Origin header."""
+        with pytest.raises(ValidationError, match="CORS_ORIGINS"):
+            build(monkeypatch, CORS_ORIGINS=origins)
 
     def test_half_an_s3_key_pair_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Otherwise the half that is set is silently ignored in favour of

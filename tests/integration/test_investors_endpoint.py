@@ -510,8 +510,8 @@ async def test_a_cursor_from_one_sort_is_refused_by_another(
     response = await client.get("/v1/investors", params={"sort": "name", "cursor": cursor})
 
     assert response.status_code == 400
-    assert "different listing or sort order" in response.json()["detail"]
-    assert response.json()["code"] == "invalid_cursor"
+    assert "different listing or sort order" in response.json()["error"]["message"]
+    assert response.json()["error"]["code"] == "invalid_cursor"
 
 
 async def test_category_narrows_the_list(client: AsyncClient, universe: dict[str, int]) -> None:
@@ -612,7 +612,7 @@ async def test_an_unknown_slug_is_a_404(client: AsyncClient, db_session: AsyncSe
     response = await client.get("/v1/investors/no-such-fund")
 
     assert response.status_code == 404
-    assert "no-such-fund" in response.json()["detail"]
+    assert "no-such-fund" in response.json()["error"]["message"]
 
 
 # --- one query -------------------------------------------------------------------

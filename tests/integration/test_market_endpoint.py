@@ -197,7 +197,7 @@ async def test_a_period_is_named_either_way_and_one_not_published_is_a_404(
 
     response = await client.get("/v1/market/top-holdings", params={"period": "2025Q1"})
     assert response.status_code == 404
-    assert "2024Q4" in response.json()["detail"]
+    assert "2024Q4" in response.json()["error"]["message"]
     response = await client.get("/v1/market/top-holdings", params={"period": "2024-06-29"})
     assert response.status_code == 422
 
@@ -468,10 +468,13 @@ async def test_a_sector_is_a_422_saying_there_are_none_yet(
     response = await client.get("/v1/flows", params={"sector": "Information Technology"})
 
     assert response.status_code == 422
-    body = response.json()
-    assert "sector" in body["detail"]
+    body = response.json()["error"]
+    assert "sector" in body["message"]
     # Shaped as a malformed parameter is, so a client handles both alike.
-    assert (body["code"], body["errors"][0]["loc"]) == ("validation_error", ["query", "sector"])
+    assert (body["code"], body["detail"]["errors"][0]["loc"]) == (
+        "validation_error",
+        ["query", "sector"],
+    )
     assert all(row["sector"] is None for row in (await _get(client, "/v1/flows"))["data"])
 
 
@@ -484,4 +487,4 @@ async def test_a_year_with_no_flows_is_a_404_naming_the_latest(
     response = await client.get("/v1/flows", params={"period": "2024Q1", "period_type": "year"})
 
     assert response.status_code == 404
-    assert "2024Q4" in response.json()["detail"]
+    assert "2024Q4" in response.json()["error"]["message"]

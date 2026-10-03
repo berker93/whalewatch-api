@@ -12,11 +12,20 @@ and a secret manager inject it in production, with the same code.
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Final, Literal, Self
 from urllib.parse import quote
 
-from pydantic import EmailStr, Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import EmailStr, Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+#: Where ``npm run dev`` and ``npm run preview`` serve whalewatch-web from. The
+#: CORS allow-list when none is configured, outside staging and production.
+DEV_CORS_ORIGINS: Final = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+)
 
 
 class Settings(BaseSettings):
@@ -61,6 +70,27 @@ class Settings(BaseSettings):
     postgres_test_db: str = "whalewatch_test"
 
     redis_url: str = "redis://redis:6379/0"
+
+    # --- the public edge -----------------------------------------------------
+    # The origins a browser may call this API from, comma-separated:
+    # CORS_ORIGINS=https://whalewatch.io,https://www.whalewatch.io. Never "*":
+    # an allow-list is the point. Unset means the frontend's dev servers outside
+    # staging and production, and refuses to boot inside them, where a missing
+    # value would otherwise be a frontend that cannot reach its API.
+    cors_origins: Annotated[list[str] | None, NoDecode] = None
+
+    # Per client IP, over a sliding minute, kept in Redis so every API process
+    # counts against one budget. /health and /ready are not counted.
+    rate_limit_per_minute: int = Field(default=60, ge=1)
+
+    # A request still running after this is answered 504 and its handler
+    # cancelled. Long enough for the slowest cold query in
+    # docs/query-performance.md many times over.
+    request_timeout_seconds: float = Field(default=30.0, gt=0)
+
+    # Every endpoint is a GET, so nothing legitimate sends a body at all; this
+    # only bounds what a client can make the server read before refusing it.
+    max_request_body_bytes: int = Field(default=64 * 1024, ge=0)
 
     # --- SEC / EDGAR ---------------------------------------------------------
     # No default, on purpose. SEC's fair-access policy requires a real contact
@@ -107,6 +137,31 @@ class Settings(BaseSettings):
     raw_store_s3_access_key_id: str | None = None
     raw_store_s3_secret_access_key: SecretStr | None = None
 
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("cors_origins")
+    @classmethod
+    def _origins_are_origins(cls, value: list[str] | None) -> list[str] | None:
+        """Refuse ``*`` and anything with a path: the browser compares the
+        ``Origin`` header byte for byte, and ``https://whalewatch.io/`` (trailing
+        slash) never matches it, which fails as CORS errors in the console and
+        nothing at all here."""
+        for origin in value or ():
+            if origin == "*":
+                raise ValueError("CORS_ORIGINS must list origins; '*' would allow any site")
+            scheme, _, rest = origin.partition("://")
+            if scheme not in ("http", "https") or not rest or "/" in rest:
+                raise ValueError(
+                    f"CORS_ORIGINS entry {origin!r} is not an origin: scheme://host[:port], "
+                    "no path or trailing slash"
+                )
+        return value
+
     @model_validator(mode="after")
     def _edgar_cache_is_for_development(self) -> Self:
         if self.edgar_cache_dir is not None and self.environment in ("staging", "production"):
@@ -139,6 +194,17 @@ class Settings(BaseSettings):
                 "RAW_STORE_S3_ACCESS_KEY_ID and RAW_STORE_S3_SECRET_ACCESS_KEY are set "
                 "together or not at all"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _cors_is_configured_where_deployed(self) -> Self:
+        if self.cors_origins is None:
+            if self.environment in ("staging", "production"):
+                raise ValueError(
+                    f"CORS_ORIGINS must be set in {self.environment}: the origins the "
+                    "frontend is served from"
+                )
+            self.cors_origins = list(DEV_CORS_ORIGINS)
         return self
 
     def _postgres_dsn(self, database: str) -> str:
