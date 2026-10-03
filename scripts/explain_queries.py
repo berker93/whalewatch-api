@@ -8,7 +8,7 @@ and how to capture them again after the data or an index changes::
     make explain a="--filer renaissance --period 2025-06-30"
 
 ``GET /filings/{accession_no}``, the ``/v1/investors``, ``/v1/stocks``,
-``/v1/market`` and ``/v1/flows`` endpoints are built, and the queries of all
+``/v1/market``, ``/v1/flows`` and ``/v1/search`` endpoints are built, and the queries of all
 but the first are read from the app. The rest are the queries the endpoints sketched in
 docs/product-spec.md ("API surface") will issue: their ``WHERE`` and ``ORDER
 BY`` are what the indexes are designed against, and the select lists are a
@@ -67,6 +67,18 @@ from app.api.routers.market import (
     top_sells_query,
 )
 from app.api.routers.portfolio import activity_query, history_query, portfolio_query
+from app.api.routers.search import (
+    DEFAULT_LIMIT as SEARCH_LIMIT,
+)
+from app.api.routers.search import (
+    MAX_LIMIT as SEARCH_MAX_LIMIT,
+)
+from app.api.routers.search import (
+    investor_fuzzy_query,
+    investor_prefix_query,
+    security_fuzzy_query,
+    security_prefix_query,
+)
 from app.api.routers.stocks import (
     detail_query as stock_detail_query,
 )
@@ -363,6 +375,36 @@ QUERIES: Final = (
             direction=Direction.BUY,
             min_investors=5,
         )[0],
+    ),
+    # The search's terms are in its SQL, as patterns and a regular expression,
+    # so they are fixed here rather than taken from --q. Each is the worst
+    # case found for its query on the dev database.
+    Query.from_app(
+        "search_stocks_prefix",
+        "GET /v1/search?q=in&limit=20",
+        security_prefix_query("in", SEARCH_MAX_LIMIT),
+    ),
+    Query.from_app(
+        "search_stocks_fuzzy",
+        "GET /v1/search?q=jp morgan",
+        security_fuzzy_query("jp morgan", SEARCH_LIMIT),
+    ),
+    # 6,557 names have INC as a word and nine start with it: the most fuzzy
+    # matches any search has to score.
+    Query.from_app(
+        "search_stocks_fuzzy_common",
+        "GET /v1/search?q=inc&limit=20",
+        security_fuzzy_query("inc", SEARCH_MAX_LIMIT - 9),
+    ),
+    Query.from_app(
+        "search_investors_prefix",
+        "GET /v1/search?q=capital",
+        investor_prefix_query("capital", SEARCH_LIMIT),
+    ),
+    Query.from_app(
+        "search_investors_fuzzy",
+        "GET /v1/search?q=square",
+        investor_fuzzy_query("square", SEARCH_LIMIT),
     ),
     Query.from_app(
         "top_holding_distinct_on", "every filer's latest period", top_holdings(_LATEST_PERIODS)

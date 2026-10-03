@@ -15,6 +15,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     ForeignKey,
+    Index,
     SmallInteger,
     Text,
     UniqueConstraint,
@@ -169,6 +170,20 @@ class Filer(Base):
     __table_args__ = (
         CheckConstraint(CATEGORY_CHECK, name="category_is_known"),
         CheckConstraint(OVERLAP_CHECK, name="overlap_is_known"),
+        # /v1/search's trigram match (0020). On a hundred rows the planner reads
+        # the table instead; these are for when there are many more.
+        Index(
+            "ix_filer_display_name_trgm",
+            "display_name",
+            postgresql_using="gin",
+            postgresql_ops={"display_name": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_filer_manager_name_trgm",
+            "manager_name",
+            postgresql_using="gin",
+            postgresql_ops={"manager_name": "gin_trgm_ops"},
+        ),
     )
 
 

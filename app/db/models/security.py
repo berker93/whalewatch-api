@@ -98,6 +98,14 @@ class Security(Base):
             postgresql_using="gin",
             postgresql_ops={"name": "gin_trgm_ops"},
         ),
+        # /v1/search matches tickers by trigram as well as names (0020). Without
+        # it, the search's OR over both columns is a sequential scan.
+        Index(
+            "ix_security_ticker_trgm",
+            "ticker",
+            postgresql_using="gin",
+            postgresql_ops={"ticker": "gin_trgm_ops"},
+        ),
         # /stocks/{ticker} ignores case, so it looks up upper(ticker), and its
         # 404 suggests tickers by prefix (0018). text_pattern_ops for the
         # prefix, as on security_alias.

@@ -757,7 +757,8 @@ nor one of these. Jobs written later do the same, through
 ## The API
 
 One filing, which everything else gets debugged through, the investors, the
-stocks, and the market. All but the filing are under `/v1`.
+stocks, the market, and a search across the first two. All but the filing are
+under `/v1`.
 
 ### Collections: `{data, meta, page}`
 
@@ -1015,6 +1016,51 @@ curl "localhost:8000/v1/flows?period_type=year&direction=buy&min_investors=5&sor
   (dollars they hold), sorted by any flow figure, `holders` or `value_held`,
   and paged. `?sector=` is a `422` for now: no source of sectors is loaded,
   and an empty page would say no stock is in it.
+
+### `GET /v1/search`
+
+The ⌘K palette: investors and stocks by name or ticker, in one response,
+grouped. Not a `{data, meta, page}` collection, since it is two short lists of
+different things, about no period, never paged.
+
+```bash
+curl "localhost:8000/v1/search?q=berkshire"
+curl "localhost:8000/v1/search?q=microsft&limit=10"
+```
+
+```json
+{
+  "query": "berkshire",
+  "investors": [
+    { "slug": "berkshire-hathaway", "display_name": "Berkshire Hathaway",
+      "manager_name": "Warren Buffett", "category": "value" }
+  ],
+  "securities": [
+    { "cusip": "084670702", "ticker": null, "issuer_name": "BERKSHIRE HATHAWAY INC CL B" }
+  ]
+}
+```
+
+- **The order is the contract.** In each group: an exact ticker first, then
+  tickers starting with `q`, then names starting with it (an investor's, its
+  manager's, or an issuer's), then names merely like it, by `pg_trgm`. Ties go
+  to the most dollars held in the latest period. So `apple` puts APPLE INC
+  above Apple Hospitality REIT, and both above APPLIED MATLS INC, which is
+  held for 300 times the dollars of Apple Hospitality but only looks like
+  `apple`.
+- **Misspelt and half-typed both work**, from three characters: `microsft`
+  finds Microsoft, `hath` Berkshire Hathaway, `square` Pershing Square,
+  `buffett` Berkshire by its manager. Two characters match prefixes only.
+- **`q` is trimmed and then at least 2 characters**, or a `422`. `limit` is
+  per group, 5 by default, at most 20. `query` echoes the trimmed `q`, for a
+  client typing ahead to tell which request a response answers.
+- **No tickers are resolved yet**, so for now a stock is found by its name,
+  and linked by its CUSIP (`/v1/stocks/{cusip}`).
+- **It answers in 4 to 6ms for most searches** on the dev database's full
+  backfill, and 28ms for the slowest found, `inc` at `limit=20`. Why the
+  matching and the ranking are written the way they are is in
+  [`app/api/routers/search.py`](app/api/routers/search.py), and the plans
+  are in [docs/query-performance.md](docs/query-performance.md).
 
 ## Data sources and limitations
 

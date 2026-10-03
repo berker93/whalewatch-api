@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.middleware import RequestContextMiddleware, request_id_on_server_error
-from app.api.routers import filings, health, investors, market, portfolio, stocks
+from app.api.routers import filings, health, investors, market, portfolio, search, stocks
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.redis import create_redis
@@ -98,6 +98,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(portfolio.router, prefix="/v1")
     app.include_router(stocks.router, prefix="/v1")
     app.include_router(market.router, prefix="/v1")
+    app.include_router(search.router, prefix="/v1")
 
     return app
 

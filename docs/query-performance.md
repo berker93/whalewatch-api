@@ -1007,6 +1007,90 @@ index fund, for each of the page's 50 filings, behind `effective_filing`'s
 amendment resolution of every filing. `mv_filing_feed` holds the answer for
 all 1,414 published filings, refreshed in 0.6 s.
 
+## Built since: the search
+
+`GET /v1/search`, which `make explain` reads from the app as five queries:
+each group's prefix matches, then its fuzzy ones when the prefixes leave it
+short of `limit`. They replace the planned `stock_search` (6). Migration
+`0020_search_trgm` added GIN trigram indexes on `security.ticker`,
+`filer.display_name` and `filer.manager_name`, and set the trigram functions'
+cost (below). Each query's term is the worst case found for it.
+
+| Query | Term | Rows | Client median |
+| --- | --- | --- | --- |
+| `search_stocks_prefix` | `in`, 20 | 20 | 3.23 ms |
+| `search_stocks_fuzzy` | `jp morgan` | 5 | 1.56 ms |
+| `search_stocks_fuzzy_common` | `inc`, 11 | 11 | 22.07 ms |
+| `search_investors_prefix` | `capital` | 2 | 0.15 ms |
+| `search_investors_fuzzy` | `square` | 1 | 0.16 ms |
+
+End to end over HTTP, both groups and every query a request runs, most
+searches take 4 ms to 6 ms. The slowest found is `inc` at `limit=10` or
+more, with a median of 28 ms and a worst of 34 ms over 30 runs. The AC is
+50 ms. It is slow
+because 6,557 names have INC as a word and only nine start with it, so the
+fuzzy query has 6,800 candidates to check and rank. No term found has more.
+
+The filer queries read the table, a hundred rows, as the planner should. The
+two new indexes on `filer` are there because the AC asks for an index on
+every searched column. They will start mattering only if the tracked
+universe grows by two orders of magnitude.
+
+Three things the planner got wrong, each found on this data, and each a
+mistake that would have shipped on a small test database:
+
+**The trigram functions were declared nearly free.** `pg_trgm` declares
+`similarity_op`, `word_similarity_op` and the rest `COST 1`, the cost of an
+integer comparison. A call is about 1.5 µs here, around 200 times that. Asked
+for `jp morgan`, the planner estimated that reading all 20,766 securities and
+running the operators on each would be cheaper than the index. It took 72 ms,
+against 1.7 ms by the index:
+
+```
+->  Seq Scan on security s  (cost=0.00..704.15 rows=22 width=71) (actual time=2.796..71.014 rows=110 loops=1)
+      Filter: (... ('jp morgan'::text <% name) OR (name % 'jp morgan'::text) ...)
+      Rows Removed by Filter: 20656
+```
+
+`0020` sets `COST 100` on the eight functions. At 20 and above, every search
+tried took the index. Because these are the extension's functions, `pg_dump`
+does not carry the setting. After restoring into a fresh database, run the
+migration's `ALTER FUNCTION`s again. `test_search_endpoint.py` checks the
+cost, so a test database built without it fails.
+
+**`q <% name` was checked twice per row.** The index takes the operator the
+other way round, `name %> q`, so the planner commutes it. Then, deciding which
+conditions the index has already enforced, it compares them by structure. It
+does not see that `q <% name` and `name %> q` are one condition, so it keeps
+the original as a filter on top of the recheck:
+
+```
+Recheck Cond: (('inc'::text <% name) OR ('inc'::text <<% name))
+Filter: ((NOT COALESCE((name ~~* 'inc%'::text), false)) AND (('inc'::text <% name) OR ('inc'::text <<% name)))
+```
+
+Writing it as `name %> q` in the first place removes the filter. The query
+for `inc` went from 33 ms to 16 ms, and the request from 35 ms to 28 ms.
+
+**`%` was the wrong operator.** `name % q`, plain `similarity` at 0.3, is the
+usual trigram match, and the first draft used it with `<%` for partial words.
+For a short word it shares too few trigrams to narrow anything. The index
+returned 5,975 candidates for `corp`, and 1,652 of them were thrown away at
+recheck, each after a `similarity` call. `q <<% name`
+(`strict_word_similarity` at 0.5) replaced it. On fifteen misspellings and
+partial names, it found everything `%` had found, and narrowed `corp` to
+recheck 22 rows instead of 1,652.
+
+**The ranking** is `70 × mean(word_similarity, strict_word_similarity)`,
+ignoring case. Either measure alone ranks some search wrong on these names:
+`word_similarity` puts MAPLE above APPLE for `aple`, and
+`strict_word_similarity` puts BLUE HAT above BERKSHIRE HATHAWAY for `hath`.
+A name containing `q` as whole words scores 1 by a regular expression
+(`~* '\minc\M'`) rather than by two trigram calls. For `inc` that is 6,557 of
+the 6,800 candidates, and it took the request from 48 ms to 35 ms. Adding
+the same regular expression to the `WHERE`, as a third index arm, made the
+planner choose a sequential scan, 41 ms, so it is in the score only.
+
 ## Experiments
 
 Each was run on the full data and then undone. `DROP INDEX` and
