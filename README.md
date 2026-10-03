@@ -560,7 +560,7 @@ after upgrading past them. That refreshes the views too.
 
 ### `refresh-views [--view NAME] [--no-concurrent]`
 
-Refreshes the three materialised views that the market-wide and per-filer reads
+Refreshes the five materialised views that the market-wide and per-filer reads
 are served from. Each aggregates the derived tables:
 
 | View | One row per | What it holds |
@@ -568,6 +568,8 @@ are served from. Each aggregates the derived tables:
 | `mv_consensus_holdings` | security, period | holder count, total value and shares, average and median weight, rank by value |
 | `mv_quarter_flows` | security, period | bought, sold and net value, net shares, new positions, exits, buyers, sellers |
 | `mv_filer_summary` | filer, period | portfolio value, position count, top-10 weight, turnover |
+| `mv_year_flows` | security, period | `mv_quarter_flows` over the four quarters ending at the period, each filer counted once |
+| `mv_filing_feed` | effective filing of a published period | filed at, the period's position count and largest trade |
 
 On a synthetic dataset the size of the curated universe, 100 filers over 20
 quarters with 1.6 million positions and 2.6 million changes, on stock Postgres
@@ -582,6 +584,8 @@ refresh-views  3 materialised views refreshed in 4.5s
 
 Each view's live query takes one to two seconds over the same data. The 50
 most-held stocks of one quarter, read from `mv_consensus_holdings`, take 2ms.
+On the dev database's real five-year backfill all five refresh in 5.6s, of
+which `mv_year_flows` (161,000 rows) is 2.5s and `mv_filing_feed` 0.6s.
 
 **It runs after whatever publishes.** `recompute` runs it after every rebuild.
 `ingest-filing` runs it after a load that publishes. `backfill` runs it once at
@@ -752,9 +756,8 @@ nor one of these. Jobs written later do the same, through
 
 ## The API
 
-One filing, which everything else gets debugged through, the investors, and
-the stocks. The investors and stocks are under `/v1`, and the filing is not
-yet.
+One filing, which everything else gets debugged through, the investors, the
+stocks, and the market. All but the filing are under `/v1`.
 
 ### Collections: `{data, meta, page}`
 
@@ -770,6 +773,8 @@ all of them:
     "period_end": "2026-03-31",
     "latest_filing_at": "2026-08-14T13:34:05Z",
     "coverage": { "filers_reported": 69, "filers_tracked": 100 },
+    "quarters": null,
+    "refreshed_at": "2026-10-02T08:40:11Z",
     "generated_at": "2026-10-02T09:12:44Z"
   },
   "page": { "limit": 50, "next_cursor": "eyJ2IjoxLCJrIjoi..." }
@@ -783,7 +788,12 @@ all of them:
   filers we track. `latest_filing_at` is the newest of those published filings.
   Both are counted from `mv_filer_summary`, so they move when the views are
   refreshed. For a collection that is not about a period, the period fields
-  are null.
+  are null. For figures over a year, `quarters` names its four, and `period`
+  is the last.
+- **`refreshed_at` says how old an aggregate is.** On the market endpoints,
+  which read only the materialised views, it is when they were last
+  refreshed: a filing published since is not in the answer yet. Null on the
+  endpoints that read live.
 - **Pages are cursors, not offsets.** Pass `page.next_cursor` back as
   `?cursor=` with the same filters until it comes back null. A cursor is a
   position (the last row's sort values), so rows that are inserted or
@@ -962,6 +972,49 @@ curl localhost:8000/v1/stocks/037833100/ownership-history
   make a chart whose series change identity. A holder's `shares` is `0` in a
   quarter it published without the stock and `null` in one it published
   nothing for. The five and `other` add up to the total on every row.
+
+### `GET /v1/market/*` and `GET /v1/flows`
+
+The landing page and the screener. Every one reads the materialised views and
+nothing else but names, so each answers in under 10ms on the dev database's
+full backfill, and is as of the views' last refresh (`meta.refreshed_at`).
+
+```bash
+curl "localhost:8000/v1/market/top-holdings?metric=value&limit=10"
+curl "localhost:8000/v1/market/top-buys?period_type=year"
+curl "localhost:8000/v1/market/top-sells?period=2026Q1&metric=net_value"
+curl localhost:8000/v1/market/new-positions
+curl localhost:8000/v1/market/activity
+curl "localhost:8000/v1/flows?period_type=year&direction=buy&min_investors=5&sort=buyers"
+```
+
+- **`top-holdings`** ranks by `?metric=holders` (the default: held by the
+  most filers, ties to the larger holding) or `value` (the most dollars held).
+- **`top-buys` and `top-sells` rank by gross or net, and say both.** A year's
+  net flow nets a position bought in Q1 and sold in Q3 to about nothing,
+  which is right for net flow and wrong for the year's top buys. So every row
+  carries `gross_bought_usd`, `gross_sold_usd` and `net_value_usd`, and
+  `?metric=value` (the default) ranks by gross dollars traded that way,
+  `net_value` by net, `holders` by the filers trading that way. A list only
+  holds stocks on its side of zero: a stock merely sold least is not a buy.
+  On the dev data, 320 stocks in the latest year had over $100M of gross
+  buying and a net under a fifth of it.
+- **`?period_type=year` is the four quarters ending at `?period`**: the
+  calendar year for a Q4, the trailing twelve months otherwise. Dollars are
+  the four quarters' added up, exactly. Counts are distinct filers: one that
+  bought in three of the quarters is one buyer of the year.
+- **`new-positions`** ranks by filers that opened a position. A filer's first
+  period is never counted, as in every flow.
+- **`activity`** is the published filings, newest first and paged, each with
+  its period's `position_count` and `largest_change`, the period's largest
+  trade by dollars. That is null in a filer's first period. A filing withheld
+  as suspect is not listed until its period is published.
+- **`/v1/flows` is the screener**: every stock traded, held on through or
+  exited in the period, filtered by `direction` (`buy` or `sell`, on net),
+  `min_investors` (filers holding it at the period end) and `min_value`
+  (dollars they hold), sorted by any flow figure, `holders` or `value_held`,
+  and paged. `?sector=` is a `422` for now: no source of sectors is loaded,
+  and an empty page would say no stock is in it.
 
 ## Data sources and limitations
 

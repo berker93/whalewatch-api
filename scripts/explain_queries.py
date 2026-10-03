@@ -7,9 +7,9 @@ and how to capture them again after the data or an index changes::
     make explain a="--only stock_holders --runs 50"
     make explain a="--filer renaissance --period 2025-06-30"
 
-``GET /filings/{accession_no}``, the ``/v1/investors`` endpoints and the
-``/v1/stocks`` endpoints are built, and the queries of the last two are read
-from the app. The rest are the queries the endpoints sketched in
+``GET /filings/{accession_no}``, the ``/v1/investors``, ``/v1/stocks``,
+``/v1/market`` and ``/v1/flows`` endpoints are built, and the queries of all
+but the first are read from the app. The rest are the queries the endpoints sketched in
 docs/product-spec.md ("API surface") will issue: their ``WHERE`` and ``ORDER
 BY`` are what the indexes are designed against, and the select lists are a
 guess. When an endpoint is built, its query
@@ -53,6 +53,19 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.api.pagination import PageParams
 from app.api.routers.investors import LATEST, detail_query, list_query
+from app.api.routers.market import (
+    DEFAULT_TOP,
+    Direction,
+    FlowMetric,
+    FlowSort,
+    HoldingMetric,
+    feed_query,
+    flows_query,
+    new_positions_query,
+    top_buys_query,
+    top_holdings_query,
+    top_sells_query,
+)
 from app.api.routers.portfolio import activity_query, history_query, portfolio_query
 from app.api.routers.stocks import (
     detail_query as stock_detail_query,
@@ -67,6 +80,7 @@ from app.api.routers.stocks import (
 from app.core.config import get_settings
 from app.db.queries.top_holding import top_holdings, top_holdings_ranked
 from app.db.session import create_engine
+from app.derived.views import QUARTER_FLOWS, YEAR_FLOWS
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +318,51 @@ QUERIES: Final = (
         "stock_history_top",
         "GET /v1/stocks/{ticker}/ownership-history",
         top_holders_query(bindparam("security_id"), bindparam("period")),
+    ),
+    Query.from_app(
+        "market_top_holdings",
+        "GET /v1/market/top-holdings",
+        top_holdings_query(bindparam("period"), HoldingMetric.HOLDERS, DEFAULT_TOP),
+    ),
+    Query.from_app(
+        "market_top_buys",
+        "GET /v1/market/top-buys",
+        top_buys_query(QUARTER_FLOWS, bindparam("period"), FlowMetric.VALUE, DEFAULT_TOP),
+    ),
+    # The year's view has a third more rows per period than the quarter's.
+    Query.from_app(
+        "market_top_buys_year",
+        "GET /v1/market/top-buys?period_type=year",
+        top_buys_query(YEAR_FLOWS, bindparam("period"), FlowMetric.VALUE, DEFAULT_TOP),
+    ),
+    Query.from_app(
+        "market_top_sells_year",
+        "GET /v1/market/top-sells?period_type=year&metric=net_value",
+        top_sells_query(YEAR_FLOWS, bindparam("period"), FlowMetric.NET_VALUE, DEFAULT_TOP),
+    ),
+    Query.from_app(
+        "market_new_positions",
+        "GET /v1/market/new-positions",
+        new_positions_query(QUARTER_FLOWS, bindparam("period"), DEFAULT_TOP),
+    ),
+    # The first page, at the default page size.
+    Query.from_app("market_activity", "GET /v1/market/activity", feed_query(PageParams())),
+    Query.from_app(
+        "flows",
+        "GET /v1/flows",
+        flows_query(QUARTER_FLOWS, bindparam("period"), PageParams())[0],
+    ),
+    Query.from_app(
+        "flows_year_filtered",
+        "GET /v1/flows?period_type=year&direction=buy&min_investors=5&sort=buyers",
+        flows_query(
+            YEAR_FLOWS,
+            bindparam("period"),
+            PageParams(),
+            sort=FlowSort.BUYERS,
+            direction=Direction.BUY,
+            min_investors=5,
+        )[0],
     ),
     Query.from_app(
         "top_holding_distinct_on", "every filer's latest period", top_holdings(_LATEST_PERIODS)

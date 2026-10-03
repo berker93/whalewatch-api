@@ -20,7 +20,7 @@ first thing to cache if it ever shows up in a profile.
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import TableClause, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.envelope import Coverage, Meta
@@ -28,7 +28,7 @@ from app.core.periods import quarter_label
 from app.db.models import Filer, Filing
 from app.db.queries.effective import EFFECTIVE_FILING
 from app.db.queries.periods import FILER_PERIOD
-from app.derived.views import FILER_SUMMARY
+from app.derived.views import FILER_SUMMARY, last_refreshed
 
 
 def unscoped_meta() -> Meta:
@@ -94,3 +94,16 @@ async def period_meta(session: AsyncSession, period: date, *, filer_id: int | No
         coverage=Coverage(filers_reported=row.filers_reported, filers_tracked=row.filers_tracked),
         generated_at=datetime.now(UTC),
     )
+
+
+async def refreshed_at(session: AsyncSession, *views: TableClause) -> datetime | None:
+    """When the least recently refreshed of ``views`` was refreshed: what a
+    response read from all of them is as of. None when any one's last refresh
+    is unrecorded.
+
+    :param views: Handles from :mod:`app.derived.views`.
+    """
+    recorded = await last_refreshed(session)
+    times = [recorded[view.name] for view in views]
+    known = [time for time in times if time is not None]
+    return min(known) if len(known) == len(times) else None

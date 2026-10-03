@@ -791,7 +791,7 @@ def test_a_loaded_filing_is_published_in_the_same_run(
     published = lines.index("  published   2 positions in 2024Q1")
     assert lines[published + 1] == "  changes     2 new, 0 add, 0 trim, 0 hold, 0 exit in 2024Q1"
     # And the views refreshed from them, by a run of its own after this one.
-    assert lines[published + 2].startswith("refresh-views  3 materialised views refreshed in ")
+    assert lines[published + 2].startswith("refresh-views  5 materialised views refreshed in ")
     assert _jobs(migrated_engine) == ["ingest-filing", "refresh-views"]
     assert _fetch(
         migrated_engine,

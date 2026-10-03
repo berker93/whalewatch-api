@@ -721,7 +721,29 @@ mv_filer_summary                       unique (filer_id, period_of_report)
   top10_weight_pct    numeric           -- the ten largest positions' share of the book
   turnover_pct        numeric           -- null in the filer's first period
   suspect             boolean           -- this period or the one it is compared with
+
+mv_year_flows                          unique (period_of_report, security_id)
+  period_of_report                      -- the last of the year's four quarters
+  security_id
+  (mv_quarter_flows' columns)           -- dollars: the four quarters' summed
+                                        -- counts: distinct filers over the four
+
+mv_filing_feed                         unique (filer_id, period_of_report, filing_id)
+  filing_id, filer_id, period_of_report, filed_at
+  position_count      bigint            -- the period's, as published
+  largest_security_id, largest_action, largest_shares_delta,
+  largest_traded_value_usd              -- the period's largest trade; null in a first period
 ```
+
+**A year keeps gross and net apart.** Bought in Q1 and sold in Q3, a position
+nets to about nothing over the year: right for net flow, wrong for the year's
+top buys. So `mv_year_flows` keeps `bought_value_usd` (every quarter's buying,
+gross) beside `net_value_usd`, as the quarter does. Its dollars are the sums of
+the four quarters' rows, already rounded to cents, so a year adds up to its
+quarters exactly. Its counts are counted again from `position_change`,
+distinct per filer: one that bought in two of the quarters is one buyer. The
+year is the four quarters ending at the period, and one ends at every period
+with flows.
 
 **Flows and turnover count traded dollars, not `value_delta`.** `value_delta`
 includes the price move on every share held throughout. Summed as flows, a

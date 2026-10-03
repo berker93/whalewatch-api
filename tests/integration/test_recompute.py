@@ -591,7 +591,7 @@ def test_recompute_period_rebuilds_the_quarter_and_the_changes_after_it(
         "  changes     position_change: 0 new, 1 add, 1 trim, 2 hold, 0 exit",
         "  next        also the changes of 2 next periods, which start from a rebuilt one: 2024Q4",
     ]
-    assert refresh.startswith("refresh-views  3 materialised views refreshed in ")
+    assert refresh.startswith("refresh-views  5 materialised views refreshed in ")
 
 
 def test_recompute_filer_and_period_rebuild_that_one_pair(committed: AsyncEngine) -> None:

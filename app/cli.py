@@ -2008,8 +2008,9 @@ def refresh_views_command(
 ) -> None:
     """Refresh the materialised views the market-wide and per-filer reads are served from.
 
-    mv_consensus_holdings, mv_quarter_flows and mv_filer_summary aggregate
-    position_snapshot and position_change, and each is as of its last refresh.
+    mv_consensus_holdings, mv_quarter_flows, mv_filer_summary, mv_year_flows
+    and mv_filing_feed aggregate position_snapshot and position_change, and
+    each is as of its last refresh.
     recompute runs this after every rebuild, ingest-filing after a load that
     publishes, and backfill once at the end. Run it by hand after any of them
     was told --no-refresh-views.

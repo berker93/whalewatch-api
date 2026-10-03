@@ -58,8 +58,10 @@ from app.derived.scope import EVERYTHING
 from app.derived.views import (
     CONSENSUS_HOLDINGS,
     FILER_SUMMARY,
+    FILING_FEED,
     MATERIALISED_VIEWS,
     QUARTER_FLOWS,
+    YEAR_FLOWS,
     MaterialisedView,
     consensus_holdings,
     in_refresh_order,
@@ -78,6 +80,7 @@ Q2 = date(2024, 6, 30)
 Q3 = date(2024, 9, 30)
 Q4 = date(2024, 12, 31)
 Q1_2025 = date(2025, 3, 31)
+Q2_2025 = date(2025, 6, 30)
 ALPHA = "11111A101"
 BRAVO = "22222B202"
 CHARLIE = "33333C303"
@@ -177,6 +180,11 @@ async def _consensus(session: AsyncSession, period: date) -> dict[str, Row[Any]]
 async def _flows(session: AsyncSession, period: date) -> dict[str, Row[Any]]:
     """One period of ``mv_quarter_flows``, by CUSIP."""
     return await _by_cusip(session, QUARTER_FLOWS, period)
+
+
+async def _year(session: AsyncSession, period: date) -> dict[str, Row[Any]]:
+    """The year ending at ``period``, from ``mv_year_flows``, by CUSIP."""
+    return await _by_cusip(session, YEAR_FLOWS, period)
 
 
 async def _by_cusip(session: AsyncSession, view: Any, period: date) -> dict[str, Row[Any]]:
@@ -326,6 +334,22 @@ async def test_check_mv_filer_summary(db_session: AsyncSession, include_suspect:
     await _publish(db_session, include_suspect=include_suspect)
 
     await _check(db_session, _view("mv_filer_summary"))
+
+
+@pytest.mark.parametrize("include_suspect", [False, True])
+async def test_check_mv_year_flows(db_session: AsyncSession, include_suspect: bool) -> None:
+    await _universe(db_session)
+    await _publish(db_session, include_suspect=include_suspect)
+
+    await _check(db_session, _view("mv_year_flows"))
+
+
+@pytest.mark.parametrize("include_suspect", [False, True])
+async def test_check_mv_filing_feed(db_session: AsyncSession, include_suspect: bool) -> None:
+    await _universe(db_session)
+    await _publish(db_session, include_suspect=include_suspect)
+
+    await _check(db_session, _view("mv_filing_feed"))
 
 
 async def test_the_universe_exercises_what_the_checks_are_for(db_session: AsyncSession) -> None:
@@ -498,6 +522,108 @@ async def test_a_change_into_or_out_of_a_suspect_period_marks_the_flow_suspect(
     assert (await _flows(db_session, Q3))[ALPHA].suspect
 
 
+# --- mv_year_flows ----------------------------------------------------------------
+
+
+async def test_a_position_bought_and_sold_within_the_year_is_gross_buying_and_no_net(
+    db_session: AsyncSession,
+) -> None:
+    """Bought in Q2 and sold in Q4, at the same price: the year's net is
+    nothing, which is right for net flow, and its gross buying is the whole
+    $5,000, which is what puts it in the year's top buys. The steady fund
+    adds $100 in Q3, which is all its net says too."""
+    trader = await _fund(db_session, "trader")
+    steady = await _fund(db_session, "steady")
+    await _quarter(db_session, trader, Q1, held(BRAVO, 1))
+    await _quarter(db_session, trader, Q2, held(ALPHA, 500), held(BRAVO, 1))
+    await _quarter(db_session, trader, Q3, held(ALPHA, 500), held(BRAVO, 1))
+    await _quarter(db_session, trader, Q4, held(BRAVO, 1))
+    for period in (Q1, Q2):
+        await _quarter(db_session, steady, period, held(ALPHA, 100))
+    for period in (Q3, Q4):
+        await _quarter(db_session, steady, period, held(ALPHA, 110))
+
+    await _publish(db_session)
+
+    alpha = (await _year(db_session, Q4))[ALPHA]
+    # bought, sold, net, net shares, new, exits, buyers, sellers
+    assert _flow(alpha) == (5_100, 5_000, 100, 10, 1, 1, 2, 1)
+
+
+async def test_a_filer_buying_in_two_quarters_is_one_buyer_of_the_year(
+    db_session: AsyncSession,
+) -> None:
+    """The quarters count it twice, once each. The year counts it once, and
+    its dollars are the quarters' added up."""
+    fund = await _fund(db_session)
+    await _quarter(db_session, fund, Q1, held(ALPHA, 100))
+    await _quarter(db_session, fund, Q2, held(ALPHA, 150, price=Decimal("10.333")))
+    await _quarter(db_session, fund, Q3, held(ALPHA, 200, price=Decimal("10.777")))
+
+    await _publish(db_session)
+
+    q2, q3 = (await _flows(db_session, Q2))[ALPHA], (await _flows(db_session, Q3))[ALPHA]
+    year = (await _year(db_session, Q3))[ALPHA]
+    assert (q2.buyer_count, q3.buyer_count, year.buyer_count) == (1, 1, 1)
+    assert year.bought_value_usd == q2.bought_value_usd + q3.bought_value_usd
+    assert year.net_shares == q2.net_shares + q3.net_shares == 100
+
+
+async def test_a_year_is_the_four_quarters_ending_at_it(db_session: AsyncSession) -> None:
+    """Q2 2024's purchase is in every year ending from Q2 2024 to Q1 2025, and
+    out of the one ending Q2 2025, which starts after it. No year ends after
+    the latest quarter, or in the first, which has no flows."""
+    fund = await _fund(db_session)
+    await _quarter(db_session, fund, Q1, held(ALPHA, 100))
+    for period in (Q2, Q3, Q4, Q1_2025, Q2_2025):
+        await _quarter(db_session, fund, period, held(ALPHA, 200))
+
+    await _publish(db_session)
+
+    bought = dict(
+        (
+            await db_session.execute(
+                select(YEAR_FLOWS.c.period_of_report, YEAR_FLOWS.c.bought_value_usd)
+            )
+        )
+        .tuples()
+        .all()
+    )
+    assert bought == {Q2: 1_000, Q3: 1_000, Q4: 1_000, Q1_2025: 1_000, Q2_2025: 0}
+
+
+# --- mv_filing_feed ------------------------------------------------------------------
+
+
+async def test_a_filing_carries_its_periods_size_and_largest_trade(
+    db_session: AsyncSession,
+) -> None:
+    """Q2's largest trade is the $1,500 exit of Bravo, not the bigger Alpha
+    position that was only added to. Q1 is the fund's first, so it has no
+    largest trade. Q3 is withheld as suspect, so its filing is not in the
+    feed at all."""
+    fund = await _fund(db_session)
+    await _quarter(db_session, fund, Q1, held(ALPHA, 1_000), held(BRAVO, 150))
+    await _quarter(db_session, fund, Q2, held(ALPHA, 1_100), held(CHARLIE, 20))
+    await _quarter(db_session, fund, Q3, held(ALPHA, 1_100), suspect=True)
+
+    await _publish(db_session)
+
+    feed = {
+        row.period_of_report: row
+        for row in await db_session.execute(
+            select(FILING_FEED, Security.cusip).outerjoin(
+                Security, Security.id == FILING_FEED.c.largest_security_id
+            )
+        )
+    }
+    assert feed.keys() == {Q1, Q2}
+    assert (feed[Q1].position_count, feed[Q1].largest_security_id) == (2, None)
+    q2 = feed[Q2]
+    assert (q2.position_count, q2.cusip, q2.largest_action) == (2, BRAVO, "exit")
+    assert (q2.largest_shares_delta, q2.largest_traded_value_usd) == (-150, 1_500)
+
+
 # --- mv_filer_summary --------------------------------------------------------------
 
 
@@ -612,6 +738,8 @@ async def test_a_view_never_populated_is_refreshed_plainly_once(db_session: Asyn
         "mv_consensus_holdings": True,
         "mv_quarter_flows": False,
         "mv_filer_summary": True,
+        "mv_year_flows": True,
+        "mv_filing_feed": True,
     }
     assert all(view.concurrently for view in second)
 
@@ -701,6 +829,8 @@ async def test_a_view_s_last_refresh_is_unknown_until_one_is_recorded(
         "mv_consensus_holdings": None,
         "mv_quarter_flows": flows.refreshed_at,
         "mv_filer_summary": None,
+        "mv_year_flows": None,
+        "mv_filing_feed": None,
     }
 
 
@@ -784,6 +914,8 @@ async def test_a_view_that_reads_another_is_refreshed_after_it(db_session: Async
         "mv_quarter_flows",
         "mv_flow_periods",
         "mv_filer_summary",
+        "mv_year_flows",
+        "mv_filing_feed",
     ]
     assert all(view.concurrently for view in refreshed)
     # Q2's two flows, Alpha's add and Bravo's new. Q1 is the fund's first period.
@@ -954,12 +1086,15 @@ def test_refresh_views_refreshes_every_view_and_says_how_many_rows(
     result = CliRunner().invoke(app, ["refresh-views"])
 
     assert result.exit_code == 0, result.output
-    # Q1: Alpha. Q2: Alpha and Bravo. Flows: Q2's two. Summaries: two funds, two periods.
+    # Q1: Alpha. Q2: Alpha and Bravo. Flows: Q2's two, for the quarter and for
+    # the year ending at it. Summaries and filings: two funds, two periods.
     assert _timeless(result.stdout) == [
-        "refresh-views  3 materialised views refreshed in 0.0s",
+        "refresh-views  5 materialised views refreshed in 0.0s",
         "  mv_consensus_holdings          3 rows    0.0s",
         "  mv_quarter_flows               2 rows    0.0s",
         "  mv_filer_summary               4 rows    0.0s",
+        "  mv_year_flows                  2 rows    0.0s",
+        "  mv_filing_feed                 4 rows    0.0s",
     ]
     assert all(_agreeing(committed).values())
 
@@ -975,7 +1110,7 @@ def test_refresh_views_records_how_long_each_view_took_in_its_run(
 
     assert result.exit_code == 0, result.output
     [(run_id, job, context, metrics, seen, written)] = _runs(committed)
-    assert (job, seen, written) == ("refresh-views", 3, 3)
+    assert (job, seen, written) == ("refresh-views", 5, 5)
     assert context == {"view": None, "concurrent": True, "after_run_id": None}
     assert {
         name: (view["rows"], view["concurrently"]) for name, view in metrics["views"].items()
@@ -983,6 +1118,8 @@ def test_refresh_views_records_how_long_each_view_took_in_its_run(
         "mv_consensus_holdings": (3, True),
         "mv_quarter_flows": (2, True),
         "mv_filer_summary": (4, True),
+        "mv_year_flows": (2, True),
+        "mv_filing_feed": (4, True),
     }
     for name, view in metrics["views"].items():
         [line] = [
@@ -1009,6 +1146,8 @@ def test_view_refreshes_that_view_and_records_only_it(committed: AsyncEngine) ->
         "mv_consensus_holdings": False,
         "mv_quarter_flows": True,
         "mv_filer_summary": False,
+        "mv_year_flows": False,
+        "mv_filing_feed": False,
     }
     [(run_id, _, context, _, seen, written)] = _runs(committed)
     assert (context["view"], seen, written) == ("mv_quarter_flows", 1, 1)
@@ -1031,7 +1170,7 @@ def test_no_concurrent_refreshes_plainly_and_says_so(committed: AsyncEngine) -> 
 
     assert result.exit_code == 0, result.output
     assert _timeless(result.stdout)[0] == (
-        "refresh-views  3 materialised views refreshed in 0.0s, not concurrently"
+        "refresh-views  5 materialised views refreshed in 0.0s, not concurrently"
     )
     # Every view was asked to be plain, so none is a first refresh to point out.
     assert "first refresh" not in result.stdout

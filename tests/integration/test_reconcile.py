@@ -942,8 +942,8 @@ async def _negative_shares(session: AsyncSession) -> None:
 async def _corrected_without_a_refresh(session: AsyncSession) -> None:
     """Bravo's Q4 ACME re-ingested at 2,600 shares, worth the same, and
     published by ``recompute --no-refresh-views``. The tables are right, and
-    three view rows are out of date: ACME's Q4 consensus shares and flows, and
-    bravo's Q4 turnover."""
+    four view rows are out of date: ACME's Q4 consensus shares, its flows for
+    the quarter and for the year ending at it, and bravo's Q4 turnover."""
     await session.execute(
         update(Holding)
         .where(Holding.filing_id == _filing("bravo 2024Q4"), Holding.cusip == ACME)
@@ -1080,6 +1080,7 @@ BREAKAGES: Final = {
                 (None, Q4, ACME, f"mv_consensus_holdings {DIFFERS}"),
                 (None, Q4, ACME, f"mv_quarter_flows {DIFFERS}"),
                 (BRAVO, Q4, None, f"mv_filer_summary {DIFFERS}"),
+                (None, Q4, ACME, f"mv_year_flows {DIFFERS}"),
             }
         },
         refresh=False,

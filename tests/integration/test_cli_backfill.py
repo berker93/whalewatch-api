@@ -648,7 +648,7 @@ def test_a_resumed_run_with_nothing_left_records_nothing_taken_on(
         ).order_by(IngestionRun.started_at),
     ) == [
         ("backfill_13f", "success", 2, 2),
-        ("refresh-views", "success", 3, 3),
+        ("refresh-views", "success", 5, 5),
         ("backfill_13f", "success", 0, 0),
     ]
 
@@ -670,7 +670,7 @@ def test_the_views_are_refreshed_once_at_the_end_by_a_run_of_their_own(
     assert after == str(backfill)
     lines = result.stdout.splitlines()
     [summary] = [n for n, line in enumerate(lines) if line.startswith("backfill  done:")]
-    assert lines[summary + 1].startswith("refresh-views  3 materialised views refreshed in ")
+    assert lines[summary + 1].startswith("refresh-views  5 materialised views refreshed in ")
 
 
 @respx.mock

@@ -960,6 +960,53 @@ Two things the first measurements got wrong, both fixed:
   that branch. It only tries the branch for a nine-character key, so the
   cast never truncates.
 
+## Built since: the market endpoints
+
+`GET /v1/market/top-holdings`, `/top-buys`, `/top-sells`, `/new-positions`,
+`/activity` and `GET /v1/flows`, which `make explain` reads from the app. They
+take the place of the planned `market_flows` (9) and `market_crowded` (10).
+Measured for 2026Q2, the latest period, after migration `0019_market_views`
+and a refresh: 5,879 rows of `mv_quarter_flows` and 7,543 of `mv_year_flows`
+in the period.
+
+| Query | Rows | Server mean |
+| --- | --- | --- |
+| `market_top_holdings`, by holders, 20 | 20 | 0.33 ms |
+| `market_top_buys`, the quarter, gross | 20 | 2.52 ms |
+| `market_top_buys_year`, the year, gross | 20 | 2.04 ms |
+| `market_top_sells_year`, the year, net | 20 | 2.63 ms |
+| `market_new_positions`, the quarter | 20 | 3.69 ms |
+| `market_activity`, the first page of 50 | 51 | 0.27 ms |
+| `flows`, the first page of 50 | 51 | 2.56 ms |
+| `flows_year_filtered`, buyers, net buys, 5+ holders | 51 | 2.05 ms |
+
+End to end over HTTP, against the dev stack's API with `meta` built (another
+~4 ms, nearly all of it `period_meta`'s `latest_filing_at`), every endpoint's
+median is 2.6 ms to 7.4 ms, and 9.8 ms for a 200-row page of the screener.
+The slowest of 20 runs of any was 12.7 ms. The AC is 50 ms.
+
+The flows are one sort of one period's rows of a view, a few thousand, joined
+to the period's `mv_consensus_holdings` by its unique index: a top-N heapsort
+for the lists, a full sort for a screener page. No index per sort column: the
+screener sorts by nine columns either way, and nine indexes on each flows view
+would cost every refresh to save about 2 ms. The one index added is
+`mv_filing_feed (filed_at, filing_id)`, which the feed's keyset reads
+backwards: it is the only one of these read across every period.
+
+**Why the year is a view.** Its dollars are sums of the quarters' rows, which
+a query over `mv_quarter_flows` could add up in a few milliseconds. Its counts
+cannot be: a filer that bought in two quarters is one buyer of the year, so
+they need `count(DISTINCT filer_id)` over `position_change`: 130,000 rows for
+the year to 2026Q2, 28 ms warm for the counts alone, before the dollars, the
+join and the sort, and over half the budget. `mv_year_flows` holds both,
+161,000 rows, refreshed in 2.5 s.
+
+**Why the feed is a view.** "The period's largest trade" per filing is a
+scan of the filer's period in `position_change`, up to 5,000 rows for an
+index fund, for each of the page's 50 filings, behind `effective_filing`'s
+amendment resolution of every filing. `mv_filing_feed` holds the answer for
+all 1,414 published filings, refreshed in 0.6 s.
+
 ## Experiments
 
 Each was run on the full data and then undone. `DROP INDEX` and

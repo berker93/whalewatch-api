@@ -4,7 +4,7 @@
 position every filer published in it, hundreds of thousands of rows, and so do
 the quarter's flows. Computing that per request is wasteful when the inputs
 change four times a year. So three aggregates of the derived tables are
-materialised (migration ``0014``):
+materialised (migrations ``0014`` and ``0019``):
 
 ``mv_consensus_holdings``
     Per ``(period, security)``, from ``position_snapshot``: how many filers
@@ -17,6 +17,12 @@ materialised (migration ``0014``):
 ``mv_filer_summary``
     Per ``(filer, period)``, from both: the portfolio's value, its number of
     positions, the weight of its ten largest, and its turnover.
+``mv_year_flows``
+    ``mv_quarter_flows`` over the four quarters ending at each period, with
+    each filer counted once however many of them it traded in.
+``mv_filing_feed``
+    Per effective filing of a published period: when it was filed, the
+    period's position count, and its largest trade. The recent-filings feed.
 
 Each view's live query is here: the same aggregate, read from the tables as
 they are now. The migration's SQL is history and is written out, so the two are
@@ -48,6 +54,18 @@ quarter in which the filer bought everything, so the flows leave those rows
 out. Otherwise every filer added to the universe would be a market-wide buying
 spree in the quarter it starts. Its turnover is null, for want of a previous
 portfolio.
+
+A year is two figures, not one
+------------------------------
+A position bought in Q1 and sold in Q3 nets to about nothing over the year.
+That is right for the year's net flow and wrong for its top buys, which would
+leave out its biggest accumulations whenever they were sold again. So the year
+keeps ``bought_value_usd`` (gross: every quarter's buying) and
+``net_value_usd`` apart, as the quarter does, and the API serves both. The
+dollars are the sums of the four quarters' rows, each already rounded to
+cents, so a year adds up to its quarters exactly. The counts cannot be sums: a
+filer that bought in two of the quarters is one buyer of the year. They are
+counted again from ``position_change``, ``DISTINCT`` per filer.
 
 Average and median weight
 -------------------------
@@ -106,15 +124,19 @@ from sqlalchemy import (
     Boolean,
     ColumnElement,
     Date,
+    DateTime,
+    Interval,
     Numeric,
     Select,
     TableClause,
+    Text,
     and_,
     case,
     cast,
     column,
     false,
     func,
+    literal_column,
     select,
     table,
     text,
@@ -122,9 +144,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.filing import Filing
 from app.db.models.matview_refresh import MatviewRefresh
 from app.db.models.position_change import ChangeAction, PositionChange
 from app.db.models.position_snapshot import PositionSnapshot
+from app.db.queries.effective import EFFECTIVE_FILING
 from app.derived.recompute import hold_recompute_lock
 
 #: How many of a portfolio's largest positions ``top10_weight_pct`` adds up.
@@ -175,6 +199,26 @@ FILER_SUMMARY: Final = table(
     column("suspect", Boolean),
 )
 """Each filer's each published period: its size, its concentration and its turnover."""
+
+YEAR_FLOWS: Final = table(
+    "mv_year_flows",
+    *(column(c.name, c.type) for c in QUARTER_FLOWS.c),
+)
+""":data:`QUARTER_FLOWS`'s columns, over the four quarters ending at ``period_of_report``."""
+
+FILING_FEED: Final = table(
+    "mv_filing_feed",
+    column("filing_id", BigInteger),
+    column("filer_id", BigInteger),
+    column("period_of_report", Date),
+    column("filed_at", DateTime(timezone=True)),
+    column("position_count", BigInteger),
+    column("largest_security_id", BigInteger),
+    column("largest_action", Text),
+    column("largest_shares_delta", Numeric),
+    column("largest_traded_value_usd", Numeric),
+)
+"""Each effective filing of a published period, with the period's size and largest trade."""
 
 
 def consensus_holdings() -> Select[Any]:
@@ -321,6 +365,162 @@ def filer_summary() -> Select[Any]:
     )
 
 
+def year_flows() -> Select[Any]:
+    """What ``mv_year_flows`` holds: :func:`quarter_flows` over each four quarters.
+
+    Every period with flows ends a year, and the year is it and the three
+    quarters before it. The dollars and ``net_shares`` are sums of the
+    quarters' rows. The counts are distinct filers over the year, read from
+    ``position_change`` again, holds and first periods left out as the
+    quarter leaves them out.
+    """
+    change = PositionChange
+    quarters = quarter_flows().cte("quarters")
+    ends = select(quarters.c.period_of_report).distinct().cte("ends")
+
+    def in_year(period: Any) -> ColumnElement[bool]:
+        a_year_before = ends.c.period_of_report - literal_column("interval '1 year'", Interval)
+        return and_(period <= ends.c.period_of_report, period > a_year_before)
+
+    dollars = (
+        select(
+            ends.c.period_of_report,
+            quarters.c.security_id,
+            func.sum(quarters.c.bought_value_usd).label("bought_value_usd"),
+            func.sum(quarters.c.sold_value_usd).label("sold_value_usd"),
+            func.sum(quarters.c.net_shares).label("net_shares"),
+            func.bool_or(quarters.c.suspect).label("suspect"),
+        )
+        .select_from(ends)
+        .join(quarters, in_year(quarters.c.period_of_report))
+        .group_by(ends.c.period_of_report, quarters.c.security_id)
+        .cte("dollars")
+    )
+
+    def filers(*actions: ChangeAction) -> ColumnElement[int]:
+        return func.count(change.filer_id.distinct()).filter(
+            change.action.in_([action.value for action in actions])
+        )
+
+    traders = (
+        select(
+            ends.c.period_of_report,
+            change.security_id,
+            filers(ChangeAction.NEW).label("new_positions"),
+            filers(ChangeAction.EXIT).label("exits"),
+            filers(ChangeAction.NEW, ChangeAction.ADD).label("buyer_count"),
+            filers(ChangeAction.TRIM, ChangeAction.EXIT).label("seller_count"),
+        )
+        .select_from(ends)
+        .join(change, in_year(change.period_of_report))
+        .where(
+            change.prev_period_of_report.is_not(None),
+            change.action != ChangeAction.HOLD.value,
+        )
+        .group_by(ends.c.period_of_report, change.security_id)
+        .cte("traders")
+    )
+
+    def counted(name: str) -> ColumnElement[int]:
+        # A security only held on through the year has no traders.
+        return func.coalesce(traders.c[name], 0).label(name)
+
+    return (
+        select(
+            dollars.c.period_of_report,
+            dollars.c.security_id,
+            dollars.c.bought_value_usd,
+            dollars.c.sold_value_usd,
+            (dollars.c.bought_value_usd - dollars.c.sold_value_usd).label("net_value_usd"),
+            dollars.c.net_shares,
+            counted("new_positions"),
+            counted("exits"),
+            counted("buyer_count"),
+            counted("seller_count"),
+            dollars.c.suspect,
+        )
+        .select_from(dollars)
+        .outerjoin(
+            traders,
+            and_(
+                traders.c.period_of_report == dollars.c.period_of_report,
+                traders.c.security_id == dollars.c.security_id,
+            ),
+        )
+    )
+
+
+def filing_feed() -> Select[Any]:
+    """What ``mv_filing_feed`` holds, read live from the filings and both derived tables.
+
+    One row per filing in ``effective_filing`` whose period is in
+    ``position_snapshot``: one a withheld suspect filing made is not news yet.
+    Two filings counting toward one period, an original and its additions,
+    share the period's figures. The largest trade is by :func:`traded_usd`,
+    rounded as the activity endpoint rounds it, and null in the filer's first
+    period, where every position is new only to us.
+    """
+    snapshot, change, effective = PositionSnapshot, PositionChange, EFFECTIVE_FILING
+    traded = func.round(traded_usd(), 2)
+    largest = (
+        select(
+            change.filer_id,
+            change.period_of_report,
+            change.security_id,
+            change.action,
+            change.shares_delta,
+            traded.label("traded_value_usd"),
+        )
+        .distinct(change.filer_id, change.period_of_report)
+        .where(
+            change.action != ChangeAction.HOLD.value,
+            change.prev_period_of_report.is_not(None),
+        )
+        .order_by(
+            change.filer_id, change.period_of_report, traded.desc(), change.security_id.desc()
+        )
+        .cte("largest")
+    )
+    positions = (
+        select(
+            snapshot.filer_id,
+            snapshot.period_of_report,
+            func.count().label("position_count"),
+        )
+        .group_by(snapshot.filer_id, snapshot.period_of_report)
+        .cte("positions")
+    )
+    return (
+        select(
+            effective.c.filing_id,
+            effective.c.filer_id,
+            effective.c.period_of_report,
+            Filing.filed_at,
+            positions.c.position_count,
+            largest.c.security_id.label("largest_security_id"),
+            largest.c.action.label("largest_action"),
+            largest.c.shares_delta.label("largest_shares_delta"),
+            largest.c.traded_value_usd.label("largest_traded_value_usd"),
+        )
+        .select_from(effective)
+        .join(Filing, Filing.id == effective.c.filing_id)
+        .join(
+            positions,
+            and_(
+                positions.c.filer_id == effective.c.filer_id,
+                positions.c.period_of_report == effective.c.period_of_report,
+            ),
+        )
+        .outerjoin(
+            largest,
+            and_(
+                largest.c.filer_id == effective.c.filer_id,
+                largest.c.period_of_report == effective.c.period_of_report,
+            ),
+        )
+    )
+
+
 def traded_usd() -> ColumnElement[Decimal]:
     """The dollars one ``position_change`` row traded: its shares, at the period-end price.
 
@@ -359,6 +559,8 @@ MATERIALISED_VIEWS: Final = (
     MaterialisedView(CONSENSUS_HOLDINGS, ("period_of_report", "security_id"), consensus_holdings),
     MaterialisedView(QUARTER_FLOWS, ("period_of_report", "security_id"), quarter_flows),
     MaterialisedView(FILER_SUMMARY, ("filer_id", "period_of_report"), filer_summary),
+    MaterialisedView(YEAR_FLOWS, ("period_of_report", "security_id"), year_flows),
+    MaterialisedView(FILING_FEED, ("filer_id", "period_of_report", "filing_id"), filing_feed),
 )
 
 
@@ -541,8 +743,7 @@ async def last_refreshed(session: AsyncSession) -> dict[str, datetime | None]:
 
     ``None`` for a view not refreshed since ``matview_refresh`` was created,
     whose last refresh is unknown. This is what lets a response built from a
-    view say how old it is. It is for the API's endpoint over the aggregates
-    (API-7) to serve.
+    view say how old it is: :func:`app.api.meta.refreshed_at` serves it.
     """
     rows = await session.execute(select(MatviewRefresh.view_name, MatviewRefresh.refreshed_at))
     recorded = {name: refreshed_at for name, refreshed_at in rows.tuples()}

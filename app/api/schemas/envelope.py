@@ -53,6 +53,14 @@ class Meta(BaseModel):
         description="The quarter end `period` names: the day the holdings describe.",
         examples=["2026-06-30"],
     )
+    quarters: list[str] | None = Field(
+        default=None,
+        description=(
+            "For figures over more than one quarter, such as a year's flows, every "
+            "quarter they cover, oldest first, ending with `period`. Null for one quarter."
+        ),
+        examples=[["2025Q3", "2025Q4", "2026Q1", "2026Q2"]],
+    )
     latest_filing_at: datetime | None = Field(
         default=None,
         description=(
@@ -78,6 +86,14 @@ class Meta(BaseModel):
                 "left out: if it restates or adds to the period, the period is wrong"
             ]
         ],
+    )
+    refreshed_at: datetime | None = Field(
+        default=None,
+        description=(
+            "For a response read from the materialised aggregates, when they were last "
+            "refreshed: the rows are as of then, and a filing published since is not in "
+            "them yet. Null for a response read live, and when the refresh is unrecorded."
+        ),
     )
     generated_at: datetime = Field(description="When this response was built.")
 
