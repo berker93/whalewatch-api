@@ -5,16 +5,18 @@ is what it was set with until a test changes it, so a test says exactly what
 it means by "expiring".
 """
 
+import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 
 class FakeRedis:
-    def __init__(self) -> None:
+    def __init__(self, *, down: bool = False) -> None:
         self.values: dict[str, str] = {}
         self.ttls: dict[str, int] = {}
-        self.down = False
+        self.down = down
         """Every command raises, as a Redis that cannot be reached does."""
         self.commands: list[str] = []
 
@@ -37,6 +39,27 @@ class FakeRedis:
         self._send("set")
         self.values[key] = value
         self.ttls[key] = ex if ex is not None else -1
+
+    async def scan_iter(self, match: str, count: int | None = None) -> AsyncIterator[str]:
+        """``*`` and ``?`` as globs, a backslash escaping the next character,
+        and nothing else: the patterns :func:`app.api.cache.invalidate` sends."""
+        self._send("scan")
+        parts = re.findall(r"\\.|\*|\?|[^\\*?]+", match)
+        globs = {"*": ".*", "?": "."}
+        pattern = "".join(globs.get(part) or re.escape(part.removeprefix("\\")) for part in parts)
+        for key in [key for key in self.values if re.fullmatch(pattern, key)]:
+            yield key
+
+    async def unlink(self, *keys: str) -> int:
+        self._send("unlink")
+        present = [key for key in keys if key in self.values]
+        for key in present:
+            del self.values[key]
+            self.ttls.pop(key, None)
+        return len(present)
+
+    async def aclose(self) -> None:
+        pass
 
     def expire_all(self) -> None:
         self.values.clear()

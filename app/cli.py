@@ -41,6 +41,10 @@ A verb that publishes (``recompute``, and ``ingest-filing`` or ``backfill`` when
 they load something) then runs ``refresh-views`` as a second run, which names
 the first in its ``after_run_id``.
 
+Every verb that changes what the API serves — those, ``refresh-views`` and
+``seed-investors`` — then drops every response the API has cached
+(:func:`_invalidate_cache`), and records how many in its run's ``metrics``.
+
 Exit codes
 ----------
 Zero when the filing ends up loaded, and zero when it was already loaded and
@@ -92,12 +96,15 @@ from typing import Annotated, Final, TextIO
 import httpx
 import structlog
 import typer
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.api.cache import invalidate
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.redis import create_redis
 from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
@@ -352,6 +359,8 @@ async def _ingest_filing(
             raise
         if report.result is not None:
             run.items_written = 1
+        if report.published is not None:
+            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
         _echo_report(report)
 
     if refresh and report.published is not None:
@@ -1219,6 +1228,8 @@ async def _backfill(
         not_started = backfilled.count(Outcome.NOT_STARTED)
         if not_started:
             run.errors.append(f"stopped with {not_started} not started; re-run to resume")
+        if run.items_written:
+            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
 
     _echo_backfill_summary(plan, backfilled, elapsed=time.monotonic() - started)
     if refresh and run.items_written:
@@ -1461,6 +1472,10 @@ async def _seed_investors(path: Path, *, dry_run: bool) -> None:
                 await session.rollback()
         if not dry_run:
             run.items_written = len(result.created) + len(result.updated)
+        # A renamed filer's old slug is in cached lists of a closed period's
+        # owners, kept for a day.
+        if run.items_written:
+            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
 
         logger.info(
             "investors.seeded",
@@ -1853,7 +1868,8 @@ def recompute_command(
 
     Then refreshes the materialised views, which aggregate both tables, unless
     --no-refresh-views. The refresh is recorded as a refresh-views run of its
-    own, after the rebuild has committed.
+    own, after the rebuild has committed. Drops every response the API has
+    cached after each.
 
     Exits 1 if --filer names no filer, and 2 without --filer, --period or --all.
     """
@@ -1897,6 +1913,9 @@ async def _recompute(
             filer_id = await _filer_id(session, slug)
             scope = await resolve_scope(session, filer_id=filer_id, period=period)
             rebuilt = await recompute(session, scope, include_suspect=include_suspect)
+        # Now, not only after the refresh below: portfolios are read from the
+        # rebuilt tables, not the views, and the refresh may be skipped.
+        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
         rebuild, changes = rebuilt.snapshot, rebuilt.changes
         # Periods, not positions, so that the gap between the two is the
         # periods withheld for a suspect filing.
@@ -2020,6 +2039,7 @@ def refresh_views_command(
     commits, so the views are refreshed from the same tables. A view that
     reads another is refreshed after it. Each view's refresh time is recorded
     in matview_refresh, and how long it took in this run's ingestion_run row.
+    Then drops every response the API has cached.
     """
     asyncio.run(_refresh_views(view, concurrent=concurrent))
 
@@ -2055,6 +2075,7 @@ async def _refresh(
             run.items_seen = len(views)
             refreshed = await refresh_views(session, views, concurrently=concurrent, run_id=run.id)
         run.items_written = len(refreshed)
+        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
         run.metrics["views"] = {
             done.name: {
                 "seconds": round(done.seconds, 3),
@@ -2090,6 +2111,32 @@ def _echo_refreshed(refreshed: list[Refreshed], *, elapsed: float, concurrent: b
             f"  {view.name:<{width}}  {_count(view.rows, 'row'):>14}  "
             f"{_duration(view.seconds):>6}{how}"
         )
+
+
+# --- the API's cache ---------------------------------------------------------
+
+
+async def _invalidate_cache(settings: Settings) -> int | None:
+    """Drop every response the API has cached. How many, or None if Redis could not be reached.
+
+    After a commit, never before: a request between the two would cache the
+    old answer again. A Redis that cannot be reached does not fail the run,
+    whose data is committed and served; the error is logged, and until it
+    expires what was cached is served as it was — up to a day for a closed
+    period.
+    """
+    redis = create_redis(settings)
+    try:
+        deleted = await invalidate(redis)
+    except RedisError as exc:
+        # The message, not the traceback: a refused connection's says no more,
+        # and its lines would not carry the run's id.
+        logger.error("cache.invalidate_failed", error=str(exc))
+        return None
+    finally:
+        await redis.aclose()
+    logger.info("cache.invalidated", keys=deleted)
+    return deleted
 
 
 # --- reconcile ---------------------------------------------------------------

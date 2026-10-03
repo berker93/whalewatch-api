@@ -37,6 +37,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 
+from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
 from app.api.meta import unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
@@ -256,6 +257,7 @@ SlugParam = Annotated[str, Path(examples=["berkshire-hathaway"])]
     response_model=Envelope[InvestorSummary],
     summary="Every tracked investor, with its latest published portfolio",
 )
+@cached(Lifetime.CURRENT_PERIOD)
 async def list_investors(
     session: SessionDep,
     page: PageParamsDep,
@@ -280,6 +282,7 @@ async def list_investors(
     summary="One investor",
     responses={status.HTTP_404_NOT_FOUND: {"description": "No investor with that slug."}},
 )
+@cached(Lifetime.CURRENT_PERIOD)
 async def read_investor(slug: SlugParam, session: SessionDep) -> InvestorDetail:
     """One investor, with the list's fields and its concentration, turnover,
     first period and CIKs."""

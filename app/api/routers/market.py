@@ -60,6 +60,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.base import ReadOnlyColumnCollection
 
+from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
 from app.api.meta import period_meta, refreshed_at, unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
@@ -462,6 +463,7 @@ _NOT_PUBLISHED: Final[dict[int | str, dict[str, Any]]] = {
     summary="The most widely or most heavily held stocks",
     responses=_NOT_PUBLISHED,
 )
+@cached(period="period")
 async def read_top_holdings(
     session: SessionDep,
     period: HoldingsPeriodParam = None,
@@ -499,6 +501,7 @@ async def read_top_holdings(
     summary="The stocks the tracked investors bought most",
     responses=_NOT_PUBLISHED,
 )
+@cached(period="period")
 async def read_top_buys(
     session: SessionDep,
     period: PeriodParam = None,
@@ -519,6 +522,7 @@ async def read_top_buys(
     summary="The stocks the tracked investors sold most",
     responses=_NOT_PUBLISHED,
 )
+@cached(period="period")
 async def read_top_sells(
     session: SessionDep,
     period: PeriodParam = None,
@@ -539,6 +543,7 @@ async def read_top_sells(
     summary="The stocks the most tracked investors opened a position in",
     responses=_NOT_PUBLISHED,
 )
+@cached(period="period")
 async def read_new_positions(
     session: SessionDep,
     period: PeriodParam = None,
@@ -558,6 +563,7 @@ async def read_new_positions(
     response_model=Envelope[FeedFiling],
     summary="Recent filings, with what each period holds and its largest trade",
 )
+@cached(Lifetime.CURRENT_PERIOD)
 async def read_market_activity(session: SessionDep, page: PageParamsDep) -> Envelope[FeedFiling]:
     """Filings newest first: those a published period was built from. One
     withheld as suspect is left out until its period is published. Each row
@@ -580,6 +586,7 @@ async def read_market_activity(session: SessionDep, page: PageParamsDep) -> Enve
         },
     },
 )
+@cached(period="period")
 async def read_flows(
     session: SessionDep,
     page: PageParamsDep,

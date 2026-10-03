@@ -22,6 +22,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.cache import invalidate
 from app.api.deps import get_redis
 from app.api.routers.meta import _period_coverage
 from app.db.models import AmendmentKind, Filer, FilerCik, Filing, Holding, IngestionRun, Security
@@ -219,7 +220,8 @@ async def test_nothing_published_is_no_quarters(
 async def test_the_periods_are_cached_for_five_minutes(
     client: AsyncClient, db_session: AsyncSession, redis: FakeRedis
 ) -> None:
-    """A quarter published in the meantime is not listed until the answer expires."""
+    """A quarter published in the meantime is not listed until the answer
+    expires, or a publish invalidates it."""
     alpha = await _fund(db_session, "a")
     await _file(db_session, alpha, Q1, _at(date(2024, 4, 20)))
     await _publish(db_session)
@@ -228,10 +230,11 @@ async def test_the_periods_are_cached_for_five_minutes(
     await _file(db_session, alpha, Q2, _at(date(2024, 8, 1)))
     await _publish(db_session)
     cached = await client.get("/v1/meta/periods")
-    redis.expire_all()
+    await invalidate(redis)  # type: ignore[arg-type]
     rebuilt = await client.get("/v1/meta/periods")
 
     assert first.headers["cache-control"] == "public, max-age=300"
+    assert [r.headers["x-cache"] for r in (first, cached, rebuilt)] == ["MISS", "HIT", "MISS"]
     assert cached.json() == first.json()
     assert [row["period"] for row in rebuilt.json()["data"]] == ["2024Q1", "2024Q2"]
 

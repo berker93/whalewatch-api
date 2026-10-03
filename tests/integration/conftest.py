@@ -52,10 +52,11 @@ from sqlalchemy.pool import NullPool
 from testcontainers.community.postgres import PostgresContainer
 
 from alembic import command
-from app.api.deps import get_session
+from app.api.deps import get_redis, get_session
 from app.core.config import Settings
 from app.db.session import create_session_factory
 from tests.conftest import make_settings
+from tests.fake_redis import FakeRedis
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
@@ -240,6 +241,10 @@ def settings(pg_container: PostgresContainer, tmp_path: Path) -> Settings:
         postgres_user=pg_container.username,
         postgres_password=SecretStr(pg_container.password),
         postgres_db=pg_container.dbname,
+        # Nothing listens on port 1, so a CLI command invalidating the cache
+        # after it publishes finds Redis down at once, rather than waiting on
+        # the compose stack's hostname or flushing a developer's local Redis.
+        redis_url="redis://127.0.0.1:1/0",
     )
 
 
@@ -262,12 +267,15 @@ async def client(
 
     ``ASGITransport`` does not run the lifespan, so the state the lifespan
     normally populates is set here instead — pointed at the container. Redis is
-    not: no container is started for it, and a test that needs it should
-    override ``get_redis`` with a fake.
+    not: no container is started for it. Each request gets an empty fake, so
+    every cached endpoint builds its answer, as it did before it was cached,
+    and a test that publishes between two requests sees the second change. A
+    test about the cache overrides ``get_redis`` with a fake of its own.
     """
     app.state.engine = migrated_engine
     app.state.session_factory = create_session_factory(migrated_engine)
     app.dependency_overrides[get_session] = lambda: db_session
+    app.dependency_overrides.setdefault(get_redis, lambda: FakeRedis())
 
     transport = ASGITransport(app=app)
     try:

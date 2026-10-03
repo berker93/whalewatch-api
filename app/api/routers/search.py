@@ -93,6 +93,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import QueryableAttribute
 
+from app.api.cache import Lifetime, cached
 from app.api.deps import SessionDep
 from app.api.routers.investors import _escape_like
 from app.api.schemas.search import InvestorMatch, SearchResults, StockMatch
@@ -328,6 +329,7 @@ LimitParam = Annotated[
     response_model=SearchResults,
     summary="Investors and stocks by name or ticker",
 )
+@cached(Lifetime.SEARCH)
 async def search(
     session: SessionDep, q: QueryParam, limit: LimitParam = DEFAULT_LIMIT
 ) -> SearchResults:

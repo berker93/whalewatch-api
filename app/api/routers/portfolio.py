@@ -64,6 +64,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
 from app.api.meta import period_meta, unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
@@ -508,6 +509,7 @@ ActionsParam = Annotated[
         }
     },
 )
+@cached(period="period")
 async def read_portfolio(
     slug: SlugParam,
     session: SessionDep,
@@ -541,6 +543,7 @@ async def read_portfolio(
     summary="What one investor opened, added to, trimmed and exited",
     responses={status.HTTP_404_NOT_FOUND: {"description": "No investor with that slug."}},
 )
+@cached(period="end")
 async def read_activity(
     slug: SlugParam,
     session: SessionDep,
@@ -594,6 +597,7 @@ async def read_activity(
     summary="One investor's portfolio value, positions and concentration, quarter by quarter",
     responses={status.HTTP_404_NOT_FOUND: {"description": "No investor with that slug."}},
 )
+@cached(Lifetime.CURRENT_PERIOD)
 async def read_history(slug: SlugParam, session: SessionDep) -> Envelope[HistoryPoint]:
     """Every quarter from the first published to the latest, oldest first.
 

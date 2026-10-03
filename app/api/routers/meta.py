@@ -8,9 +8,9 @@
     succeeded.
 
 Both change only when a job runs, and both are read on every page load, so
-both are kept in Redis for five minutes (:mod:`app.api.cache`). An answer can
-be that much older than the data it describes; ``meta.generated_at`` says when
-it was built.
+both are kept in Redis for five minutes (:mod:`app.api.cache`), and dropped
+from it when a job publishes. An answer can be that much older than the data
+it describes; ``meta.generated_at`` says when it was built.
 
 Coverage
 --------
@@ -24,12 +24,12 @@ the page it leads to never disagree about a quarter.
 
 from typing import Any, Final
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter
 from sqlalchemy import Date, Row, Select, and_, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.cache import cached_json
-from app.api.deps import RedisDep, SessionDep, SettingsDep
+from app.api.cache import Lifetime, cached
+from app.api.deps import SessionDep
 from app.api.meta import refreshed_at, unscoped_meta
 from app.api.schemas.envelope import Envelope
 from app.api.schemas.meta import Freshness, FreshnessKind, PeriodCoverage
@@ -40,9 +40,6 @@ from app.db.queries.runs import job_names, last_successes
 from app.derived.views import FILER_SUMMARY, MATERIALISED_VIEWS
 
 router = APIRouter(tags=["meta"])
-
-#: How long an answer is served from the cache.
-CACHE_SECONDS: Final = 300
 
 #: The share of the tracked filers, in percent, that makes a quarter whose
 #: deadline has passed complete.
@@ -133,14 +130,13 @@ async def build_periods(session: AsyncSession) -> Envelope[PeriodCoverage]:
     response_model=Envelope[PeriodCoverage],
     summary="Every quarter with data, and how far each has filled in",
 )
-async def read_periods(session: SessionDep, redis: RedisDep, settings: SettingsDep) -> Response:
+@cached(Lifetime.METADATA)
+async def read_periods(session: SessionDep) -> Envelope[PeriodCoverage]:
     """Every quarter with a published portfolio, oldest first. A quarter
     nothing has been published for yet, such as one whose filings have not
     started arriving, is not listed. Not paginated: there are four a year.
     Cached for five minutes."""
-    return await cached_json(
-        redis, settings, "meta:periods", lambda: build_periods(session), seconds=CACHE_SECONDS
-    )
+    return await build_periods(session)
 
 
 # --- freshness ------------------------------------------------------------------
@@ -182,11 +178,10 @@ async def build_freshness(session: AsyncSession) -> Envelope[Freshness]:
     response_model=Envelope[Freshness],
     summary="When each materialised view was refreshed, and each job last succeeded",
 )
-async def read_freshness(session: SessionDep, redis: RedisDep, settings: SettingsDep) -> Response:
+@cached(Lifetime.METADATA)
+async def read_freshness(session: SessionDep) -> Envelope[Freshness]:
     """Every materialised view, then every job that has recorded a run,
     alphabetically. A view never refreshed since its refresh began to be
     recorded, or a job that has never succeeded, is listed with nulls. Cached
     for five minutes."""
-    return await cached_json(
-        redis, settings, "meta:freshness", lambda: build_freshness(session), seconds=CACHE_SECONDS
-    )
+    return await build_freshness(session)

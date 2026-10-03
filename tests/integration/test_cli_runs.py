@@ -26,12 +26,14 @@ from sqlalchemy import Executable, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from typer.testing import CliRunner
 
+from app.api.cache import KEY_PREFIX
 from app.cli import app
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.db.models import IngestionRun
 from app.derived.views import MATERIALISED_VIEWS
 from tests.conftest import make_settings
+from tests.fake_redis import FakeRedis
 
 #: Each tracked verb, the job name it records under, an invocation that runs
 #: in full against an empty database without touching EDGAR, and the status
@@ -148,6 +150,55 @@ def test_a_run_of_the_command_leaves_one_finished_row(
             if event in line and f"job_name={job_name}" in line
         ]
         assert f"run_id={run_id}" in line
+
+
+@pytest.mark.parametrize(
+    ("args", "job_name"),
+    [
+        (["recompute", "--all", "--no-refresh-views"], "recompute"),
+        (["refresh-views"], "refresh-views"),
+    ],
+)
+def test_a_command_that_publishes_drops_the_apis_cache(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    migrated_engine: AsyncEngine,
+    args: list[str],
+    job_name: str,
+) -> None:
+    """And says how many it dropped. The recompute without its refresh too:
+    portfolios are read from the tables it rebuilds."""
+    redis = FakeRedis()
+    redis.values = {f"{KEY_PREFIX}investors.list_investors:0f0f": "{}", "not-the-caches": "kept"}
+    monkeypatch.setattr("app.cli.create_redis", lambda settings: redis)
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert list(redis.values) == ["not-the-caches"]
+    [(metrics,)] = _fetch(
+        migrated_engine, select(IngestionRun.metrics).where(IngestionRun.job_name == job_name)
+    )
+    assert metrics["cache_invalidated"] == 1
+
+
+def test_with_redis_down_a_command_that_publishes_still_succeeds(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    """The data is committed and served. The cache keeps what it had until it
+    expires, which is logged as an error rather than failing the run."""
+    result = runner.invoke(app, ["refresh-views"])  # nothing listens on settings.redis_url
+
+    assert result.exit_code == 0, result.output
+    assert "cache.invalidate_failed" in result.stderr
+    [(status, metrics)] = _fetch(
+        migrated_engine,
+        select(IngestionRun.status, IngestionRun.metrics).where(
+            IngestionRun.job_name == "refresh-views"
+        ),
+    )
+    assert status == "success"
+    assert metrics["cache_invalidated"] is None
 
 
 @pytest.mark.parametrize("command", sorted(UNTRACKED))

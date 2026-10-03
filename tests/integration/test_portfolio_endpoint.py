@@ -16,15 +16,19 @@ from itertools import count
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.cache import STALE_WHILE_REVALIDATE, invalidate
+from app.api.deps import get_redis
 from app.db.models import AmendmentKind, Filer, FilerCik, Filing, Holding, Security
 from app.derived.recompute import recompute
 from app.derived.scope import EVERYTHING
 from app.derived.views import refresh_views
+from tests.fake_redis import FakeRedis
 
 Q1 = date(2024, 3, 31)
 Q2 = date(2024, 6, 30)
@@ -797,3 +801,51 @@ async def test_history_of_a_filer_with_nothing_published_is_empty_and_of_nobody_
 
     assert (await _get(client, "/v1/investors/empty/history"))["data"] == []
     assert (await client.get("/v1/investors/nobody/history")).status_code == 404
+
+
+# --- caching ----------------------------------------------------------------------
+
+
+async def test_a_closed_quarter_is_served_from_the_cache_until_it_is_invalidated(
+    app: FastAPI, client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Kept for a day, so a restatement published since is not seen until the
+    publish drops the cache, which the CLI does and this test does by hand."""
+    redis = FakeRedis()
+    app.dependency_overrides[get_redis] = lambda: redis
+    filer = await _fund(db_session, "berkshire")
+    await _quarter(db_session, filer, Q1, held(ALPHA, 100))
+    await _publish(db_session)
+    path = "/v1/investors/berkshire/portfolio"
+
+    first = await client.get(path, params={"period": "2024Q1"})
+    await _quarter(
+        db_session, filer, Q1, held(ALPHA, 300), amends=AmendmentKind.RESTATEMENT, days_later=60
+    )
+    await _publish(db_session)
+    second = await client.get(path, params={"period": "2024-03-31"})
+    await invalidate(redis)  # type: ignore[arg-type]
+    third = await client.get(path, params={"period": "2024Q1"})
+
+    assert [r.headers["x-cache"] for r in (first, second, third)] == ["MISS", "HIT", "MISS"]
+    assert first.headers["cache-control"] == (
+        f"public, max-age=86400, stale-while-revalidate={STALE_WHILE_REVALIDATE}"
+    )
+    assert second.content == first.content
+    assert [row["shares"] for row in third.json()["data"]] == ["300.0000"]
+    assert third.headers["etag"] != first.headers["etag"]
+
+
+async def test_the_latest_portfolio_is_kept_for_five_minutes(
+    app: FastAPI, client: AsyncClient, db_session: AsyncSession
+) -> None:
+    redis = FakeRedis()
+    app.dependency_overrides[get_redis] = lambda: redis
+    filer = await _fund(db_session, "berkshire")
+    await _quarter(db_session, filer, Q1, held(ALPHA, 100))
+    await _publish(db_session)
+
+    response = await client.get("/v1/investors/berkshire/portfolio")
+
+    assert response.headers["cache-control"] == "public, max-age=300"
+    assert list(redis.ttls.values()) == [300]

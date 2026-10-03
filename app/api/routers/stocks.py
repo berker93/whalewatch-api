@@ -59,6 +59,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
 from app.api.meta import period_meta, unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
@@ -586,6 +587,7 @@ _NOT_FOUND: Final[dict[int | str, dict[str, Any]]] = {
     summary="One stock, and how the tracked investors held and traded it",
     responses=_NOT_FOUND,
 )
+@cached(Lifetime.CURRENT_PERIOD)
 async def read_stock(ticker: TickerParam, session: SessionDep) -> StockDetail:
     """The stock, with its holders, shares and dollars held, and the net
     change in them, in the latest period published for any investor."""
@@ -623,6 +625,7 @@ async def read_stock(ticker: TickerParam, session: SessionDep) -> StockDetail:
         }
     },
 )
+@cached(period="period")
 async def read_owners(
     ticker: TickerParam,
     session: SessionDep,
@@ -663,6 +666,7 @@ async def read_owners(
     summary="One stock's tracked ownership quarter by quarter, with its five largest holders",
     responses=_NOT_FOUND,
 )
+@cached(Lifetime.CURRENT_PERIOD)
 async def read_ownership_history(
     ticker: TickerParam, session: SessionDep
 ) -> Envelope[OwnershipPoint]:

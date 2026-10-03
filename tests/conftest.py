@@ -23,8 +23,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
+from app.api.deps import get_redis
 from app.core.config import Settings
 from app.main import create_app
+from tests.fake_redis import FakeRedis
 
 
 def make_settings(**overrides: Any) -> Settings:
@@ -59,7 +61,11 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     ASGITransport does not run the lifespan, which is the point: these tests
     supply their own stub dependencies and must never open a socket to a real
     Postgres or Redis. The lifespan gets its own test, with TestClient.
+
+    Each request gets an empty fake Redis unless the test overrides
+    ``get_redis`` first, so a cached endpoint builds its answer every time.
     """
+    app.dependency_overrides.setdefault(get_redis, lambda: FakeRedis())
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http_client:
         yield http_client
