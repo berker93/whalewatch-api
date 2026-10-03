@@ -42,6 +42,7 @@ from app.db.models.position_change import (
 )
 from app.db.models.position_snapshot import WEIGHT_PCT, PositionSnapshot
 from app.db.models.security import Security
+from app.db.models.security_alias import SecurityAlias
 
 __all__ = [
     "ACTION_CHECK",
@@ -78,4 +79,5 @@ __all__ = [
     "PositionSnapshot",
     "RunStatus",
     "Security",
+    "SecurityAlias",
 ]

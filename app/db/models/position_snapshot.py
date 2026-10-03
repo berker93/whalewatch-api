@@ -122,4 +122,12 @@ class PositionSnapshot(Base):
             "period_of_report",
             "security_id",
         ),
+        # One stock across every period (0018): its ownership history, and
+        # when it was last held. The index above leads with the period, so
+        # without this both read the whole table.
+        Index(
+            "ix_position_snapshot_security_id_period_of_report",
+            "security_id",
+            "period_of_report",
+        ),
     )

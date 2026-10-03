@@ -7,11 +7,12 @@ and how to capture them again after the data or an index changes::
     make explain a="--only stock_holders --runs 50"
     make explain a="--filer renaissance --period 2025-06-30"
 
-``GET /filings/{accession_no}`` and the two ``/v1/investors`` endpoints are
-built, and the investors' queries are read from the app. The rest are the
-queries the endpoints sketched in docs/product-spec.md ("API surface") will
-issue: their ``WHERE`` and ``ORDER BY`` are what the indexes are designed
-against, and the select lists are a guess. When an endpoint is built, its query
+``GET /filings/{accession_no}``, the ``/v1/investors`` endpoints and the
+``/v1/stocks`` endpoints are built, and the queries of the last two are read
+from the app. The rest are the queries the endpoints sketched in
+docs/product-spec.md ("API surface") will issue: their ``WHERE`` and ``ORDER
+BY`` are what the indexes are designed against, and the select lists are a
+guess. When an endpoint is built, its query
 belongs in the app and this list should read it from there.
 
 Three more are not an endpoint's: the top holding of every filer's latest
@@ -53,6 +54,16 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.api.pagination import PageParams
 from app.api.routers.investors import LATEST, detail_query, list_query
 from app.api.routers.portfolio import activity_query, history_query, portfolio_query
+from app.api.routers.stocks import (
+    detail_query as stock_detail_query,
+)
+from app.api.routers.stocks import (
+    lookup_query,
+    owners_query,
+    suggestions_query,
+    top_holders_query,
+    totals_query,
+)
 from app.core.config import get_settings
 from app.db.queries.top_holding import top_holdings, top_holdings_ranked
 from app.db.session import create_engine
@@ -74,6 +85,10 @@ class Query:
         leaves unbound, as ``bindparam("filer_slug")``, takes that name's value
         from :meth:`Parameters.bind`."""
         dialect = postgresql.dialect(paramstyle="named")  # type: ignore[no-untyped-call]
+        # Until it connects, the dialect assumes standard_conforming_strings is
+        # off and doubles each backslash in a literal, which makes LIKE's
+        # ESCAPE '\\' two characters. Every server this runs against has it on.
+        dialect._backslash_escapes = False
         compiled = statement.compile(dialect=dialect)
         bound = {k: v for k, v in compiled.params.items() if v is not None}
         return cls(name, endpoint, str(compiled), bound)
@@ -263,6 +278,33 @@ QUERIES: Final = (
         "GET /v1/investors/{slug}/history",
         history_query(bindparam("filer_slug")),
     ),
+    # By CUSIP, the only way to find most stocks until tickers resolve. The
+    # ticker and alias branches are index probes that find nothing.
+    Query.from_app(
+        "stock_lookup", "GET /v1/stocks/{ticker}", lookup_query(bindparam("cusip"), cusip=True)
+    ),
+    Query.from_app(
+        "stock_suggestions", "GET /v1/stocks/{ticker}, a 404", suggestions_query("APPL")
+    ),
+    Query.from_app(
+        "stock_detail", "GET /v1/stocks/{ticker}", stock_detail_query(bindparam("security_id"))
+    ),
+    # The first page, at the default page size.
+    Query.from_app(
+        "stock_owners",
+        "GET /v1/stocks/{ticker}/owners?period=",
+        owners_query(bindparam("security_id"), bindparam("period"), PageParams()),
+    ),
+    Query.from_app(
+        "stock_history_totals",
+        "GET /v1/stocks/{ticker}/ownership-history",
+        totals_query(bindparam("security_id")),
+    ),
+    Query.from_app(
+        "stock_history_top",
+        "GET /v1/stocks/{ticker}/ownership-history",
+        top_holders_query(bindparam("security_id"), bindparam("period")),
+    ),
     Query.from_app(
         "top_holding_distinct_on", "every filer's latest period", top_holdings(_LATEST_PERIODS)
     ),
@@ -319,6 +361,7 @@ class Parameters:
             "filer_id": self.filer_id,
             "filer_slug": self.filer_slug,
             "security_id": self.security_id,
+            "cusip": self.cusip,
             "filing_id": self.filing_id,
             "q": self.q,
             "pattern": f"%{self.q}%",

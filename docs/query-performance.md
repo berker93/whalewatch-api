@@ -912,6 +912,54 @@ CTE is materialised, so the filer and period cannot be pushed into it.
 `meta.latest_filing_at` pays the same cost for the same reason, and the two
 are the first things to look at if the portfolio ever needs to be faster.
 
+## Built since: the stock endpoints
+
+`GET /v1/stocks/{ticker}`, `/owners` and `/ownership-history`, which
+`make explain` reads from the app. The owners list takes the place of the
+planned `stock_holders` (7). Measured for Microsoft, the security with the
+most holders in the period with the most positions (2022Q2, 43 holders, 21
+periods held), after migration `0018_stock_lookup`.
+
+| Query | Rows | Server mean |
+| --- | --- | --- |
+| `stock_lookup`, by CUSIP | 1 | 0.02 ms |
+| `stock_suggestions`, for `APPL`, the 404 | 5 | 0.19 ms |
+| `stock_detail` | 1 | 0.09 ms |
+| `stock_owners`, the first page of 50 | 43 | 0.29 ms |
+| `stock_history_totals` | 21 | 0.76 ms (`EXPLAIN ANALYZE`) |
+| `stock_history_top` | 93 | 0.51 ms |
+
+`0018` added two indexes these needed:
+
+- **`position_snapshot (security_id, period_of_report)`.** The history reads
+  one security across every period, and the lookup reads when each candidate
+  was last held. `0017`'s index leads with the period, which neither has, so
+  both were a parallel sequential scan of the whole table: 65 ms for the
+  history's totals. Now each is an index scan of the security's 700 or so
+  rows, and `max(period_of_report)` reads one entry backwards.
+- **`security (upper(ticker) text_pattern_ops)`.** What *Not done* below
+  asked for, before any ticker resolves, so that the lookup is never a scan
+  of `security`. `upper()` because the lookup ignores case;
+  `text_pattern_ops` because the 404's suggestions are a prefix `LIKE`, which
+  the default operator class serves only under the `C` collation. The same
+  goes for the new `security_alias`'s unique index.
+
+Two things the first measurements got wrong, both fixed:
+
+- **An expression index has no statistics until `ANALYZE`.** Straight after
+  the migration the planner guessed 0.5% of `security` matched
+  `upper(ticker) = :key`, about 100 rows, and hash-joined a scan of all
+  20,766 securities to them: 1.5 ms. After `ANALYZE security` it knows no
+  ticker is set, and probes two indexes: 0.06 ms. The migration now runs the
+  `ANALYZE` itself, because autovacuum may not for a long time on a table
+  this quiet.
+- **One parameter, two types.** The lookup compares the key with
+  `upper(ticker)`, which is text, and `cusip`, which is `char(9)`. When one
+  parameter serves both, Postgres types it text, compares `cusip::text`, and
+  cannot use `uq_security_cusip`. The query casts the key to `char(9)` for
+  that branch. It only tries the branch for a nine-character key, so the
+  cast never truncates.
+
 ## Experiments
 
 Each was run on the full data and then undone. `DROP INDEX` and
@@ -1233,7 +1281,5 @@ Its two rebuild queries go through `effective_filing` over every filing, take
   filer with 40 positions against one with 6,000, is where a generic plan
   could go wrong. Nothing here showed it, but this is where to look if a
   query is fast under `EXPLAIN` and slow in the API.
-- **`/stocks/{ticker}`.** Once Epic 4 resolves tickers, `security.ticker`
-  needs an index, or every lookup is a sequential scan of `security`.
 - **The issuer table** takes over `ix_security_name_trgm`'s job when it
   arrives, as the data model plans.

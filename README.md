@@ -752,9 +752,9 @@ nor one of these. Jobs written later do the same, through
 
 ## The API
 
-Three read endpoints so far: one filing, which everything else gets debugged
-through, and the investors, listed and one at a time. The investors are under
-`/v1`, and the filing is not yet.
+One filing, which everything else gets debugged through, the investors, and
+the stocks. The investors and stocks are under `/v1`, and the filing is not
+yet.
 
 ### Collections: `{data, meta, page}`
 
@@ -925,6 +925,43 @@ The last four are the detail's. The list's rows are the rest, in the envelope.
   other value is a `422`.
 - **One query per request**, page size notwithstanding. See
   [query-performance.md](docs/query-performance.md#built-since-the-investor-list-and-detail).
+
+### `GET /v1/stocks/{ticker}`, `/owners` and `/ownership-history`
+
+One stock, who holds it in a period, and how that has moved quarter by
+quarter.
+
+```bash
+curl localhost:8000/v1/stocks/037833100                    # by CUSIP: no ticker resolves yet
+curl "localhost:8000/v1/stocks/037833100/owners?period=2026Q1&limit=20"
+curl localhost:8000/v1/stocks/037833100/ownership-history
+```
+
+- **`{ticker}` is a ticker, an alias, or a CUSIP**, in any case, tried in
+  that order. Aliases are `security_alias`: former tickers and other
+  spellings (`FB`, `BRK-B`). Nothing fills it yet, and no ticker is resolved
+  until Epic 4, so for now a stock is found by its CUSIP. When a ticker
+  names more than one security, recycled or across a CUSIP change, the one
+  held most recently wins.
+- **An unknown one is a `404` with suggestions**, in
+  `detail: {message, suggestions}`: up to five stocks whose ticker starts with
+  what was asked for, then whose name has a word like it, the most dollars
+  held first. `/v1/stocks/appl` suggests APPLE INC.
+- **The detail is the latest period published for anyone**, which it names
+  in `period` with its `coverage`, from the views. A stock nobody holds then
+  is zeros, not a 404. `net_shares` and `net_value_usd` leave out filers in
+  their first period, as the flows do. `sector` is null for every stock:
+  nothing loaded carries one.
+- **Owners** are the period's holders, largest first, each with its change
+  since that investor's previous period. Exits are not owners. `?period=`
+  defaults to the latest published for anyone, and one nobody published is
+  a `404`.
+- **The history names five holders on every row**: the largest by value in
+  the latest quarter anyone held the stock, followed back through every
+  quarter, with everyone else as `other`. Choosing them per quarter would
+  make a chart whose series change identity. A holder's `shares` is `0` in a
+  quarter it published without the stock and `null` in one it published
+  nothing for. The five and `other` add up to the total on every row.
 
 ## Data sources and limitations
 

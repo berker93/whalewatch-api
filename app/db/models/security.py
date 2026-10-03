@@ -10,7 +10,7 @@ this one holds only what a 13F information table actually gives us.
 
 from datetime import datetime
 
-from sqlalchemy import CHAR, BigInteger, CheckConstraint, DateTime, Index, Text
+from sqlalchemy import CHAR, BigInteger, CheckConstraint, DateTime, Index, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -97,5 +97,13 @@ class Security(Base):
             "name",
             postgresql_using="gin",
             postgresql_ops={"name": "gin_trgm_ops"},
+        ),
+        # /stocks/{ticker} ignores case, so it looks up upper(ticker), and its
+        # 404 suggests tickers by prefix (0018). text_pattern_ops for the
+        # prefix, as on security_alias.
+        Index(
+            "ix_security_upper_ticker",
+            func.upper(ticker).label("upper_ticker"),
+            postgresql_ops={"upper_ticker": "text_pattern_ops"},
         ),
     )
