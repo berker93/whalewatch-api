@@ -8,6 +8,7 @@ from the list below is a table autogenerate will never see.
 
 from app.db.models.base import NAMING_CONVENTION, Base
 from app.db.models.enums import AmendmentKind
+from app.db.models.figi_response_log import OUTCOME_CHECK, FIGIOutcome, FigiResponseLog
 from app.db.models.filer import (
     CATEGORY_CHECK,
     OVERLAP_CHECK,
@@ -53,6 +54,7 @@ __all__ = [
     "NAMING_CONVENTION",
     "NEW_CHECK",
     "NOT_SUCCESS_SAYS_WHY_CHECK",
+    "OUTCOME_CHECK",
     "OVERLAP_CHECK",
     "PARSE_STATUS_CHECK",
     "PENDING_STATUS_CHECK",
@@ -64,6 +66,8 @@ __all__ = [
     "AmendmentKind",
     "Base",
     "ChangeAction",
+    "FIGIOutcome",
+    "FigiResponseLog",
     "Filer",
     "FilerCategory",
     "FilerCik",

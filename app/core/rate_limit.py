@@ -1,4 +1,4 @@
-"""Token bucket rate limiter for EDGAR requests.
+"""Token bucket rate limiters for EDGAR and OpenFIGI requests.
 
 SEC publishes a 10 requests/second ceiling per IP and enforces it by blocking
 the offending address for about ten minutes. A backfill fires thousands of
@@ -7,10 +7,12 @@ it has to be a property of the only object that makes EDGAR requests, and the
 budget it meters has to be shared by everything in the process, because the
 thing SEC counts is our IP, not our objects.
 
-Hence the module-level singleton at the bottom. Two ``EdgarClient`` instances —
-one in the request path, one in a Celery task that happens to run in the same
-worker — must draw from the same bucket, or the process quietly runs at twice
-the configured rate and gets the IP banned mid-backfill.
+Hence the module-level singletons at the bottom, one per upstream budget. Two
+``EdgarClient`` instances — one in the request path, one in a Celery task that
+happens to run in the same worker — must draw from the same bucket, or the
+process quietly runs at twice the configured rate and gets the IP banned
+mid-backfill. OpenFIGI's per-minute quota is a second budget with the same
+property, and gets a second bucket.
 
 Why start empty, and why a burst of one
 ---------------------------------------
@@ -125,15 +127,15 @@ class AsyncTokenBucket:
         """
 
 
-#: Guards construction of the singleton. A ``threading.Lock`` and not an
-#: ``asyncio.Lock``: the accessor is synchronous, called from ``__init__``, and
+#: Guards construction of the singletons. A ``threading.Lock`` and not an
+#: ``asyncio.Lock``: the accessors are synchronous, called from ``__init__``, and
 #: the only race worth closing is two threads building two buckets.
 _CREATE_LOCK = threading.Lock()
-_edgar_limiter: AsyncTokenBucket | None = None
+_limiters: dict[str, AsyncTokenBucket] = {}
 
 
-def get_edgar_limiter(rate_per_second: float) -> AsyncTokenBucket:
-    """Return the process-wide EDGAR limiter, building it on first call.
+def _shared_limiter(budget: str, rate_per_second: float) -> AsyncTokenBucket:
+    """Return the process-wide bucket for ``budget``, building it on first call.
 
     If a later caller asks for a *slower* rate than the bucket already runs at,
     the bucket is slowed rather than replaced. Replacing it would orphan any
@@ -142,22 +144,32 @@ def get_edgar_limiter(rate_per_second: float) -> AsyncTokenBucket:
     the failure this module exists to prevent. A faster request is ignored: the
     tightest ceiling anyone asked for is the only safe one to honour.
     """
-    global _edgar_limiter
     with _CREATE_LOCK:
-        if _edgar_limiter is None:
-            _edgar_limiter = AsyncTokenBucket(rate_per_second)
-        elif rate_per_second < _edgar_limiter.rate_per_second:
-            _edgar_limiter.rate_per_second = rate_per_second
-        return _edgar_limiter
+        limiter = _limiters.get(budget)
+        if limiter is None:
+            limiter = _limiters[budget] = AsyncTokenBucket(rate_per_second)
+        elif rate_per_second < limiter.rate_per_second:
+            limiter.rate_per_second = rate_per_second
+        return limiter
 
 
-def reset_edgar_limiter() -> None:
-    """Drop the singleton so the next call builds a fresh one.
+def get_edgar_limiter(rate_per_second: float) -> AsyncTokenBucket:
+    """The process-wide EDGAR bucket. SEC counts our IP, so there is one."""
+    return _shared_limiter("edgar", rate_per_second)
+
+
+def get_openfigi_limiter(rate_per_second: float) -> AsyncTokenBucket:
+    """The process-wide OpenFIGI bucket, apart from EDGAR's: a different host
+    with a different quota, and waiting on one must not slow the other."""
+    return _shared_limiter("openfigi", rate_per_second)
+
+
+def reset_limiters() -> None:
+    """Drop every singleton so the next call builds a fresh one.
 
     For tests only. Each test function gets its own event loop, and a bucket
     that has already accrued time (or, worse, holds a lock whose waiters belong
     to a closed loop) makes timing assertions depend on execution order.
     """
-    global _edgar_limiter
     with _CREATE_LOCK:
-        _edgar_limiter = None
+        _limiters.clear()

@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     # a cached one is a quietly out-of-date answer.
     edgar_cache_dir: Path | None = None
 
+    # --- OpenFIGI -------------------------------------------------------------
+    # Optional, and worth having: a free key (a form at openfigi.com) is ten
+    # times the request rate and ten times the CUSIPs per request. Unset, the
+    # client runs at the unkeyed quota. The quotas themselves live with the
+    # client (app/ingestion/enrichment/figi.py), next to the date they were
+    # last checked.
+    openfigi_api_key: SecretStr | None = None
+
     # --- raw document archive -----------------------------------------------
     # Where every fetched EDGAR document is kept, byte for byte, before a parser
     # sees it (app/storage). "local" writes under raw_store_local_root and is for
@@ -136,6 +144,15 @@ class Settings(BaseSettings):
     # this class, like everything else's.
     raw_store_s3_access_key_id: str | None = None
     raw_store_s3_secret_access_key: SecretStr | None = None
+
+    @field_validator("openfigi_api_key", mode="before")
+    @classmethod
+    def _blank_key_is_no_key(cls, value: object) -> object:
+        """``OPENFIGI_API_KEY=`` in a copied .env means "none", not a key of
+        ``""`` — which would be sent, and refused with a 401."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("cors_origins", mode="before")
     @classmethod

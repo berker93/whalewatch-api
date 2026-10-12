@@ -673,6 +673,29 @@ Not in any layer above. It describes the pipeline, not the filings, and nothing
 reads it for correctness. Unlike `pending_filing` it only grows, hence the one
 index, for its one question: the latest runs of a job.
 
+### `figi_response_log`
+
+```
+id            bigint       pk
+cusip         char(9)      not null                -- the idValue asked about
+outcome       text         not null                -- found | not_found | error
+response      jsonb        not null                -- the job's response, verbatim
+requested_at  timestamptz  not null default now()  -- one request, one timestamp
+index (cusip, requested_at desc)
+```
+
+Every answer OpenFIGI's mapping API has given, one row per CUSIP asked about
+(`0021_figi_response_log`). [`OpenFIGIClient`](../app/ingestion/enrichment/figi.py)
+commits each request's rows before sending the next, and reads the latest row
+per CUSIP before asking again, so an interrupted or repeated resolution run
+spends no quota on what it already has. `error` rows are kept but never reused.
+They describe the request, not the CUSIP.
+
+Append-only. Not foreign-keyed to `security`: it records what an external API
+said about nine characters. Like `ingestion_run`, it is in no layer above, and
+nothing reads it for correctness. `security.ticker` and `security.figi` are
+the resolved values; this table is the evidence they were resolved from.
+
 ## Partitioning
 
 `holding` is the only table with a partitioning plan, and it is deferred until it

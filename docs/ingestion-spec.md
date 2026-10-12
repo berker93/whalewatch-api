@@ -271,6 +271,16 @@ tickers. Batched (the API takes many jobs per request), cached permanently in
 `security`, and retried on a schedule for the ones that miss — a newly listed
 name can resolve next month. Unresolved is a normal state, not a failure.
 
+`OpenFIGIClient.map_cusips` in `app/ingestion/enrichment/figi.py` is the only
+thing that talks to OpenFIGI. It batches to the per-request job cap and paces
+requests under the per-minute quota: 25 requests/minute and 10 CUSIPs per
+request without `OPENFIGI_API_KEY`, 25 per 6 seconds and 100 per request with
+one (as published, checked 2026-10-12). Every job's response is written to
+`figi_response_log` as it arrives, and a later call reads that log first, so
+re-running costs nothing. It returns every match OpenFIGI gave, without
+choosing one: an unfiltered CUSIP lookup typically answers with one listing per
+exchange, and picking the right one belongs to resolution, not the transport.
+
 Newer information tables may carry a FIGI column of their own. Prefer it, and
 record which source a mapping came from, so a bad OpenFIGI match can be found and
 corrected without re-resolving everything.

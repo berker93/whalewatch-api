@@ -1159,7 +1159,7 @@ Write these down once so you are not re-deriving them from a 13F XML at midnight
 | `data.sec.gov/submissions/CIK##########.json` | none | every filing a known CIK has made — how we find 13Fs |
 | EDGAR daily index | none | everything filed on one day — how we find Form 4s, whose filers we cannot know in advance |
 | EDGAR archives | none | the documents themselves |
-| OpenFIGI | free API key | CUSIP → ticker, because 13F reports neither ticker nor name we can trust |
+| OpenFIGI | optional free API key (`OPENFIGI_API_KEY`, 10× the quota) | CUSIP → ticker, because 13F reports neither ticker nor name we can trust |
 
 All public, all free, hard-capped at **10 requests/second across all of sec.gov**
 by SEC's fair-access policy. `SEC_RATE_LIMIT_PER_SECOND` defaults to 8 and

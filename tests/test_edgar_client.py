@@ -34,7 +34,7 @@ from tenacity import RetryCallState, wait_none
 
 from app.core.config import Settings
 from app.core.logging import configure_logging
-from app.core.rate_limit import AsyncTokenBucket, get_edgar_limiter, reset_edgar_limiter
+from app.core.rate_limit import AsyncTokenBucket, get_edgar_limiter, reset_limiters
 from app.ingestion.edgar.client import (
     _BACKOFF,
     _BACKOFF_MAX_SECONDS,
@@ -64,9 +64,9 @@ def _fresh_limiter() -> Iterator[None]:
     lock whose waiters belong to a closed loop — into the next one, making
     timing assertions depend on collection order.
     """
-    reset_edgar_limiter()
+    reset_limiters()
     yield
-    reset_edgar_limiter()
+    reset_limiters()
 
 
 @pytest.fixture(autouse=True)
