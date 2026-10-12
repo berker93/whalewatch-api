@@ -19,6 +19,7 @@ byte-order mark, and content that is not valid UTF-8 at all.
 import gzip
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from datetime import date
 from pathlib import Path
 from typing import Any, Final
 
@@ -32,6 +33,8 @@ from app.storage.raw import (
     RawStore,
     open_raw_store,
     thirteen_f_key,
+    thirteen_f_list_key,
+    thirteen_f_list_prefix,
     thirteen_f_prefix,
     validate_key,
 )
@@ -241,6 +244,31 @@ def test_a_filename_must_be_one_segment(filename: str) -> None:
 def test_a_malformed_cik_or_accession_number_is_refused(cik: str, accession: str) -> None:
     with pytest.raises(ValueError):
         thirteen_f_prefix(cik, accession)
+
+
+def test_the_13f_list_key_scheme() -> None:
+    """One prefix per quarter, under the SEC's own filename."""
+    assert (
+        thirteen_f_list_key(date(2026, 6, 30), "13flist2026q2-txt.txt")
+        == "raw/13f-list/2026Q2/13flist2026q2-txt.txt"
+    )
+    assert thirteen_f_list_prefix(date(2026, 3, 31)) == "raw/13f-list/2026Q1/"
+
+
+def test_a_13f_list_key_is_not_under_the_filings_prefix() -> None:
+    """``raw/13f/`` lists filers' archives; a list there would read as a CIK."""
+    assert not thirteen_f_list_key(date(2026, 3, 31), "13flist2026q1.txt").startswith("raw/13f/")
+
+
+@pytest.mark.parametrize("filename", ["", "files/13flist2026q1.txt", ".13flist2026q1.txt"])
+def test_a_13f_list_filename_must_be_one_segment(filename: str) -> None:
+    with pytest.raises(ValueError, match="not a raw store key"):
+        thirteen_f_list_key(date(2026, 3, 31), filename)
+
+
+def test_a_13f_list_key_needs_a_quarter_end() -> None:
+    with pytest.raises(ValueError, match="not a quarter end"):
+        thirteen_f_list_key(date(2026, 3, 30), "13flist2026q1.txt")
 
 
 def test_validate_key_returns_what_it_accepts() -> None:

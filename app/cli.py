@@ -1,5 +1,6 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
-audit-amendments, check-data, recompute, backfill, runs, refresh-views, reconcile.
+audit-amendments, check-data, recompute, backfill, runs, refresh-views, reconcile,
+import-13f-list.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -28,6 +29,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli refresh-views --view mv_quarter_flows --no-concurrent
     uv run python -m app.cli reconcile
     uv run python -m app.cli runs --job backfill_13f
+    uv run python -m app.cli import-13f-list --quarter 2026Q1
 
 Every run is recorded
 ---------------------
@@ -104,10 +106,12 @@ from app.api.cache import invalidate
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.periods import quarter_label
 from app.core.redis import create_redis
 from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
+from app.db.models.sec_13f_security import ListStatus
 from app.db.queries.amendments import PeriodFiling, PeriodResolution, audit_amendments
 from app.db.queries.checks import DataCheckReport, check_data
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
@@ -153,6 +157,11 @@ from app.ingestion.edgar.submissions import (
     SubmissionNotFoundError,
     find_submission,
 )
+from app.ingestion.edgar.thirteen_f_list import (
+    ThirteenFListUnavailableError,
+    filename_quarter,
+    find_list_url,
+)
 from app.ingestion.investors import (
     DEFAULT_INVESTORS_PATH,
     InvestorEntry,
@@ -162,7 +171,13 @@ from app.ingestion.investors import (
     load_investors,
     seed_investors,
 )
-from app.ingestion.loaders import LoadResult, load_filing
+from app.ingestion.loaders import (
+    AdditionsCheck,
+    LoadResult,
+    check_additions,
+    load_13f_list,
+    load_filing,
+)
 from app.ingestion.normalisation import NormalisedFiling, NoteKind, normalise_filing
 from app.ingestion.parsers.errors import FilingParseError
 from app.ingestion.parsers.thirteen_f import (
@@ -171,9 +186,20 @@ from app.ingestion.parsers.thirteen_f import (
     parse_information_table,
     parse_primary_doc,
 )
+from app.ingestion.parsers.thirteen_f_list import (
+    ThirteenFList,
+    ThirteenFListParseError,
+    parse_13f_list,
+)
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
 from app.jobs.tracking import track_run
-from app.storage.raw import RawStore, RawStoreError, open_raw_store
+from app.storage.raw import (
+    RawStore,
+    RawStoreError,
+    open_raw_store,
+    thirteen_f_list_key,
+    thirteen_f_list_prefix,
+)
 
 logger = get_logger(__name__)
 
@@ -2487,6 +2513,215 @@ def _iso(day: date | None, *, blank: str = "-") -> str:
 
 def _truncate(text: str, width: int) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
+
+
+# --- import-13f-list ---------------------------------------------------------
+
+
+@app.command("import-13f-list")
+def import_13f_list_command(
+    period: Annotated[
+        date,
+        typer.Option(
+            "--quarter",
+            metavar="YYYYQN",
+            parser=_quarter_end,
+            help="The quarter whose list to import, e.g. 2026Q1.",
+        ),
+    ],
+    path: Annotated[
+        Path | None,
+        typer.Option(
+            "--file",
+            metavar="PATH",
+            help="Import this copy of the list instead of finding it on the SEC's page. "
+            "It is archived like a download.",
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Fetch the list from the SEC again, or archive --file, replacing the "
+            "copy already archived.",
+        ),
+    ] = False,
+) -> None:
+    """Import the SEC's Official List of Section 13(f) Securities for one quarter.
+
+    Finds the quarter's text file on the SEC's 13(f) list page, archives it,
+    and replaces that quarter's rows in sec_13f_security. Other quarters are
+    left alone. A quarter already archived is imported from the archive, with
+    no request to the SEC, unless --force.
+
+    Refuses a list whose additions were mostly on the previous quarter's list
+    already, which means the file is another quarter's. The check needs the
+    previous quarter imported first. Quarters before 2020Q1 are PDF only and
+    are refused.
+    """
+    try:
+        asyncio.run(_import_13f_list(period, path=path, force=force))
+    except (
+        CommandError,
+        ThirteenFListUnavailableError,
+        ThirteenFListParseError,
+        EdgarRateLimited,
+        EdgarServerError,
+        httpx.HTTPError,
+        RawStoreError,
+    ) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+@dataclass(frozen=True, slots=True)
+class _ListCopy:
+    """One quarter's list file, and where this run got it."""
+
+    body: bytes
+    key: str
+    source: str
+    """The URL it was downloaded from, the file it was read from, or ``archive``."""
+
+    archived: bool
+    """Whether this run wrote it to the archive."""
+
+
+#: How the raw store is told a list file is text.
+_LIST_CONTENT_TYPE: Final = "text/plain"
+
+
+async def _import_13f_list(period: date, *, path: Path | None, force: bool) -> None:
+    """Get the file, archive it, parse it, check it, write it: in that order.
+
+    Archived before it is parsed, as a filing is, so a list that fails to
+    parse or is refused is already kept for the fix.
+    """
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    label = quarter_label(period)
+
+    async with track_run(settings, "import-13f-list", quarter=label, file=path, force=force) as run:
+        async with open_raw_store(settings) as store:
+            if path is not None:
+                copy = await _list_from_file(store, period, path, force=force)
+            else:
+                copy = await _list_from_sec(settings, store, period, force=force)
+
+        parsed = parse_13f_list(copy.body)
+        run.items_seen = parsed.lines
+
+        async with session_scope(settings) as session:
+            check = await check_additions(session, period, parsed)
+            if not check.passed:
+                raise CommandError(
+                    f"{label}'s list marks {check.added:,} CUSIPs added, and "
+                    f"{check.already_listed:,} of them were already on "
+                    f"{quarter_label(check.previous)}'s list: it is probably another "
+                    f"quarter's file. Nothing was written. It is archived at {copy.key}"
+                )
+            replaced = await load_13f_list(session, period, parsed)
+        run.items_written = len(parsed.securities)
+
+        # Nothing the API serves reads sec_13f_security yet, so no cache to drop.
+        run.metrics |= {
+            "source": copy.source,
+            "raw_key": copy.key,
+            "archived": copy.archived,
+            "collapsed": parsed.collapsed,
+            "added": parsed.count(ListStatus.ADDED),
+            "deleted": parsed.count(ListStatus.DELETED),
+            "replaced": replaced,
+            "checked_against": quarter_label(check.previous) if check.previous_imported else None,
+            "already_listed": check.already_listed,
+        }
+        logger.info(
+            "thirteen_f_list.imported",
+            quarter=label,
+            securities=len(parsed.securities),
+            lines=parsed.lines,
+            collapsed=parsed.collapsed,
+            replaced=replaced,
+            raw_key=copy.key,
+        )
+    _echo_13f_list(period, copy, parsed, check, replaced=replaced)
+
+
+async def _list_from_sec(
+    settings: Settings, store: RawStore, period: date, *, force: bool
+) -> _ListCopy:
+    """The archived copy if there is exactly one, else whatever the SEC's page links.
+
+    With one copy archived, no request is made. With none, or with several (the
+    SEC renamed a file it had to correct), the page decides which is current,
+    and that one is read from the archive if it is there.
+    """
+    archived = await store.list(thirteen_f_list_prefix(period))
+    if len(archived) == 1 and not force:
+        return _ListCopy(await store.get(archived[0]), archived[0], "archive", archived=False)
+
+    async with EdgarClient(settings) as edgar:
+        url = await find_list_url(edgar, period)
+        key = thirteen_f_list_key(period, url.rsplit("/", 1)[-1])
+        if key in archived and not force:
+            return _ListCopy(await store.get(key), key, "archive", archived=False)
+        body = await edgar.get_bytes(url)
+    await store.put(key, body, _LIST_CONTENT_TYPE, overwrite=force)
+    return _ListCopy(body, key, url, archived=True)
+
+
+async def _list_from_file(store: RawStore, period: date, path: Path, *, force: bool) -> _ListCopy:
+    """``--file``, archived under its own name like a download.
+
+    Refused if its name says it is another quarter's, or if a different file of
+    the same name is archived already and there is no --force to replace it:
+    importing one file while the archive keeps another would make the archive
+    wrong about what was imported.
+    """
+    label = quarter_label(period)
+    try:
+        body = await asyncio.to_thread(path.read_bytes)
+    except OSError as failure:
+        raise CommandError(f"could not read {path}: {failure.strerror or failure}") from failure
+    named = filename_quarter(path.name)
+    if named is not None and named != period:
+        raise CommandError(
+            f"{path.name} is {quarter_label(named)}'s list by its name, not {label}'s"
+        )
+    try:
+        key = thirteen_f_list_key(period, path.name)
+    except ValueError as failure:
+        raise CommandError(f"{path.name!r} cannot be archived under that name") from failure
+    if not force and await store.exists(key) and await store.get(key) != body:
+        raise CommandError(f"a different {path.name} is archived at {key}; --force replaces it")
+    await store.put(key, body, _LIST_CONTENT_TYPE, overwrite=force)
+    return _ListCopy(body, key, str(path), archived=True)
+
+
+def _echo_13f_list(
+    period: date, copy: _ListCopy, parsed: ThirteenFList, check: AdditionsCheck, *, replaced: int
+) -> None:
+    typer.echo(f"import-13f-list  {quarter_label(period)}  {copy.key.rsplit('/', 1)[-1]}")
+    _line("source", copy.key if copy.source == "archive" else copy.source)
+    _line("archived", copy.key if copy.archived else "already archived")
+    lines = f"{parsed.lines:,} read"
+    if parsed.collapsed:
+        lines += f", {parsed.collapsed:,} repeating a CUSIP and collapsed"
+    _line("lines", lines)
+    listed_options = sum(1 for security in parsed.securities if security.has_listed_options)
+    _line(
+        "securities",
+        f"{len(parsed.securities):,}: {parsed.count(ListStatus.LISTED):,} listed, "
+        f"{parsed.count(ListStatus.ADDED):,} added, {parsed.count(ListStatus.DELETED):,} deleted; "
+        f"{listed_options:,} with listed options",
+    )
+    previous = quarter_label(check.previous)
+    if not check.previous_imported:
+        _line("checked", f"not checked: {previous} is not imported")
+    else:
+        already = f"{check.already_listed:,}" if check.already_listed else "none"
+        _line("checked", f"{check.added:,} additions against {previous}: {already} already listed")
+    _line("replaced", _count(replaced, "row") if replaced else "nothing, first import")
 
 
 if __name__ == "__main__":

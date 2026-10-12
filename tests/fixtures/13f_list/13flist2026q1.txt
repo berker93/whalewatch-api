@@ -1,0 +1,19 @@
+B38564108*CMB.TECH NV                   SHS                                    E
+B38564908 CMB.TECH NV                   CALL                                   E
+B38564958 CMB.TECH NV                   PUT                                    E
+G0R21F121 APEX TECH ACQUISITION INC     UNIT 99/99/9999            *A*         E
+G0R38M101 ARMADA ACQUISITION CORP III   ORD SHS CL A               *A*         E
+G0223V105 ALPHATIME ACQUISITION CORP    ORDINARY SHARES            *D*         E
+M8216Q119*LIFEWARD LTD                  SHS                        *D*         E
+M8216Q909 LIFEWARD LTD                  CALL                       *D*         E
+M8216Q959 LIFEWARD LTD                  PUT                        *D*         E
+M8216Q309*LIFEWARD LTD                  SHS                        *A*         E
+M8216Q909 LIFEWARD LTD                  CALL                       *A*         E
+M8216Q959 LIFEWARD LTD                  PUT                        *A*         E
+00162Q905 ALPS ETF TR                   CALL                                   E
+00162Q905 ALPS ETF TR                   CALL                                   E
+037833100*APPLE INC                     COM                                    E
+084670108 BERKSHIRE HATHAWAY INC DEL    CL A                                   E
+084670702*BERKSHIRE HATHAWAY INC DEL    CL B NEW                               E
+25460E904 DIREXION SHS ETF TR           CALL                       *D*         E
+25460E904 DIREXION SHARES ETF TRUST     CALL                                   E

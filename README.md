@@ -318,7 +318,10 @@ already archived, and fixing the bug means re-parsing stored bytes rather than
 re-crawling EDGAR at ten requests a second. It also keeps our copy of a filing
 EDGAR later restates or withdraws. Writes are once-only — a key that exists is
 left alone, so the first copy is the one kept — unless `--force` says otherwise.
-`filing.raw_key` holds the filing's prefix.
+`filing.raw_key` holds the filing's prefix. The SEC's quarterly 13(f)
+securities lists are archived beside them, under
+`raw/13f-list/{quarter}/{filename}` (see
+[`import-13f-list`](#import-13f-list---quarter-yyyyqn---file-path---force)).
 
 `RAW_STORE_BACKEND` picks the implementation ([app/storage](app/storage/)):
 
@@ -692,6 +695,46 @@ hand, then over that fixture broken one way at a time, each breakage caught by
 its invariant on its row. **Exit codes.** 0 when every invariant holds, 1 when
 any fails; under `make`, which exits 2 for any failing command.
 
+### `import-13f-list --quarter YYYYQN [--file PATH] [--force]`
+
+Imports the SEC's [Official List of Section 13(f) Securities](https://www.sec.gov/rules-regulations/staff-guidance/official-list-section-13f-securities)
+for one quarter into `sec_13f_security`: every CUSIP a 13F may report, with the
+SEC's issuer name and description, and whether it was added or deleted since the
+last list. No tickers, but an authoritative name. The lists name 92.6% of the
+securities in the dev database, holding 99.86% of held value. They are the issuer-name
+fallback when OpenFIGI has no match ([app/ingestion/enrichment/issuer_names.py](app/ingestion/enrichment/issuer_names.py)).
+
+```
+import-13f-list  2026Q1  13flist2026q1.txt
+  source      https://www.sec.gov/files/investment/13flist2026q1.txt
+  archived    raw/13f-list/2026Q1/13flist2026q1.txt
+  lines       24,641 read, 1,982 repeating a CUSIP and collapsed
+  securities  22,659: 21,026 listed, 938 added, 695 deleted; 6,014 with listed options
+  checked     938 additions against 2025Q4: none already listed
+  replaced    nothing, first import
+```
+
+- **The URL comes from the SEC's page, never from a template.** The files have
+  moved between paths and their names vary (`13flist2026q2-txt.txt`), so the
+  command reads the page and takes the link whose filename names the quarter.
+- **Text files only.** There is no XLSX. Every quarter from 2020Q1 has a text
+  file, which is parsed. 2019Q4 and earlier are PDF only and are refused.
+- **Archived, then parsed, then written,** under `raw/13f-list/{quarter}/`. A
+  quarter already archived is re-imported from the archive with no request to
+  the SEC; `--force` fetches it again. `--file` imports a copy you downloaded
+  yourself, and archives it the same way.
+- **One quarter at a time, replaced whole.** Other quarters are kept: the list
+  changes every quarter, and the history is the point.
+- **A list that repeats the previous quarter is refused.** The SEC's 2025Q3
+  text file is byte for byte its 2025Q1 file. The command catches that by
+  checking the list's `*A*` additions against the previous quarter's list:
+  559 of 584 were already on it, against none in any genuine quarter from
+  2020Q2 to 2026Q3. More than 10% refuses the list. The check needs the
+  previous quarter imported, so import in order. 2025Q3 has no list until the
+  SEC fixes its file.
+
+Nothing the API serves reads the table yet, so no cache is dropped.
+
 ### `runs [--job NAME] [--limit N]`
 
 Lists the most recent job runs, newest first, from `ingestion_run`. Every verb
@@ -729,8 +772,9 @@ ORDER BY started_at DESC LIMIT 1;
 so the row leads to the log and the log back to the row with one grep. `context`
 holds the run's parameters as `jsonb`, e.g. `WHERE context @> '{"force": true}'`.
 `metrics` holds what the run measured beyond its counters, written as it ends.
-So far only `refresh-views` measures anything: each view's duration, rows, and
-whether it was refreshed concurrently.
+`refresh-views` records each view's duration, rows, and whether it was
+refreshed concurrently. `import-13f-list` records where its list came from
+(`source`, `raw_key`) and what the additions check found.
 
 **A verb that publishes leaves two rows.** `recompute`, and an `ingest-filing`
 or `backfill` that loaded something, are followed by the `refresh-views` run
@@ -747,6 +791,7 @@ they started. Its `context` names them in `after_run_id`.
 | `recompute` | Periods resolved, published or withheld | Periods published |
 | `refresh-views` | Materialised views to refresh | Materialised views refreshed |
 | `check-data`, `audit-*` | Findings reported | 0 |
+| `import-13f-list` | Lines in the list file | Securities written, one per CUSIP |
 
 **Every verb records its run except two.** `runs` reads the record, and a
 listing that added itself would always show itself first. `verify-investors`

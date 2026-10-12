@@ -696,6 +696,40 @@ said about nine characters. Like `ingestion_run`, it is in no layer above, and
 nothing reads it for correctness. `security.ticker` and `security.figi` are
 the resolved values; this table is the evidence they were resolved from.
 
+### `sec_13f_security`
+
+```
+id                  bigint   pk
+period_of_report    date     not null                 -- the quarter end the list is for
+quarter             text     GENERATED STORED         -- '2026Q1', as on filing
+cusip               char(9)  not null                 -- as printed; not check-digit validated
+issuer_name         text     not null                 -- upper case, cut to 28 characters
+issuer_description  text                              -- 'COM', 'CL A', 'CALL'; null if blank
+status              text     not null                 -- listed | added | deleted
+has_listed_options  boolean  not null                 -- the list's '*'
+unique (period_of_report, cusip)
+index (cusip, period_of_report desc)
+```
+
+The SEC's Official List of Section 13(f) Securities, one row per CUSIP per
+quarter (`0022_sec_13f_security`), written by `import-13f-list`. Every quarter
+is kept, because the list changes as securities are added and deleted. An
+import replaces one quarter's rows and leaves the rest alone. `deleted` rows are
+the SEC's `*D*`: on the previous list, not on this one, and still printed with
+their names.
+
+What it is for: an issuer name the SEC wrote, for a CUSIP OpenFIGI cannot match
+([`issuer_names`](../app/ingestion/enrichment/issuer_names.py), which takes the
+latest list that has the CUSIP). It has no tickers. Across 2020Q1 to 2026Q3 the
+lists name 92.6% of the dev database's securities.
+
+The published file repeats about a thousand CUSIPs a quarter from 2026Q1. These
+are option rows whose synthetic CUSIPs collide across a trust's funds. The
+parser collapses them before they reach the unique constraint; see
+[its module](../app/ingestion/parsers/thirteen_f_list.py) for how each field is
+chosen. Not foreign-keyed to `security`, for `figi_response_log`'s reason, and
+most of its CUSIPs are held by no one we track. In no layer above.
+
 ## Partitioning
 
 `holding` is the only table with a partitioning plan, and it is deferred until it

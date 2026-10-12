@@ -35,6 +35,10 @@ from app.derived.views import MATERIALISED_VIEWS
 from tests.conftest import make_settings
 from tests.fake_redis import FakeRedis
 
+#: A real excerpt of a 13(f) securities list, so import-13f-list runs in full
+#: from a file instead of from the SEC.
+LIST_FIXTURE: Final = Path(__file__).parents[1] / "fixtures" / "13f_list" / "13flist2026q1.txt"
+
 #: Each tracked verb, the job name it records under, an invocation that runs
 #: in full against an empty database without touching EDGAR, and the status
 #: that invocation ends in.
@@ -49,6 +53,11 @@ TRACKED: Final = {
     "recompute": ("recompute", ["--all"], "success"),
     "refresh-views": ("refresh-views", [], "success"),
     "reconcile": ("reconcile", [], "success"),
+    "import-13f-list": (
+        "import-13f-list",
+        ["--quarter", "2026Q1", "--file", str(LIST_FIXTURE)],
+        "success",
+    ),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.
@@ -89,7 +98,8 @@ def _truncate(engine: AsyncEngine) -> None:
         engine,
         text(
             "TRUNCATE ingestion_run, matview_refresh, pending_filing, position_snapshot, "
-            "holding, filing, security, filer_cik, filer RESTART IDENTITY CASCADE"
+            "holding, filing, security, filer_cik, filer, sec_13f_security "
+            "RESTART IDENTITY CASCADE"
         ),
         *(text(f"REFRESH MATERIALIZED VIEW {view.name}") for view in MATERIALISED_VIEWS),
     )

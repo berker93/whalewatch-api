@@ -28,6 +28,10 @@ own filename. Built only by :func:`thirteen_f_key`, so the layout has one home.
 Every document of one filing shares a prefix (:func:`thirteen_f_prefix`), which
 is what :meth:`RawStore.list` is for.
 
+``raw/13f-list/{quarter}/{filename}`` — the SEC's Official List of Section 13(f)
+Securities for one quarter (``2026Q1``), under the SEC's own filename. Built only
+by :func:`thirteen_f_list_key`; :func:`thirteen_f_list_prefix` names a quarter's.
+
 Two implementations, chosen by ``RAW_STORE_BACKEND``: :class:`LocalRawStore`
 under ``./data`` for development, and :class:`~app.storage.s3.S3RawStore` for
 any S3-compatible bucket, Cloudflare R2 included. Get one with
@@ -41,12 +45,14 @@ import os
 import tempfile
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import Final, Protocol
 
 from app.core.accession import normalise_accession
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.core.periods import quarter_label
 
 logger = get_logger(__name__)
 
@@ -143,6 +149,28 @@ def thirteen_f_key(cik: int | str, accession_no: str, filename: str) -> str:
         # validate_key would accept it as two segments; a filename is one.
         raise ValueError(f"{filename!r} is not a raw store key segment")
     return validate_key(thirteen_f_prefix(cik, accession_no) + filename)
+
+
+def thirteen_f_list_prefix(period: date) -> str:
+    """``raw/13f-list/2026Q1/`` — every copy of one quarter's 13(f) securities list.
+
+    :raises ValueError: If ``period`` is not a quarter end.
+    """
+    return f"raw/13f-list/{quarter_label(period)}/"
+
+
+def thirteen_f_list_key(period: date, filename: str) -> str:
+    """``raw/13f-list/{quarter}/{filename}``, the key for one quarter's list.
+
+    ``filename`` is the SEC's, unaltered — ``13flist2026q2-txt.txt`` stays as it
+    is — so the key says which published file the bytes are.
+
+    :raises ValueError: If ``period`` is not a quarter end, or ``filename``
+        would not be a single path segment.
+    """
+    if "/" in filename:
+        raise ValueError(f"{filename!r} is not a raw store key segment")
+    return validate_key(thirteen_f_list_prefix(period) + filename)
 
 
 def validate_key(key: str) -> str:

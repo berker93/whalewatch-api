@@ -1,4 +1,4 @@
-"""Loaders: the only code that writes parsed filings into the database.
+"""Loaders: the only code that writes parsed documents into the database.
 
 One module per form family, each exposing a single ``load_*`` function that is
 safe to call again on a filing it has already loaded. That property is the whole
@@ -8,5 +8,6 @@ was designed to be.
 """
 
 from app.ingestion.loaders.filing import LoadResult, load_filing
+from app.ingestion.loaders.thirteen_f_list import AdditionsCheck, check_additions, load_13f_list
 
-__all__ = ["LoadResult", "load_filing"]
+__all__ = ["AdditionsCheck", "LoadResult", "check_additions", "load_13f_list", "load_filing"]

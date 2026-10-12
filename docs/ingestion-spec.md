@@ -14,7 +14,7 @@ plausible and wrong at the same time.
 | `data.sec.gov/submissions/CIK##########.json` | Every filing a CIK has made, newest first. How we discover 13Fs for a known filer |
 | `www.sec.gov/Archives/edgar/daily-index/YYYY/QTRn/form.YYYYMMDD.idx` | Everything filed on one day, by form type. How we discover Form 4s, whose filers we do not know in advance |
 | `www.sec.gov/Archives/edgar/data/{cik}/{accession}/…` | The documents themselves |
-| `www.sec.gov/divisions/investment/13f/13flist……` | The quarterly Section 13(f) securities list — what is reportable in a given quarter |
+| `www.sec.gov/divisions/investment/13flists` → `/files/investment/13flist……` | The quarterly Section 13(f) securities list — what is reportable in a given quarter, with the SEC's issuer names |
 | OpenFIGI `POST /v3/mapping` | CUSIP → ticker + FIGI |
 
 Everything but OpenFIGI is unauthenticated and free. None of it has a rate limit
@@ -284,6 +284,20 @@ exchange, and picking the right one belongs to resolution, not the transport.
 Newer information tables may carry a FIGI column of their own. Prefer it, and
 record which source a mapping came from, so a bad OpenFIGI match can be found and
 corrected without re-resolving everything.
+
+**Issuer names (the SEC's 13(f) list).** OpenFIGI has no match for some
+CUSIPs. The SEC's Official List of Section 13(f) Securities still names most of
+them, quarterly, free, and authoritatively, though without tickers.
+`import-13f-list --quarter 2026Q1` reads the Division of Investment
+Management's page for that quarter's link (the files have moved and been renamed
+too often to build the URL), archives the text file under
+`raw/13f-list/{quarter}/`, and replaces that quarter's rows in
+`sec_13f_security`. Text only: from 2020Q1 every quarter has one, and before
+that the lists are PDF only. A list is refused if its additions were already on
+the previous quarter's list. That is how the SEC's 2025Q3 file, a copy of its
+2025Q1 file, is caught. `issuer_names` in
+`app/ingestion/enrichment/issuer_names.py` takes OpenFIGI's name and falls back
+to the latest list's.
 
 **Prices.** Needed to value positions at a period end, to split-adjust share
 counts, and for the sanity check above. Fetched per `(security, trade_date)` for
