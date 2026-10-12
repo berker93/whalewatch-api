@@ -42,7 +42,10 @@ class TopHolding(BaseModel):
     )
     issuer_name: str | None = Field(
         default=None,
-        description="The issuer, as the filing that first reported the CUSIP named it.",
+        description=(
+            "The issuer: OpenFIGI's name once resolved, else the SEC's 13(f) list's, else "
+            "the name the first filing to report the CUSIP gave it."
+        ),
         examples=["APPLE INC"],
     )
     weight_pct: Percent | None = Field(

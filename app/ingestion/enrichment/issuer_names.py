@@ -22,8 +22,8 @@ and that is the newest thing the SEC has said about it. The list prints names
 in upper case and cuts them at 28 characters (``AGRICULTURE & NAT SOL ACQ CO``);
 they are used as printed.
 
-Nothing writes the result yet. This is the fallback the resolution step that
-fills ``security`` is meant to use, not a read path the API takes today.
+``resolve-cusips`` (:mod:`app.ingestion.enrichment.resolution`) names every
+security this way, and writes the name to ``security.name``.
 """
 
 from __future__ import annotations

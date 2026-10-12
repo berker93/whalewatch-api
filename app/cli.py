@@ -1,6 +1,6 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
 audit-amendments, check-data, recompute, backfill, runs, refresh-views, reconcile,
-import-13f-list.
+import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -30,6 +30,9 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli reconcile
     uv run python -m app.cli runs --job backfill_13f
     uv run python -m app.cli import-13f-list --quarter 2026Q1
+    uv run python -m app.cli resolve-cusips --limit 200
+    uv run python -m app.cli cusip-coverage
+    uv run python -m app.cli resolve-cusip 037833100 --ticker AAPL --note "OpenFIGI miss"
 
 Every run is recorded
 ---------------------
@@ -43,9 +46,10 @@ A verb that publishes (``recompute``, and ``ingest-filing`` or ``backfill`` when
 they load something) then runs ``refresh-views`` as a second run, which names
 the first in its ``after_run_id``.
 
-Every verb that changes what the API serves — those, ``refresh-views`` and
-``seed-investors`` — then drops every response the API has cached
-(:func:`_invalidate_cache`), and records how many in its run's ``metrics``.
+Every verb that changes what the API serves — those, ``refresh-views``,
+``seed-investors``, ``resolve-cusips`` and ``resolve-cusip`` — then drops every
+response the API has cached (:func:`_invalidate_cache`), and records how many
+in its run's ``metrics``.
 
 Exit codes
 ----------
@@ -59,7 +63,8 @@ command depends on, and it is why the failure paths below all funnel through
 
 ``check-data`` and ``reconcile`` are the exceptions, because finding something
 is their job: 1 means it ran and found something to look at, and 2 means it
-could not run as asked.
+could not run as asked. ``cusip-coverage`` is a gate: 1 means coverage by value
+is below its threshold.
 
 Logs to stderr, summary to stdout
 ---------------------------------
@@ -112,8 +117,10 @@ from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
 from app.db.models.sec_13f_security import ListStatus
+from app.db.models.security import ResolutionSource
 from app.db.queries.amendments import PeriodFiling, PeriodResolution, audit_amendments
 from app.db.queries.checks import DataCheckReport, check_data
+from app.db.queries.cusip_coverage import DEFAULT_THRESHOLD_PCT, CusipCoverage, cusip_coverage
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.queries.runs import RunSummary, job_names, recent_runs
 from app.db.session import create_engine, create_session_factory, session_scope
@@ -161,6 +168,21 @@ from app.ingestion.edgar.thirteen_f_list import (
     ThirteenFListUnavailableError,
     filename_quarter,
     find_list_url,
+)
+from app.ingestion.enrichment.figi import (
+    DatabaseResponseLog,
+    OpenFIGIClient,
+    OpenFIGIRateLimited,
+    OpenFIGIResponseError,
+    OpenFIGIServerError,
+)
+from app.ingestion.enrichment.resolution import (
+    ManualResolution,
+    ResolutionReport,
+    UnknownSecurityError,
+    normalise_ticker,
+    resolve_manually,
+    resolve_securities,
 )
 from app.ingestion.investors import (
     DEFAULT_INVESTORS_PATH,
@@ -1817,8 +1839,8 @@ def _dollars(price: Decimal | None) -> str:
     return "n/a" if price is None else f"${price:,.2f}"
 
 
-def _count(number: int, noun: str) -> str:
-    return f"{number:,} {noun}" if number == 1 else f"{number:,} {noun}s"
+def _count(number: int, noun: str, plural: str | None = None) -> str:
+    return f"{number:,} {noun}" if number == 1 else f"{number:,} {plural or noun + 's'}"
 
 
 # --- recompute ---------------------------------------------------------------
@@ -2722,6 +2744,361 @@ def _echo_13f_list(
         already = f"{check.already_listed:,}" if check.already_listed else "none"
         _line("checked", f"{check.added:,} additions against {previous}: {already} already listed")
     _line("replaced", _count(replaced, "row") if replaced else "nothing, first import")
+
+
+# --- resolve-cusips ------------------------------------------------------------
+
+
+@app.command("resolve-cusips")
+def resolve_cusips_command(
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            min=1,
+            metavar="N",
+            help="Only the N securities of highest aggregate holdings value.",
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Every security, resolved or not, asking OpenFIGI again rather than "
+            "reusing its logged answers. Manual resolutions are still left alone.",
+        ),
+    ] = False,
+) -> None:
+    """Resolve unresolved securities to tickers, highest aggregate holdings value first.
+
+    OpenFIGI first, for a US equity listing's ticker, FIGI and name. Then the
+    SEC's 13(f) list, for a name only. Then a trigram match on that name
+    against securities with tickers, which is never applied: each candidate is
+    written to the manual_review queue. security.resolution_source records
+    which source won.
+
+    OpenFIGI's answers are reused from figi_response_log, except misses more
+    than 30 days old, which are asked again. A security resolved with
+    resolve-cusip is never touched, with or without --force. Then drops every
+    response the API has cached.
+    """
+    try:
+        asyncio.run(_resolve_cusips(limit=limit, force=force))
+    except (
+        OpenFIGIRateLimited,
+        OpenFIGIServerError,
+        OpenFIGIResponseError,
+        httpx.HTTPError,
+    ) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+async def _resolve_cusips(*, limit: int | None, force: bool) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    started = time.perf_counter()
+
+    async with track_run(settings, "resolve-cusips", limit=limit, force=force) as run:
+        engine = create_engine(settings)
+        sessions = create_session_factory(engine)
+        try:
+            async with OpenFIGIClient(settings, DatabaseResponseLog(sessions)) as figi:
+                report = await resolve_securities(sessions, figi, limit=limit, force=force)
+            async with sessions() as session:
+                coverage = await cusip_coverage(session, top=0)
+        finally:
+            await engine.dispose()
+        run.items_seen = report.candidates
+        run.items_written = report.changed
+        if report.changed or report.aliases:
+            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+        run.metrics |= {
+            "resolved": {
+                (source.value if source is not None else "none"): report.count(source)
+                for source in (*ResolutionSource, None)
+                if report.count(source)
+            },
+            "misses_retried": report.misses_retried,
+            "aliases": report.aliases,
+            "reviews_queued": report.reviews_queued,
+            "reviews_superseded": report.reviews_superseded,
+            "coverage_value_pct": _float_pct(coverage.value_pct),
+            "coverage_row_pct": _float_pct(coverage.row_pct),
+        }
+        logger.info(
+            "resolution.finished",
+            candidates=report.candidates,
+            changed=report.changed,
+            openfigi=report.count(ResolutionSource.OPENFIGI),
+            sec_13f_list=report.count(ResolutionSource.SEC_13F_LIST),
+            unnamed=report.count(None),
+            reviews_queued=report.reviews_queued,
+            coverage_value_pct=_float_pct(coverage.value_pct),
+        )
+    _echo_resolved(
+        report, coverage, limit=limit, force=force, elapsed=time.perf_counter() - started
+    )
+
+
+def _echo_resolved(
+    report: ResolutionReport,
+    coverage: CusipCoverage,
+    *,
+    limit: int | None,
+    force: bool,
+    elapsed: float,
+) -> None:
+    which = "securities" if force else "unresolved securities"
+    if limit is not None:
+        which += f", the top {limit:,} by value"
+    typer.echo(
+        f"resolve-cusips  {report.candidates:,} {which}, {_held(report.exposure)} held, "
+        f"in {_duration(elapsed)}" + ("  — --force: OpenFIGI asked again" if force else "")
+    )
+    if not report.candidates:
+        _line("nothing", "every security has a ticker" if not force else "no securities")
+    else:
+        _line(
+            "openfigi",
+            f"{report.count(ResolutionSource.OPENFIGI):,} given a ticker "
+            f"({_held(report.value(ResolutionSource.OPENFIGI))})",
+        )
+        _line(
+            "13(f) list",
+            f"{report.count(ResolutionSource.SEC_13F_LIST):,} named, no ticker "
+            f"({_held(report.value(ResolutionSource.SEC_13F_LIST))})",
+        )
+        _line(
+            "neither",
+            f"{report.count(None):,} left with the name their filing gave "
+            f"({_held(report.value(None))})",
+        )
+        _line("changed", _count(report.changed, "row"))
+    if report.misses_retried:
+        _line("retried", f"{report.misses_retried:,} OpenFIGI misses older than 30 days")
+    if report.aliases:
+        _line("aliases", f"{report.aliases:,} share-class spellings added (BRK-B for BRK.B)")
+    _line(
+        "review",
+        f"{_count(report.reviews_queued, 'fuzzy match', 'fuzzy matches')} queued for "
+        f"{_count(report.reviews_queued_for, 'security', 'securities')}; "
+        f"{coverage.pending_reviews:,} pending in all",
+    )
+    if report.reviews_superseded:
+        _line("", f"{report.reviews_superseded:,} pending closed: resolved by OpenFIGI")
+    _line(
+        "coverage",
+        f"{_pct_text(coverage.value_pct)} by value, {_pct_text(coverage.row_pct)} by row",
+    )
+
+
+# --- cusip-coverage --------------------------------------------------------------
+
+
+@app.command("cusip-coverage")
+def cusip_coverage_command(
+    top: Annotated[
+        int,
+        typer.Option(
+            "--top", min=0, metavar="N", help="List the N unresolved securities of highest value."
+        ),
+    ] = 10,
+    threshold: Annotated[
+        float,
+        typer.Option(
+            "--threshold",
+            min=0,
+            max=100,
+            metavar="PCT",
+            help="Exit 1 if coverage by value is below this.",
+        ),
+    ] = float(DEFAULT_THRESHOLD_PCT),
+) -> None:
+    """Report the share of securities resolved to a ticker, by row and by value.
+
+    By value, the aggregate holdings value of resolved securities over all of
+    it, is the headline and the gate: below --threshold (95% by default) the
+    aggregate rankings are quietly incomplete, and this exits 1. Lists the
+    unresolved securities of highest value, with any fuzzy matches pending
+    review for them: what to resolve next, with resolve-cusip.
+    """
+    passed = asyncio.run(_cusip_coverage(top=top, threshold=Decimal(str(threshold))))
+    if not passed:
+        raise typer.Exit(code=1)
+
+
+async def _cusip_coverage(*, top: int, threshold: Decimal) -> bool:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+
+    async with track_run(settings, "cusip-coverage", top=top, threshold=float(threshold)) as run:
+        async with session_scope(settings) as session:
+            coverage = await cusip_coverage(session, top=top)
+        run.items_seen = coverage.securities
+        run.metrics |= {
+            "value_pct": _float_pct(coverage.value_pct),
+            "row_pct": _float_pct(coverage.row_pct),
+            "published_value_pct": _float_pct(coverage.published_value_pct),
+            "threshold_pct": float(threshold),
+            "passes": coverage.passes(threshold),
+            "pending_reviews": coverage.pending_reviews,
+        }
+    _echo_coverage(coverage, threshold=threshold)
+    return coverage.passes(threshold)
+
+
+def _echo_coverage(coverage: CusipCoverage, *, threshold: Decimal) -> None:
+    verdict = "passes" if coverage.passes(threshold) else "BELOW"
+    typer.echo(
+        f"cusip-coverage  {_pct_text(coverage.value_pct)} resolved by value — "
+        f"{verdict} the {float(threshold):g}% gate"
+    )
+    _line(
+        "by value",
+        f"{_held(coverage.resolved_value)} of {_held(coverage.value)} held  "
+        f"{_pct_text(coverage.value_pct)}",
+    )
+    _line(
+        "by row",
+        f"{coverage.resolved:,} of {_count(coverage.securities, 'security', 'securities')}  "
+        f"{_pct_text(coverage.row_pct)}",
+    )
+    _line(
+        "published",
+        f"{_held(coverage.published_resolved_value)} of {_held(coverage.published_value)} "
+        f"in position_snapshot  {_pct_text(coverage.published_value_pct)}",
+    )
+    sources = [
+        f"{source} {coverage.by_source[source]:,}"
+        for source in sorted(coverage.by_source, key=lambda s: (s is None, s or ""))
+        if source is not None
+    ]
+    sources.append(f"none {coverage.by_source.get(None, 0):,}")
+    _line("sources", ", ".join(sources))
+    if coverage.unnamed:
+        _line(
+            "unnamed",
+            f"{_count(coverage.unnamed, 'security', 'securities')} with no name: "
+            "shown as the CUSIP alone",
+        )
+    _line(
+        "review",
+        f"{_count(coverage.pending_reviews, 'fuzzy match', 'fuzzy matches')} pending for "
+        f"{_count(coverage.pending_review_securities, 'security', 'securities')}",
+    )
+    if not coverage.unresolved:
+        return
+    typer.echo("  unresolved, highest value first:")
+    width = max(len(security.name or "") for security in coverage.unresolved)
+    width = min(width, 32)
+    for security in coverage.unresolved:
+        named = "list" if security.source == ResolutionSource.SEC_13F_LIST.value else "filed"
+        line = (
+            f"    {security.cusip}  {(security.name or '')[:width]:<{width}}  "
+            f"{_held(security.exposure):>10}  {named:<5}"
+        )
+        if security.suggestions:
+            line += "  review: " + ", ".join(
+                f"{s.ticker} ({s.similarity:.2f})" for s in security.suggestions
+            )
+        typer.echo(line)
+
+
+# --- resolve-cusip ---------------------------------------------------------------
+
+
+@app.command("resolve-cusip")
+def resolve_cusip_command(
+    cusip: Annotated[str, typer.Argument(metavar="CUSIP", help="The nine-character CUSIP.")],
+    ticker: Annotated[str, typer.Option("--ticker", help="The ticker it trades under.")],
+    note: Annotated[
+        str | None, typer.Option("--note", help="Why: kept on the security as resolution_note.")
+    ] = None,
+) -> None:
+    """Resolve one CUSIP to a ticker by hand.
+
+    Recorded as a manual resolution, which resolve-cusips never overwrites,
+    --force included. A share class is written with a dot: BRK/B and brk.b
+    are both stored as BRK.B. Closes the CUSIP's pending fuzzy matches,
+    accepting any that suggested this ticker. Then drops every response the
+    API has cached.
+    """
+    try:
+        asyncio.run(_resolve_cusip(cusip, ticker, note=note))
+    except CommandError as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+#: What a ticker may be made of, once normalised: letters, digits, and the dot
+#: or hyphen some share classes and units carry.
+_TICKER: Final = re.compile(r"[A-Z0-9][A-Z0-9.\-]{0,15}")
+
+
+async def _resolve_cusip(cusip: str, ticker: str, *, note: str | None) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    cusip = cusip.strip().upper()
+    normalised = normalise_ticker(ticker)
+
+    async with track_run(settings, "resolve-cusip", cusip=cusip, ticker=normalised) as run:
+        if len(cusip) != 9 or not cusip.isalnum():
+            raise CommandError(f"{cusip!r} is not a CUSIP: expected nine letters and digits")
+        if not _TICKER.fullmatch(normalised):
+            raise CommandError(f"{ticker!r} is not a ticker")
+        run.items_seen = 1
+        async with session_scope(settings) as session:
+            try:
+                resolved = await resolve_manually(session, cusip, normalised, note=note)
+            except UnknownSecurityError as failure:
+                raise CommandError(
+                    f"no filing has reported {cusip}: there is no security to resolve"
+                ) from failure
+        run.items_written = 1
+        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+        logger.info(
+            "resolution.manual",
+            cusip=cusip,
+            ticker=resolved.ticker,
+            previous_ticker=resolved.previous_ticker,
+            previous_source=resolved.previous_source,
+        )
+    _echo_manual(resolved, note=note)
+
+
+def _echo_manual(resolved: ManualResolution, *, note: str | None) -> None:
+    typer.echo(f"resolve-cusip  {_security(resolved.cusip, resolved.name)}")
+    was = resolved.previous_ticker or "none"
+    if resolved.previous_source:
+        was += f", from {resolved.previous_source}"
+    _line("ticker", f"{resolved.ticker}  (was {was})")
+    _line("source", "manual: resolve-cusips leaves it alone, --force included")
+    if note:
+        _line("note", note)
+    closed = resolved.reviews_accepted + resolved.reviews_superseded
+    if closed:
+        _line(
+            "review",
+            f"{_count(closed, 'pending fuzzy match', 'pending fuzzy matches')} closed: "
+            f"{resolved.reviews_accepted:,} accepted, {resolved.reviews_superseded:,} superseded",
+        )
+
+
+def _held(value: Decimal) -> str:
+    """Dollars at a glance: ``$639.6bn``, ``$1.2tn``."""
+    for divisor, suffix in ((Decimal("1e12"), "tn"), (Decimal("1e9"), "bn"), (Decimal("1e6"), "m")):
+        if abs(value) >= divisor:
+            return f"${value / divisor:,.1f}{suffix}"
+    return f"${value:,.0f}"
+
+
+def _pct_text(pct: Decimal | None) -> str:
+    return "n/a" if pct is None else f"{pct:.2f}%"
+
+
+def _float_pct(pct: Decimal | None) -> float | None:
+    return None if pct is None else round(float(pct), 4)
 
 
 if __name__ == "__main__":

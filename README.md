@@ -733,7 +733,122 @@ import-13f-list  2026Q1  13flist2026q1.txt
   previous quarter imported, so import in order. 2025Q3 has no list until the
   SEC fixes its file.
 
-Nothing the API serves reads the table yet, so no cache is dropped.
+Nothing the API serves reads the table directly, so no cache is dropped.
+`resolve-cusips` reads it.
+
+### `resolve-cusips [--limit N] [--force]`
+
+Gives securities a ticker, a FIGI and a name, highest aggregate holdings value
+first ([app/ingestion/enrichment/resolution.py](app/ingestion/enrichment/resolution.py)).
+This is the gate on the whole UI: every aggregate ranks securities, and one
+with no ticker is counted but cannot be looked up by one. Value is concentrated.
+In the dev backfill, 90 of 20,766 securities hold half the value and 1,681 hold
+95% of it. That is why the order matters, and why `--limit 200` already covers
+most of the value.
+
+```
+resolve-cusips  20,569 unresolved securities, $48.7tn held, in 52.9s
+  openfigi    12,041 given a ticker ($42.4tn)
+  13(f) list  7,718 named, no ticker ($6.2tn)
+  neither     810 left with the name their filing gave ($21.8bn)
+  changed     19,756 rows
+  aliases     151 share-class spellings added (BRK-B for BRK.B)
+  review      5,825 fuzzy matches queued for 3,450 securities; 5,825 pending in all
+  coverage    95.22% by value, 58.93% by row
+```
+
+The sources are tried in order, and `security.resolution_source` records which
+one won:
+
+1. **OpenFIGI** (`openfigi`). A ticker comes only from an equity listing on a US
+   venue: the `US` composite if OpenFIGI returns one, else a US venue's row if
+   every US venue agrees on the ticker. A CUSIP whose only listings are abroad
+   gets no ticker. That includes Exxon's own CUSIP, which OpenFIGI lists only on
+   foreign venues. So does a preferred or a note, whose "ticker" is a
+   description like `ALB 7.25 03/01/27`. A share class is stored with a dot
+   (`BRK.B`; OpenFIGI writes `BRK/B`, which cannot go in a path), and the
+   hyphen spelling is added to `security_alias`, so `/v1/stocks/BRK-B` works
+   too. A CINS (a CUSIP starting with a letter, such as Linde's `G54950103`)
+   is asked for as `ID_CINS`; asked as a CUSIP, OpenFIGI misses every one.
+2. **The SEC's 13(f) list** (`13f_list`): a name, and no ticker. The security
+   stays unresolved, under the SEC's name rather than the filer's.
+3. **A trigram match** on the name, against securities that have a ticker. This
+   is never applied. Each candidate goes to `manual_review` for a person to
+   decide, at a `pg_trgm` similarity of 0.8 or more. Below that, nearly every
+   match on the dev data was two issuers sharing words ("… ACQUISITION CORP").
+   Current and filed names are both compared, because sources spell the same
+   issuer differently: "HONEYWELL INTL INC" and "HONEYWELL INTERNATIONAL INC"
+   score only 0.54.
+
+When no source names a security, it keeps the name its first filing gave it.
+`security.filed_name` always keeps that name, because resolution overwrites
+`security.name`. An unresolved security is returned by the API with
+`ticker: null`, its CUSIP and that name.
+
+- **What it takes on.** Without `--force`, every security with no ticker.
+  OpenFIGI's answers come from `figi_response_log` where it has them, so a
+  re-run spends no quota; misses older than 30 days are asked again, since a
+  new listing can resolve next month. `--force` takes every security,
+  resolved or not, and asks OpenFIGI again about all of them (about a minute
+  with a key).
+- **A manual resolution is never touched**, `--force` included.
+- **Then drops every response the API has cached**, as any verb that changes
+  what it serves does. No view needs refreshing, since no materialised view
+  holds a ticker or a name.
+
+### `cusip-coverage [--top N] [--threshold PCT]`
+
+How much of what the tracked filers hold has a ticker
+([app/db/queries/cusip_coverage.py](app/db/queries/cusip_coverage.py)).
+**Coverage by value is the headline and the gate.** Coverage by row is
+reported beside it, and stays low long after everything that matters is
+resolved, because most CUSIPs are small positions in obscure instruments.
+
+```
+cusip-coverage  95.70% resolved by value — passes the 95% gate
+  by value    $125.3tn of $131.0tn held  95.70%
+  by row      12,239 of 20,766 securities  58.94%
+  published   $38.7tn of $40.2tn in position_snapshot  96.31%
+  sources     13f_list 7,717, manual 1, openfigi 12,238, none 810
+  review      5,824 fuzzy matches pending for 3,449 securities
+  unresolved, highest value first:
+    09247X101  BLACKROCK INC              $143.5bn  list   review: BLK (1.00)
+    512807108  LAM RESEARCH CORP          $126.2bn  list   review: LRCX (1.00)
+    H84989104  TE CONNECTIVITY LTD        $102.4bn  list
+    00507V109  ACTIVISION BLIZZARD INC     $93.6bn  list
+```
+
+Value is `SUM(holding.value_usd)`, every line of every loaded filing, suspect
+and superseded ones included: the same weight `resolve-cusips` orders its work
+by. `published` is the same measure over `position_snapshot`, which is what the
+rankings are actually computed from. The unresolved list is what to resolve
+next, with any pending fuzzy matches beside each security.
+
+**Exit codes.** 0 at or above `--threshold` (default 95), 1 below it, so a
+deploy step can run it as a gate. Nothing held passes.
+
+### `resolve-cusip CUSIP --ticker T [--note TEXT]`
+
+Resolves one CUSIP by hand, as `manual`, with `--note` kept in
+`security.resolution_note`. `resolve-cusips` never overwrites it, `--force`
+included. The FIGI is kept if the ticker is unchanged (pinning a resolution)
+and cleared otherwise. Pending fuzzy matches for the CUSIP are closed:
+`accepted` where they suggested this ticker, `superseded` otherwise.
+
+```
+resolve-cusip  30231G102 EXXON MOBIL CORP
+  ticker      XOM  (was none, from 13f_list)
+  source      manual: resolve-cusips leaves it alone, --force included
+  note        OpenFIGI lists this CUSIP only on foreign venues
+  review      1 pending fuzzy match closed: 1 accepted, 0 superseded
+```
+
+Run it directly, not through `make cli`: that target's guard breaks on a quoted
+`--note`.
+
+```bash
+docker compose exec api uv run python -m app.cli resolve-cusip 30231G102 --ticker XOM --note "foreign venues only"
+```
 
 ### `runs [--job NAME] [--limit N]`
 
@@ -774,7 +889,10 @@ holds the run's parameters as `jsonb`, e.g. `WHERE context @> '{"force": true}'`
 `metrics` holds what the run measured beyond its counters, written as it ends.
 `refresh-views` records each view's duration, rows, and whether it was
 refreshed concurrently. `import-13f-list` records where its list came from
-(`source`, `raw_key`) and what the additions check found.
+(`source`, `raw_key`) and what the additions check found. `resolve-cusips`
+records how many each source resolved and the coverage it left, and
+`cusip-coverage` the coverage it found, so `WHERE job_name = 'cusip-coverage'`
+is coverage over time.
 
 **A verb that publishes leaves two rows.** `recompute`, and an `ingest-filing`
 or `backfill` that loaded something, are followed by the `refresh-views` run
@@ -792,6 +910,9 @@ they started. Its `context` names them in `after_run_id`.
 | `refresh-views` | Materialised views to refresh | Materialised views refreshed |
 | `check-data`, `audit-*` | Findings reported | 0 |
 | `import-13f-list` | Lines in the list file | Securities written, one per CUSIP |
+| `resolve-cusips` | Securities it set out to resolve | Securities whose ticker, FIGI, name or source changed |
+| `cusip-coverage` | Securities | 0 |
+| `resolve-cusip` | 1 | 1 |
 
 **Every verb records its run except two.** `runs` reads the record, and a
 listing that added itself would always show itself first. `verify-investors`

@@ -197,6 +197,17 @@ async def test_the_payload_is_one_cusip_job_per_cusip(settings: Settings) -> Non
     ]
 
 
+async def test_a_cins_is_asked_for_as_a_cins(settings: Settings) -> None:
+    """As ``ID_CUSIP``, OpenFIGI answers every CINS "No identifier found"."""
+    fake = FakeOpenFIGI(_answer({}))
+    async with _client(settings, fake) as figi:
+        await figi.map_cusips([APPLE, "G54950103"])
+
+    assert fake.batches == [
+        [{"idType": "ID_CUSIP", "idValue": APPLE}, {"idType": "ID_CINS", "idValue": "G54950103"}]
+    ]
+
+
 async def test_the_api_key_is_sent_when_configured(keyed: Settings) -> None:
     fake = FakeOpenFIGI(_answer({}))
     async with _client(keyed, fake) as figi:

@@ -3,10 +3,11 @@
 Every row is a position or a change *in a period*, never "now": the portfolio
 states its period in ``meta``, and activity and history name one on each row.
 
-A security is named as well as tickered on every row. No CUSIP resolves to a
-ticker until enrichment runs, and some never will, so ``ticker`` is often null
-and ``issuer_name``, the name the filing gave it, is what makes the row
-readable. A row is never dropped or blanked for want of a ticker.
+A security is named as well as tickered on every row. Some CUSIPs never
+resolve to a ticker, so ``ticker`` can be null, and then ``issuer_name`` and the
+CUSIP are what make the row readable: the SEC's name for it where the 13(f)
+list has one, else the one its filing gave. A row is never dropped or blanked
+for want of a ticker.
 """
 
 from datetime import date
@@ -31,7 +32,10 @@ class _Security(BaseModel):
     )
     issuer_name: str | None = Field(
         default=None,
-        description="The issuer, as the filing that first reported the CUSIP named it.",
+        description=(
+            "The issuer: OpenFIGI's name once resolved, else the SEC's 13(f) list's, else "
+            "the name the first filing to report the CUSIP gave it."
+        ),
         examples=["APPLE INC"],
     )
 

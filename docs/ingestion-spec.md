@@ -281,6 +281,24 @@ re-running costs nothing. It returns every match OpenFIGI gave, without
 choosing one: an unfiltered CUSIP lookup typically answers with one listing per
 exchange, and picking the right one belongs to resolution, not the transport.
 
+A CINS (a CUSIP for a non-North-American issuer, with a letter first) is
+asked for as `ID_CINS`. Asked as `ID_CUSIP`, OpenFIGI answers every one "No
+identifier found", Linde, Chubb, Accenture and ASML included.
+
+**Resolution (`resolve-cusips`).** Takes the securities with no ticker in
+descending order of aggregate holdings value (`SUM(holding.value_usd)`), since
+on the dev backfill 1,681 of 20,766 securities hold 95% of it. It tries OpenFIGI,
+then the 13(f) list for a name only, then a trigram match on that name that is
+queued in `manual_review` and never applied. `security.resolution_source`
+records which source won. OpenFIGI wins only with an equity listing on a US
+venue: the `US` composite, or one ticker across US venues. A CUSIP with listings
+only abroad falls through. That includes Exxon's own, which OpenFIGI has only
+on foreign venues and which needs `resolve-cusip`. `cusip-coverage` reports the
+resolved share by row and by value. Value is the gate, at 95%: below it, the
+aggregate rankings are quietly incomplete. A first run on the dev backfill
+reached 95.22% by value and 58.93% by row. See
+[the README](../README.md#resolve-cusips---limit-n---force).
+
 Newer information tables may carry a FIGI column of their own. Prefer it, and
 record which source a mapping came from, so a bad OpenFIGI match can be found and
 corrected without re-resolving everything.
@@ -297,7 +315,7 @@ that the lists are PDF only. A list is refused if its additions were already on
 the previous quarter's list. That is how the SEC's 2025Q3 file, a copy of its
 2025Q1 file, is caught. `issuer_names` in
 `app/ingestion/enrichment/issuer_names.py` takes OpenFIGI's name and falls back
-to the latest list's.
+to the latest list's. `resolve-cusips` uses it.
 
 **Prices.** Needed to value positions at a period end, to split-adjust share
 counts, and for the sanity check above. Fetched per `(security, trade_date)` for

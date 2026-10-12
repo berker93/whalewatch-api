@@ -175,11 +175,14 @@ security
   id                bigint pk
   cusip             char(9)    unique, not null
   issuer_id         bigint     fk -> issuer          -- NOT YET MIGRATED, see below
-  name              text                    -- nameOfIssuer as the filing wrote it
+  name              text                    -- best name we have; written by resolve-cusips
+  filed_name        text                    -- nameOfIssuer as the first filing wrote it
   ticker            text                    -- null when unresolved; see below
   figi              char(12)
-  resolution_source text                    -- 'openfigi' | '13f_column' | 'manual'
-  resolved_at       timestamptz
+  resolution_source text                    -- 'openfigi' | '13f_list' | 'manual' | '13f_column'
+  resolved_at       timestamptz             -- when resolution_source was last set
+  resolution_note   text                    -- why, for a manual resolution
+  check (ticker IS NULL OR resolution_source IS NOT NULL)
 ```
 
 `issuer` and `security.issuer_id` are **not in `0002_core_schema`**. A 13F
@@ -197,9 +200,24 @@ loader to either invent a ticker or drop the holding. It drops neither: an
 unresolved security still gets a row, still gets held, and still shows up in
 dollar totals.
 
-`resolution_source` exists because the newer 13F information table may itself
-carry a FIGI column. When it does, that is better than an OpenFIGI lookup and we
-want to be able to tell which rows came from where when a mapping turns out wrong.
+`resolution_source` records which source won when `resolve-cusips` ran
+(`0023_cusip_resolution`). `openfigi` is a US equity listing's ticker, FIGI and
+name. `13f_list` is the SEC's name and nothing else, so that security is still
+unresolved. `manual` is `resolve-cusip`, which nothing automatic overwrites.
+Null means nothing named it beyond its filing. `13f_column` is reserved, because
+the newer 13F information table may carry a FIGI column of its own. Recording
+the source lets you find the rows that came from the same place when a mapping
+turns out wrong. A ticker must name its source; a source need not come with a
+ticker.
+
+`name` is what the API shows, and resolution overwrites it: OpenFIGI's name,
+else the 13(f) list's, else `filed_name`. The loader writes the filing's
+`nameOfIssuer` to both columns on insert and never touches either again.
+`filed_name` keeps the filer's spelling, which is sometimes stale
+("FACEBOOK INC") and sometimes a note to self ("Full Truck Alliance - converted
+at IPO"). A re-run that no longer finds a better name goes back to it.
+Both are trigram-indexed: `name` for search, `filed_name` for the fuzzy match
+below.
 
 ### `filing`
 
@@ -696,6 +714,32 @@ said about nine characters. Like `ingestion_run`, it is in no layer above, and
 nothing reads it for correctness. `security.ticker` and `security.figi` are
 the resolved values; this table is the evidence they were resolved from.
 
+### `manual_review`
+
+```
+id                     bigint       pk
+security_id            bigint       fk -> security, cascade   -- unresolved
+suggested_security_id  bigint       fk -> security, cascade   -- resolved, name alike
+suggested_ticker       text         not null                  -- its ticker at the time
+matched_name           text         not null
+suggested_name         text         not null
+similarity             float8       not null                  -- pg_trgm, best of four
+status                 text         not null default 'pending' -- pending | accepted | superseded
+created_at             timestamptz  not null default now()
+closed_at              timestamptz                            -- null while pending
+unique (security_id, suggested_security_id) where status = 'pending'
+```
+
+The queue of fuzzy matches (`0023_cusip_resolution`). When neither OpenFIGI
+nor the 13(f) list gives a security a ticker, `resolve-cusips` looks for
+securities that have one under a similar name. It compares current and filed
+names on both sides, and keeps up to three matches at `pg_trgm` similarity 0.8
+or more. They are written here and never applied: a similar name is how one
+share class comes to look like another. `resolve-cusip` closes a security's
+pending rows, `accepted` where it agrees with the suggestion and `superseded`
+where it does not. A later OpenFIGI resolution closes them `superseded` too.
+Closed rows are kept.
+
 ### `sec_13f_security`
 
 ```
@@ -720,7 +764,8 @@ their names.
 
 What it is for: an issuer name the SEC wrote, for a CUSIP OpenFIGI cannot match
 ([`issuer_names`](../app/ingestion/enrichment/issuer_names.py), which takes the
-latest list that has the CUSIP). It has no tickers. Across 2020Q1 to 2026Q3 the
+latest list that has the CUSIP). `resolve-cusips` writes that name to
+`security.name` as `13f_list`. It has no tickers. Across 2020Q1 to 2026Q3 the
 lists name 92.6% of the dev database's securities.
 
 The published file repeats about a thousand CUSIPs a quarter from 2026Q1. These

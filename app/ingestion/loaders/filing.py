@@ -327,8 +327,9 @@ async def _upsert_securities(
 ) -> tuple[int, dict[str, int]]:
     """Make sure every CUSIP in the filing has a security row, and map them to ids.
 
-    An unseen CUSIP gets a row with the filing's own ``nameOfIssuer`` and
-    nothing else: no ticker, no FIGI, no ``resolved_at``. That is what
+    An unseen CUSIP gets a row with the filing's own ``nameOfIssuer``, as both
+    its ``name`` and its ``filed_name``, and nothing else: no ticker, no FIGI,
+    no ``resolved_at``. That is what
     *unresolved* is spelled as in this schema, and it is a normal, permanent
     state for delisted names and obscure instruments — never a reason to drop
     the holding, which would quietly shrink the portfolio it belongs to.
@@ -350,7 +351,9 @@ async def _upsert_securities(
 
     created = await session.scalars(
         pg_insert(Security)
-        .values([{"cusip": cusip, "name": name} for cusip, name in names.items()])
+        .values(
+            [{"cusip": cusip, "name": name, "filed_name": name} for cusip, name in names.items()]
+        )
         .on_conflict_do_nothing(index_elements=[Security.cusip])
         .returning(Security.cusip)
     )

@@ -216,7 +216,11 @@ async def test_an_unresolved_security_is_named_with_a_null_ticker_and_a_resolved
 ) -> None:
     filer = await _fund(db_session, "named")
     await _quarter(db_session, filer, Q1, held(ALPHA, 100), held(BRAVO, 50))
-    await db_session.execute(update(Security).where(Security.cusip == ALPHA).values(ticker="ALF"))
+    await db_session.execute(
+        update(Security)
+        .where(Security.cusip == ALPHA)
+        .values(ticker="ALF", resolution_source="manual")
+    )
     await _publish(db_session)
 
     rows = (await _get(client, "/v1/investors/named/portfolio"))["data"]

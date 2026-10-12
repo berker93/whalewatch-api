@@ -105,7 +105,11 @@ async def _security(
         .on_conflict_do_nothing(index_elements=[Security.cusip])
     )
     if ticker is not None:
-        await session.execute(update(Security).where(Security.cusip == cusip).values(ticker=ticker))
+        await session.execute(
+            update(Security)
+            .where(Security.cusip == cusip)
+            .values(ticker=ticker, resolution_source="manual")
+        )
     security_id = await session.scalar(select(Security.id).where(Security.cusip == cusip))
     assert security_id is not None
     return security_id

@@ -58,6 +58,12 @@ TRACKED: Final = {
         ["--quarter", "2026Q1", "--file", str(LIST_FIXTURE)],
         "success",
     ),
+    # Nothing to resolve, so OpenFIGI is never asked.
+    "resolve-cusips": ("resolve-cusips", [], "success"),
+    # Nothing held passes: there is no ranking to be incomplete.
+    "cusip-coverage": ("cusip-coverage", [], "success"),
+    # No filing has reported it, so there is nothing to resolve.
+    "resolve-cusip": ("resolve-cusip", ["037833100", "--ticker", "AAPL"], "failed"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.

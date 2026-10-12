@@ -480,7 +480,7 @@ class OpenFIGIClient:
         return {cusip: results[cusip] for cusip in wanted}
 
     async def _map_batch(self, batch: Sequence[str]) -> dict[str, FIGIResult]:
-        jobs = await self._post([{"idType": "ID_CUSIP", "idValue": cusip} for cusip in batch])
+        jobs = await self._post([{"idType": id_type(cusip), "idValue": cusip} for cusip in batch])
         if not isinstance(jobs, list) or len(jobs) != len(batch):
             raise OpenFIGIResponseError(
                 f"expected a list of {len(batch)} job responses, got "
@@ -523,6 +523,18 @@ class OpenFIGIClient:
             raise OpenFIGIServerError(status_code=response.status_code)
         response.raise_for_status()
         return response.json()
+
+
+def id_type(cusip: str) -> str:
+    """OpenFIGI's ``idType`` for nine characters: ``ID_CINS`` if the first is a letter.
+
+    A CINS is a CUSIP for a non-North-American issuer, told apart by the letter
+    in front (``G54950103``, Linde). Asked for as ``ID_CUSIP``, OpenFIGI answers
+    every one of them "No identifier found" — Linde, Chubb, Accenture and ASML
+    among them, all in the top hundred by value — and as ``ID_CINS`` it finds
+    them. Checked 2026-10-12.
+    """
+    return "ID_CINS" if cusip[:1].isalpha() else "ID_CUSIP"
 
 
 def _batches(items: Sequence[str], size: int) -> Iterator[Sequence[str]]:

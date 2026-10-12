@@ -50,7 +50,14 @@ async def _fund(
 async def _stock(session: AsyncSession, name: str, *, ticker: str | None = None) -> str:
     """A security named ``name``, and its new CUSIP."""
     cusip = f"{next(_cusips):05d}X101"
-    await session.execute(insert(Security).values(cusip=cusip, name=name, ticker=ticker))
+    await session.execute(
+        insert(Security).values(
+            cusip=cusip,
+            name=name,
+            ticker=ticker,
+            resolution_source="manual" if ticker is not None else None,
+        )
+    )
     return cusip
 
 
