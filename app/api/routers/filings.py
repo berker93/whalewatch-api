@@ -26,6 +26,7 @@ from app.api.errors import INVALID, not_found
 from app.api.schemas.filing import FilingRead, HoldingRead
 from app.core.accession import ACCESSION_SHAPE, normalise_accession
 from app.db.models import Filer, Filing, Holding, Security
+from app.db.queries.tickers import ticker_labels
 
 router = APIRouter(tags=["filings"])
 
@@ -144,7 +145,7 @@ async def _read_holdings(
         select(
             Holding.cusip,
             Security.name.label("issuer_name"),
-            Security.ticker,
+            *ticker_labels(Holding.period_of_report),
             Holding.value_usd,
             Holding.shares,
             Holding.sshprnamt_type,

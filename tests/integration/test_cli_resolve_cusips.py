@@ -19,7 +19,7 @@ from types import TracebackType
 from typing import Any, Final, Self
 
 import pytest
-from sqlalchemy import Executable, insert, select, text
+from sqlalchemy import Executable, func, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from typer.testing import CliRunner
 
@@ -42,6 +42,7 @@ from app.ingestion.enrichment.figi import FIGIResult
 from tests.conftest import make_settings
 from tests.fake_redis import FakeRedis
 
+Q1: Final = date(2026, 3, 31)
 Q2: Final = date(2026, 6, 30)
 
 APPLE: Final = "037833100"
@@ -273,16 +274,26 @@ _FILED: Final = {
 }
 
 
-def _listed(engine: AsyncEngine, cusip: str, name: str) -> None:
+def _listed(engine: AsyncEngine, cusip: str, name: str, *, period: date = Q2) -> None:
     _execute(
         engine,
         insert(Sec13FSecurity).values(
-            period_of_report=Q2,
+            period_of_report=period,
             cusip=cusip,
             issuer_name=name,
             status="listed",
             has_listed_options=False,
         ),
+    )
+
+
+def _history(engine: AsyncEngine) -> list[tuple[Any, ...]]:
+    alias = SecurityAlias
+    return _fetch(
+        engine,
+        select(Security.cusip, alias.ticker, alias.valid_from, alias.valid_to, alias.source)
+        .join(Security, Security.id == alias.security_id)
+        .order_by(Security.cusip, alias.valid_from.nulls_first()),
     )
 
 
@@ -354,8 +365,10 @@ def test_each_source_is_recorded_as_the_one_that_won(
         # Nothing named it: the filing's name stays, and nothing won.
         OBSCURE: (None, None, "OBSCURE CO - converted at IPO", None, False),
     }
-    assert _fetch(migrated_engine, select(SecurityAlias.alias, SecurityAlias.source)) == [
-        ("BRK-B", "openfigi")
+    # Each first ticker opens a range as far back as we know.
+    assert _history(migrated_engine) == [
+        (APPLE, "AAPL", None, None, "openfigi"),
+        (BERKSHIRE_B, "BRK.B", None, None, "openfigi"),
     ]
     assert "openfigi    2 given a ticker" in output
     assert "13(f) list  1 named, no ticker" in output
@@ -385,18 +398,172 @@ def test_a_resolved_security_is_not_asked_about_again_without_force(
     assert "changed     0 rows" in output
 
 
-def test_force_asks_again_about_everything_and_reverts_what_no_longer_holds(
+def test_force_asks_again_and_keeps_a_ticker_openfigi_no_longer_lists(
     runner: CliRunner, migrated_engine: AsyncEngine, figi: FakeOpenFIGI, redis: FakeRedis
 ) -> None:
+    """A delisting looks like this from OpenFIGI. A ticker is history, and is
+    never taken away; the 13(f) lists say whether it is still listed."""
     _held(migrated_engine, apple=100, obscure=10)
     _run(runner, "resolve-cusips")
     figi.calls.clear()
     del figi.answers[APPLE]
 
-    _run(runner, "resolve-cusips", "--force")
+    output = _run(runner, "resolve-cusips", "--force")
 
     assert figi.calls == [([APPLE, OBSCURE], True)]
-    assert _securities(migrated_engine)[APPLE] == (None, None, "APPLE INC", None, False)
+    assert _securities(migrated_engine)[APPLE] == (
+        "AAPL",
+        "BBG000B9XRY4",
+        "APPLE INC",
+        "openfigi",
+        True,
+    )
+    assert "kept        1 OpenFIGI no longer lists keep the ticker they had" in output
+
+
+def test_a_new_ticker_is_a_rename_in_the_history(
+    runner: CliRunner, migrated_engine: AsyncEngine, figi: FakeOpenFIGI, redis: FakeRedis
+) -> None:
+    _held(migrated_engine, berkshire_b=100)
+    _run(runner, "resolve-cusips")
+    figi.answers[BERKSHIRE_B] = _us("BRK/C", "BBG000DWG505", "BERKSHIRE HATHAWAY INC-CL C")
+
+    output = _run(runner, "resolve-cusips", "--force")
+
+    [(today,)] = _fetch(migrated_engine, select(func.current_date()))
+    assert _history(migrated_engine) == [
+        (BERKSHIRE_B, "BRK.B", None, today, "openfigi"),
+        (BERKSHIRE_B, "BRK.C", today, None, "openfigi"),
+    ]
+    assert "renamed     1 under a new ticker" in output
+
+
+def test_a_security_off_the_latest_list_is_delisted_and_its_ticker_range_ends(
+    runner: CliRunner, migrated_engine: AsyncEngine, figi: FakeOpenFIGI, redis: FakeRedis
+) -> None:
+    """Exxon is on the 2026Q1 list and not the 2026Q2 one; Apple is on both."""
+    _held(migrated_engine, apple=100, exxon=50)
+    for period in (Q1, Q2):
+        _listed(migrated_engine, APPLE, "APPLE INC", period=period)
+    _listed(migrated_engine, EXXON, "EXXON MOBIL CORP", period=Q1)
+    _run(runner, "resolve-cusip", EXXON, "--ticker", "XOM")
+
+    output = _run(runner, "resolve-cusips")
+
+    delisted = dict(_fetch(migrated_engine, select(Security.cusip, Security.delisted_by)))
+    assert delisted == {APPLE: None, EXXON: Q2}
+    assert (EXXON, "XOM", None, Q2, "manual") in _history(migrated_engine)
+    assert "delisted    1 security no longer on the 13(f) list" in output
+
+
+def test_a_ticker_two_securities_hold_at_once_is_a_collision_until_one_is_delisted(
+    runner: CliRunner, migrated_engine: AsyncEngine, figi: FakeOpenFIGI, redis: FakeRedis
+) -> None:
+    """OpenFIGI maps Apple's old CUSIP to today's ticker too."""
+    _held(migrated_engine, apple=100, apple_old=50)
+    figi.answers[APPLE_OLD] = _us("AAPL", "BBG000B9XRY4", "APPLE INC")
+    _run(runner, "resolve-cusips")
+
+    colliding = _run(runner, "cusip-coverage")
+
+    assert "collisions  1 ticker held by two securities at once" in colliding
+    assert f"    AAPL      {APPLE} APPLE INC […, …); {APPLE_OLD} APPLE INC […, …)" in colliding
+
+    # The old CUSIP left the list after 2026Q1: its range ends, and so does the clash.
+    for period in (Q1, Q2):
+        _listed(migrated_engine, APPLE, "APPLE INC", period=period)
+    _listed(migrated_engine, APPLE_OLD, "APPLE INC", period=Q1)
+    _run(runner, "resolve-cusips")
+
+    settled = _run(runner, "cusip-coverage")
+    assert "collisions  none" in settled
+
+
+def test_a_chain_of_cusip_changes_hands_the_ticker_along_the_chain(
+    runner: CliRunner, migrated_engine: AsyncEngine, figi: FakeOpenFIGI, redis: FakeRedis
+) -> None:
+    """Two reverse splits: Apple's oldest CUSIP left the list after 2026Q1, the
+    next after 2026Q2, and OpenFIGI maps all three to AAPL."""
+    q3 = date(2026, 9, 30)
+    _held(migrated_engine, apple=100, apple_old=50, berkshire_b=10)
+    for cusip in (APPLE_OLD, BERKSHIRE_B):
+        figi.answers[cusip] = _us("AAPL", "BBG000B9XRY4", "APPLE INC")
+    _listed(migrated_engine, APPLE_OLD, "APPLE INC", period=Q1)
+    for period in (Q1, Q2):
+        _listed(migrated_engine, BERKSHIRE_B, "APPLE INC", period=period)
+    for period in (Q1, Q2, q3):
+        _listed(migrated_engine, APPLE, "APPLE INC", period=period)
+
+    _run(runner, "resolve-cusips")
+    _run(runner, "resolve-cusips")  # and again changes nothing
+
+    assert _history(migrated_engine) == [
+        (APPLE, "AAPL", q3, None, "openfigi"),
+        (APPLE_OLD, "AAPL", None, Q2, "openfigi"),
+        (BERKSHIRE_B, "AAPL", Q2, q3, "openfigi"),
+    ]
+    assert "collisions  none" in _run(runner, "cusip-coverage")
+
+
+# --- ticker-alias -------------------------------------------------------------------
+
+
+def test_a_former_ticker_trims_the_current_range_to_meet_it(
+    runner: CliRunner, migrated_engine: AsyncEngine, figi: FakeOpenFIGI, redis: FakeRedis
+) -> None:
+    _held(migrated_engine, berkshire_b=100)
+    _run(runner, "resolve-cusips")
+
+    output = _run(
+        runner,
+        "ticker-alias",
+        BERKSHIRE_B,
+        "--ticker",
+        "brk/a",
+        "--from",
+        "2010-01-01",
+        "--to",
+        "2020-01-01",
+        "--note",
+        "made up for the test",
+    )
+    # Not the middle of BRK.B's range now: that would cut it in two.
+    split = runner.invoke(
+        app,
+        [
+            "ticker-alias",
+            BERKSHIRE_B,
+            "--ticker",
+            "X",
+            "--from",
+            "2021-01-01",
+            "--to",
+            "2022-01-01",
+        ],
+    )
+
+    assert _history(migrated_engine) == [
+        (BERKSHIRE_B, "BRK.A", date(2010, 1, 1), date(2020, 1, 1), "manual"),
+        (BERKSHIRE_B, "BRK.B", date(2020, 1, 1), None, "openfigi"),
+    ]
+    assert "trimmed     BRK.B […, …) to [2020-01-01, …)" in output
+    assert split.exit_code == 1
+    assert "would cut BRK.B [2020-01-01, …) in two" in split.stderr
+
+
+def test_a_former_ticker_cannot_swallow_a_range(
+    runner: CliRunner, migrated_engine: AsyncEngine, figi: FakeOpenFIGI, redis: FakeRedis
+) -> None:
+    _held(migrated_engine, berkshire_b=100)
+    _run(runner, "resolve-cusips")
+    _run(runner, "ticker-alias", BERKSHIRE_B, "--ticker", "OLD", "--to", "2020-01-01")
+
+    result = runner.invoke(
+        app, ["ticker-alias", BERKSHIRE_B, "--ticker", "OLDER", "--to", "2021-01-01"]
+    )
+
+    assert result.exit_code == 1
+    assert "OLD […, 2020-01-01) lies wholly inside it" in result.stderr
 
 
 def test_a_miss_older_than_thirty_days_is_asked_again(

@@ -47,6 +47,16 @@ With ``force``: every security a person has not resolved, resolved or not, and
 OpenFIGI is asked again about all of them. A manual resolution is never
 touched. It is not a candidate, and the ``UPDATE`` refuses it too, in case
 ``resolve-cusip`` ran while this was working.
+
+Tickers are history, not state
+------------------------------
+A ticker is never taken away. When OpenFIGI stops listing a security it once
+gave a ticker, which is what a delisting looks like from there, the security
+keeps its ticker, and the 13(f) lists say whether it is still listed
+(:func:`~app.ingestion.enrichment.tickers.flag_delistings`, run at the end).
+A *different* ticker is a rename: the history in ``security_alias`` ends the
+old one and starts the new one
+(:func:`~app.ingestion.enrichment.tickers.record_tickers`).
 """
 
 from __future__ import annotations
@@ -58,17 +68,23 @@ from decimal import Decimal
 from typing import Final, Protocol
 
 from sqlalchemy import ColumnElement, case, func, select, text, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.logging import get_logger
+from app.core.tickers import normalise_ticker
 from app.db.models.figi_response_log import FIGIOutcome
 from app.db.models.manual_review import ManualReview, ReviewStatus
 from app.db.models.security import ResolutionSource, Security
-from app.db.models.security_alias import SecurityAlias
 from app.db.queries.cusip_coverage import exposure_by_security
 from app.ingestion.enrichment.figi import FIGIMatch, FIGIResult
 from app.ingestion.enrichment.issuer_names import ListedName, issuer_name, latest_listed_names
+from app.ingestion.enrichment.tickers import (
+    Delistings,
+    TickerChange,
+    UnknownSecurityError,
+    flag_delistings,
+    record_tickers,
+)
 
 logger = get_logger(__name__)
 
@@ -126,25 +142,6 @@ class Listing:
 
     figi: str
     """The US composite's FIGI. Every venue's row shares it."""
-
-    @property
-    def alias(self) -> str | None:
-        """The share class after a hyphen, ``BRK-B``, for a ticker that has one.
-
-        The other spelling a client is likely to put in a path. OpenFIGI's own
-        slash cannot get there: ``/v1/stocks/BRK%2FB`` is not routed.
-        """
-        return self.ticker.replace(".", "-") if "." in self.ticker else None
-
-
-def normalise_ticker(ticker: str) -> str:
-    """Upper case, with a share class after a dot: ``BRK/B`` becomes ``BRK.B``.
-
-    OpenFIGI writes the class with a slash, which cannot go in a path:
-    ``/v1/stocks/BRK/B`` is a different route. The dot is the most common
-    spelling elsewhere, and the hyphen is kept as an alias (:attr:`Listing.alias`).
-    """
-    return ticker.strip().upper().replace("/", ".")
 
 
 def _is_nav_symbol(ticker: str) -> bool:
@@ -214,6 +211,9 @@ class Candidate:
     exposure: Decimal
     """``SUM(holding.value_usd)``: every line any filing reported it on."""
 
+    ticker: str | None = None
+    """The ticker it has now, which only a ``--force`` candidate can have."""
+
 
 async def candidates(
     session: AsyncSession, *, limit: int | None = None, force: bool = False
@@ -227,7 +227,13 @@ async def candidates(
     exposure = exposure_by_security().subquery()
     value = func.coalesce(exposure.c.exposure, 0)
     statement = (
-        select(Security.id, Security.cusip, Security.filed_name, value.label("exposure"))
+        select(
+            Security.id,
+            Security.cusip,
+            Security.filed_name,
+            value.label("exposure"),
+            Security.ticker,
+        )
         .outerjoin(exposure, exposure.c.security_id == Security.id)
         .where(Security.resolution_source.is_distinct_from(ResolutionSource.MANUAL.value))
         .order_by(value.desc(), Security.cusip)
@@ -236,7 +242,10 @@ async def candidates(
     if not force:
         statement = statement.where(Security.ticker.is_(None))
     rows = (await session.execute(statement)).all()
-    return [Candidate(row.id, row.cusip, row.filed_name, Decimal(row.exposure)) for row in rows]
+    return [
+        Candidate(row.id, row.cusip, row.filed_name, Decimal(row.exposure), row.ticker)
+        for row in rows
+    ]
 
 
 # --- resolving -----------------------------------------------------------------
@@ -251,8 +260,9 @@ class Resolution:
     ticker: str | None
     figi: str | None
     name: str | None
-    alias: str | None
-    """Another spelling of the ticker to look it up by: :attr:`Listing.alias`."""
+    kept: bool = False
+    """OpenFIGI no longer lists a security it once gave a ticker. Left as it
+    is: the ticker is history, and the 13(f) lists say whether it is delisted."""
 
 
 def resolve(
@@ -265,17 +275,17 @@ def resolve(
         returns them.
     """
     listing = choose_listing(figi)
+    if listing is None and candidate.ticker is not None:
+        return Resolution(candidate, None, candidate.ticker, None, None, kept=True)
     entry = listed.get(candidate.cusip)
     # OpenFIGI's name only alongside its ticker. A CUSIP OpenFIGI knows only
     # from foreign listings is named by the list, per the order of sources.
     named = issuer_name(figi if listing else None, entry)
     name = named.name if named is not None else candidate.filed_name
     if listing is not None:
-        return Resolution(
-            candidate, ResolutionSource.OPENFIGI, listing.ticker, listing.figi, name, listing.alias
-        )
+        return Resolution(candidate, ResolutionSource.OPENFIGI, listing.ticker, listing.figi, name)
     source = ResolutionSource.SEC_13F_LIST if named is not None else None
-    return Resolution(candidate, source, None, None, name, None)
+    return Resolution(candidate, source, None, None, name)
 
 
 @dataclass
@@ -294,7 +304,13 @@ class ResolutionReport:
     misses_retried: int = 0
     """OpenFIGI misses older than :data:`MISS_RETRY_AFTER`, asked about again."""
 
-    aliases: int = 0
+    kept: int = 0
+    """Securities OpenFIGI no longer lists, left with the ticker they had."""
+
+    renamed: int = 0
+    """Securities whose ticker changed: a new range in the history."""
+
+    delistings: Delistings | None = None
     reviews_queued: int = 0
     reviews_queued_for: int = 0
     """How many securities the new suggestions are for."""
@@ -308,6 +324,9 @@ class ResolutionReport:
         return self.value_by_source.get(source, Decimal(0))
 
     def add(self, resolution: Resolution) -> None:
+        if resolution.kept:
+            self.kept += 1
+            return
         source = resolution.source
         self.by_source[source] = self.count(source) + 1
         self.value_by_source[source] = self.value(source) + resolution.candidate.exposure
@@ -345,7 +364,7 @@ async def resolve_securities(
             await _write(session, resolutions, report)
         for resolution in resolutions:
             report.add(resolution)
-            if resolution.ticker is None:
+            if resolution.ticker is None and not resolution.kept:
                 unresolved.append(resolution.candidate.security_id)
         logger.info(
             "resolution.chunk",
@@ -359,6 +378,8 @@ async def resolve_securities(
             queued = await queue_fuzzy_matches(session, unresolved)
         report.reviews_queued = len(queued)
         report.reviews_queued_for = len({security_id for security_id, _ in queued})
+    async with sessions.begin() as session:
+        report.delistings = await flag_delistings(session)
     return report
 
 
@@ -383,7 +404,8 @@ async def _ask_openfigi(
 
 #: One statement per chunk, the chunk passed as parallel arrays. Only rows that
 #: change are updated, and never a person's resolution, even one made since
-#: this run began.
+#: this run began. Returns the ticker each had before, from the snapshot the
+#: statement started with, so a new ticker can go into the history.
 _UPDATE_RESOLVED: Final = text(
     """
     UPDATE security s
@@ -400,11 +422,14 @@ _UPDATE_RESOLVED: Final = text(
         CAST(:names AS text[]),
         CAST(:sources AS text[])
     ) AS v(id, ticker, figi, name, source)
+    JOIN security old ON old.id = v.id
     WHERE s.id = v.id
       AND s.resolution_source IS DISTINCT FROM 'manual'
+      -- A ticker is history: never taken away, only replaced.
+      AND (v.ticker IS NOT NULL OR s.ticker IS NULL)
       AND (s.ticker, s.figi::text, s.name, s.resolution_source)
           IS DISTINCT FROM (v.ticker, v.figi, v.name, v.source)
-    RETURNING s.id
+    RETURNING s.id, old.ticker AS was, s.ticker AS now, s.resolution_source AS source
     """
 )
 
@@ -412,41 +437,38 @@ _UPDATE_RESOLVED: Final = text(
 async def _write(
     session: AsyncSession, resolutions: Sequence[Resolution], report: ResolutionReport
 ) -> None:
-    """Write a chunk's resolutions, its aliases, and close the review rows of
-    every security it gave a ticker.
+    """Write a chunk's resolutions, put each new ticker in the history, and close
+    the review rows of every security it gave a ticker.
 
     A row is updated only if something in it changes, so ``resolved_at`` says
     when its resolution last changed rather than when it was last looked at.
+    A security OpenFIGI no longer lists (:attr:`Resolution.kept`) is not written.
     """
-    if not resolutions:
+    writing = [r for r in resolutions if not r.kept]
+    if not writing:
         return
-    changed = await session.execute(
-        _UPDATE_RESOLVED,
-        {
-            "ids": [r.candidate.security_id for r in resolutions],
-            "tickers": [r.ticker for r in resolutions],
-            "figis": [r.figi for r in resolutions],
-            "names": [r.name for r in resolutions],
-            "sources": [r.source.value if r.source is not None else None for r in resolutions],
-        },
-    )
-    report.changed += len(changed.all())
-
-    aliases = [
-        {"security_id": r.candidate.security_id, "alias": r.alias, "source": r.source.value}
-        for r in resolutions
-        if r.alias is not None and r.source is not None
-    ]
-    if aliases:
-        inserted = await session.execute(
-            pg_insert(SecurityAlias)
-            .values(aliases)
-            .on_conflict_do_nothing()
-            .returning(SecurityAlias.id)
+    changed = (
+        await session.execute(
+            _UPDATE_RESOLVED,
+            {
+                "ids": [r.candidate.security_id for r in writing],
+                "tickers": [r.ticker for r in writing],
+                "figis": [r.figi for r in writing],
+                "names": [r.name for r in writing],
+                "sources": [r.source.value if r.source is not None else None for r in writing],
+            },
         )
-        report.aliases += len(inserted.all())
+    ).all()
+    report.changed += len(changed)
 
-    tickered = [r.candidate.security_id for r in resolutions if r.ticker is not None]
+    new_tickers = [
+        TickerChange(row.id, row.now, ResolutionSource(row.source))
+        for row in changed
+        if row.now is not None and row.now != row.was
+    ]
+    report.renamed += (await record_tickers(session, new_tickers)).renamed
+
+    tickered = [r.candidate.security_id for r in writing if r.ticker is not None]
     report.reviews_superseded += len(
         await close_reviews(session, tickered, ReviewStatus.SUPERSEDED)
     )
@@ -553,10 +575,6 @@ async def queue_fuzzy_matches(
 # --- by hand --------------------------------------------------------------------
 
 
-class UnknownSecurityError(LookupError):
-    """``resolve-cusip`` was given a CUSIP no filing has reported."""
-
-
 @dataclass(frozen=True, slots=True)
 class ManualResolution:
     cusip: str
@@ -566,6 +584,8 @@ class ManualResolution:
     previous_source: str | None
     reviews_accepted: int
     reviews_superseded: int
+    renamed: bool
+    """It had another ticker, whose range in the history ends today."""
 
 
 async def resolve_manually(
@@ -578,6 +598,9 @@ async def resolve_manually(
     it already had (pinning a resolution) and cleared otherwise, since it
     belonged to the listing being replaced. The name is left alone. Pending
     review rows are closed: ``accepted`` where they suggested this ticker.
+
+    A different ticker goes into the history as a rename from today; a
+    delisted security's new range ends at its delisting, as every one does.
     """
     ticker = normalise_ticker(ticker)
     row = (
@@ -601,6 +624,11 @@ async def resolve_manually(
             resolved_at=func.now(),
         )
     )
+    recorded = None
+    if row.ticker != ticker:
+        change = TickerChange(row.id, ticker, ResolutionSource.MANUAL)
+        recorded = await record_tickers(session, [change])
+        await flag_delistings(session)
     closed = await close_reviews(session, [row.id], ReviewStatus.SUPERSEDED, accepted_ticker=ticker)
     accepted = sum(status == ReviewStatus.ACCEPTED.value for status in closed)
     return ManualResolution(
@@ -611,6 +639,7 @@ async def resolve_manually(
         previous_source=row.resolution_source,
         reviews_accepted=accepted,
         reviews_superseded=len(closed) - accepted,
+        renamed=recorded is not None and recorded.renamed > 0,
     )
 
 

@@ -5,7 +5,7 @@ Each is one that would otherwise be got wrong independently in each router.
 
 from datetime import date
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Final
 
 from pydantic import PlainSerializer, PlainValidator, WithJsonSchema
 
@@ -80,3 +80,26 @@ Period = Annotated[
         }
     ),
 ]
+
+
+# --- a security's tickers -------------------------------------------------------
+#
+# Every model that names a security carries the same three: the ticker as of
+# the period the row is for, the current one beside it, and whether it is
+# still listed. Defined once so they read the same everywhere.
+
+TICKER_THEN: Final = (
+    "The ticker it traded under in the period this row is for: FB for Meta in "
+    "2021. Where there is no period, the current one. Null while the CUSIP is "
+    "unresolved, and for good for some."
+)
+CURRENT_TICKER: Final = (
+    "The ticker it trades under now, or the last it had if it is no longer listed. "
+    "Differs from `ticker` after a rename (META beside FB), and is what to link "
+    "`/v1/stocks/{ticker}` by."
+)
+DELISTED_BY: Final = (
+    "Set when it is no longer listed: the first quarter end by which it had left "
+    "the SEC's 13(f) list, so a bound rather than the day. Null while listed, and "
+    "for a security no list has had (an OTC ADR, a bond), whose listing is unknown."
+)

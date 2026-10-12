@@ -54,6 +54,7 @@ from app.core.periods import quarters_ending
 from app.db.models import Filer, FilerCik, Filing, Security
 from app.db.models.filer import FilerCategory
 from app.db.queries.effective import EFFECTIVE_FILING
+from app.db.queries.tickers import ticker_labels
 from app.db.queries.top_holding import top_holdings
 from app.derived.views import FILER_SUMMARY
 
@@ -176,7 +177,7 @@ def _decorated(filers: CTE) -> Select[Any]:
         select(
             filers,
             Security.cusip.label("top_cusip"),
-            Security.ticker.label("top_ticker"),
+            *ticker_labels(filers.c.period_of_report, prefix="top_"),
             Security.name.label("top_issuer_name"),
             top.c.weight_pct.label("top_weight_pct"),
             last_filed_at.label("last_filed_at"),
@@ -322,6 +323,8 @@ def _summary_fields(row: Row[Any]) -> dict[str, Any]:
         top = TopHolding(
             cusip=row.top_cusip,
             ticker=row.top_ticker,
+            current_ticker=row.top_current_ticker,
+            delisted_by=row.top_delisted_by,
             issuer_name=row.top_issuer_name,
             weight_pct=row.top_weight_pct,
         )

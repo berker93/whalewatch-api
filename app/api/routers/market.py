@@ -79,6 +79,7 @@ from app.api.schemas.market import (
 from app.api.schemas.types import Period
 from app.core.periods import quarter_label, quarters_ending
 from app.db.models import Filer, Filing, Security
+from app.db.queries.tickers import ticker_labels
 from app.derived.views import (
     CONSENSUS_HOLDINGS,
     FILER_SUMMARY,
@@ -225,7 +226,7 @@ def top_holdings_query(period: PeriodEnd, metric: HoldingMetric, limit: int) -> 
         .limit(limit)
         .cte("top")
     )
-    return _named(top).order_by(*_holdings_order(top.c, metric))
+    return _named(top, period).order_by(*_holdings_order(top.c, metric))
 
 
 # --- flows ----------------------------------------------------------------------
@@ -293,7 +294,7 @@ def ranked_flows_query(
 
     beyond_zero = rows.c[rank_by] > 0 if descending else rows.c[rank_by] < 0
     top = select(rows).where(beyond_zero).order_by(*order(rows.c)).limit(limit).cte("top")
-    return _named(top).order_by(*order(top.c))
+    return _named(top, period).order_by(*order(top.c))
 
 
 def top_buys_query(
@@ -379,13 +380,14 @@ def flows_query(
         conditions.append(c.total_value_usd >= min_value)
 
     page_rows = page_statement(select(rows).where(*conditions), keyset, page).cte("page")
-    return _named(page_rows).order_by(*keyset.order_by(on=page_rows)), keyset
+    return _named(page_rows, period).order_by(*keyset.order_by(on=page_rows)), keyset
 
 
-def _named(rows: Any) -> Select[Any]:
-    """``rows``, each with its stock's CUSIP, ticker and name."""
+def _named(rows: Any, period: PeriodEnd) -> Select[Any]:
+    """``rows``, each with its stock's CUSIP, tickers (as of ``period`` and now)
+    and name."""
     return (
-        select(rows, Security.cusip, Security.ticker, Security.name.label("issuer_name"))
+        select(rows, Security.cusip, *ticker_labels(period), Security.name.label("issuer_name"))
         .select_from(rows)
         .join(Security, Security.id == rows.c.security_id)
     )
@@ -415,7 +417,7 @@ def feed_query(page: PageParams) -> Select[Any]:
             Filer.slug,
             _DISPLAY_NAME.label("display_name"),
             Security.cusip,
-            Security.ticker,
+            *ticker_labels(page_rows.c.period_of_report),
             Security.name.label("issuer_name"),
         )
         .select_from(page_rows)
@@ -499,6 +501,8 @@ async def read_top_holdings(
             MarketHolding(
                 cusip=row.cusip,
                 ticker=row.ticker,
+                current_ticker=row.current_ticker,
+                delisted_by=row.delisted_by,
                 issuer_name=row.issuer_name,
                 holder_count=row.holder_count,
                 total_shares=row.total_shares,
@@ -695,6 +699,8 @@ def _flow(row: Row[Any]) -> StockFlow:
     return StockFlow(
         cusip=row.cusip,
         ticker=row.ticker,
+        current_ticker=row.current_ticker,
+        delisted_by=row.delisted_by,
         issuer_name=row.issuer_name,
         gross_bought_usd=row.bought_value_usd,
         gross_sold_usd=row.sold_value_usd,
@@ -715,6 +721,8 @@ def _feed_filing(row: Row[Any]) -> FeedFiling:
         largest = LargestChange(
             cusip=row.cusip,
             ticker=row.ticker,
+            current_ticker=row.current_ticker,
+            delisted_by=row.delisted_by,
             issuer_name=row.issuer_name,
             action=row.largest_action,
             shares_delta=row.largest_shares_delta,

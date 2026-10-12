@@ -33,6 +33,7 @@ from app.db.models.holding import Holding
 from app.db.models.manual_review import ManualReview, ReviewStatus
 from app.db.models.position_snapshot import PositionSnapshot
 from app.db.models.security import Security
+from app.db.queries.tickers import TickerCollision, ticker_collisions
 
 #: The value coverage below which the rankings are not to be trusted.
 DEFAULT_THRESHOLD_PCT: Final = Decimal(95)
@@ -67,6 +68,14 @@ class CusipCoverage:
     resolved_value: Decimal
     published_value: Decimal
     published_resolved_value: Decimal
+    delisted: int
+    """Securities no longer listed (``delisted_by``), whatever their ticker."""
+
+    delisted_value: Decimal
+    collisions: tuple[TickerCollision, ...]
+    """Tickers two securities hold over overlapping ranges: see
+    :func:`~app.db.queries.tickers.ticker_collisions`."""
+
     unnamed: int
     """Securities with no name at all, which render as their CUSIP alone: no
     filing named them and neither did any source. None, so far."""
@@ -119,6 +128,8 @@ async def cusip_coverage(session: AsyncSession, *, top: int = 10) -> CusipCovera
                 func.coalesce(func.sum(held), 0),
                 func.coalesce(func.sum(held).filter(resolved), 0),
                 func.count().filter(func.coalesce(func.btrim(Security.name), "") == ""),
+                func.count().filter(Security.delisted_by.is_not(None)),
+                func.coalesce(func.sum(held).filter(Security.delisted_by.is_not(None)), 0),
             )
             .select_from(Security)
             .outerjoin(exposure, exposure.c.security_id == Security.id)
@@ -192,6 +203,9 @@ async def cusip_coverage(session: AsyncSession, *, top: int = 10) -> CusipCovera
         published_value=Decimal(published[0]),
         published_resolved_value=Decimal(published[1]),
         unnamed=totals[4],
+        delisted=totals[5],
+        delisted_value=Decimal(totals[6]),
+        collisions=tuple(await ticker_collisions(session)),
         pending_reviews=reviews[0],
         pending_review_securities=reviews[1],
         unresolved=tuple(

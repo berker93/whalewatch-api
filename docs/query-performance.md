@@ -942,7 +942,8 @@ periods held), after migration `0018_stock_lookup`.
   of `security`. `upper()` because the lookup ignores case;
   `text_pattern_ops` because the 404's suggestions are a prefix `LIKE`, which
   the default operator class serves only under the `C` collation. The same
-  goes for the new `security_alias`'s unique index.
+  goes for the new `security_alias`'s unique index (since `0024`,
+  `ix_security_alias_upper_ticker`, no longer unique: aliases are dated).
 
 Two things the first measurements got wrong, both fixed:
 

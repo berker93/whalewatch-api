@@ -8,10 +8,10 @@ lives in its own table (Epic 3, with the ``/stocks`` search that needs it) and
 this one holds only what a 13F information table actually gives us.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 
-from sqlalchemy import CHAR, BigInteger, CheckConstraint, DateTime, Index, Text, func
+from sqlalchemy import CHAR, BigInteger, CheckConstraint, Date, DateTime, Index, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -75,7 +75,9 @@ class Security(Base):
     """
 
     ticker: Mapped[str | None] = mapped_column(Text)
-    """Null when unresolved, and **it stays nullable**.
+    """The current ticker, or the last one a delisted security had. Null when
+    unresolved, and **it stays nullable**. Every ticker it has had, with dates,
+    is in ``security_alias``.
 
     CUSIP-to-ticker resolution fails, routinely and permanently, for delisted
     names and obscure instruments. A ``NOT NULL`` here would force the loader
@@ -118,6 +120,21 @@ class Security(Base):
     list named has a ``resolved_at`` and is still asked about on every run, so a
     newly listed name that missed last month resolves next month without anyone
     intervening.
+    """
+
+    delisted_by: Mapped[date | None] = mapped_column(Date)
+    """Set when the security is no longer listed: the first quarter end by which
+    it had left the SEC's 13(f) list.
+
+    The list is every exchange-traded equity a 13F must report, so dropping off
+    it is the delisting signal we have. It is published quarterly, so this is a
+    bound rather than the day: Activision Blizzard, acquired in October 2023,
+    was last listed for 2023Q3 and reads ``2023-12-31``. Null while it is
+    listed, and for a security no list has ever had (an OTC ADR, a bond), whose
+    listing we cannot tell. Written by
+    :func:`~app.ingestion.enrichment.tickers.flag_delistings`, which also ends
+    the security's open ticker range here. :attr:`ticker` keeps the last ticker
+    it had.
     """
 
     resolution_note: Mapped[str | None] = mapped_column(Text)

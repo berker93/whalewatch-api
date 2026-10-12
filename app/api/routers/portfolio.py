@@ -87,6 +87,7 @@ from app.db.models.position_change import CHANGE_PCT, ChangeAction, PositionChan
 from app.db.models.position_snapshot import WEIGHT_PCT, PositionSnapshot
 from app.db.queries.amendments import period_concerns
 from app.db.queries.effective import EFFECTIVE_FILING
+from app.db.queries.tickers import ticker_labels
 from app.derived.views import FILER_SUMMARY, traded_usd
 
 router = APIRouter(tags=["investors"])
@@ -323,7 +324,7 @@ def portfolio_query(
         select(
             page_rows,
             Security.cusip,
-            Security.ticker,
+            *ticker_labels(period),
             Security.name.label("issuer_name"),
             first_held.c.first_period,
         )
@@ -409,7 +410,7 @@ def activity_query(
         select(
             page_rows,
             Security.cusip,
-            Security.ticker,
+            *ticker_labels(page_rows.c.period_of_report),
             Security.name.label("issuer_name"),
         )
         .select_from(page_rows)
@@ -583,6 +584,8 @@ async def read_activity(
             Activity(
                 cusip=row.cusip,
                 ticker=row.ticker,
+                current_ticker=row.current_ticker,
+                delisted_by=row.delisted_by,
                 issuer_name=row.issuer_name,
                 period=row.period_of_report,
                 prev_period=row.prev_period_of_report,
@@ -643,6 +646,8 @@ def _position(row: Row[Any]) -> PortfolioPosition:
     return PortfolioPosition(
         cusip=row.cusip,
         ticker=row.ticker,
+        current_ticker=row.current_ticker,
+        delisted_by=row.delisted_by,
         issuer_name=row.issuer_name,
         put_call=row.put_call,
         shares=row.shares,

@@ -13,6 +13,7 @@ from typing import Any, Final
 
 import pytest
 
+from app.core.tickers import normalise_ticker
 from app.db.models.sec_13f_security import ListStatus
 from app.db.models.security import ResolutionSource
 from app.ingestion.enrichment.figi import FIGIResult, id_type
@@ -21,7 +22,6 @@ from app.ingestion.enrichment.resolution import (
     Candidate,
     Listing,
     choose_listing,
-    normalise_ticker,
     resolve,
 )
 
@@ -131,17 +131,13 @@ def test_a_miss_or_no_answer_is_no_listing(result: FIGIResult | None) -> None:
     assert choose_listing(result) is None
 
 
-def test_a_share_class_is_stored_with_a_dot_and_aliased_with_a_hyphen() -> None:
-    listing = choose_listing(BERKSHIRE_B)
-
-    assert listing == Listing("BRK.B", "BBG000DWG505")
-    assert listing.alias == "BRK-B"
-    assert Listing("AAPL", "BBG000B9XRY4").alias is None
+def test_a_share_class_is_stored_with_a_dot() -> None:
+    assert choose_listing(BERKSHIRE_B) == Listing("BRK.B", "BBG000DWG505")
 
 
 @pytest.mark.parametrize(
     ("raw", "stored"),
-    [("brk/b", "BRK.B"), (" aapl ", "AAPL"), ("BF.B", "BF.B"), ("BRK-B", "BRK-B")],
+    [("brk/b", "BRK.B"), (" aapl ", "AAPL"), ("BF.B", "BF.B"), ("BRK-B", "BRK.B")],
 )
 def test_normalise_ticker(raw: str, stored: str) -> None:
     assert normalise_ticker(raw) == stored
@@ -195,3 +191,13 @@ def test_with_neither_the_filed_name_stays_and_nothing_won() -> None:
 
     assert resolution.source is None
     assert (resolution.ticker, resolution.name) == (None, "ACME CORP - converted at IPO")
+
+
+def test_a_ticker_openfigi_no_longer_lists_is_kept() -> None:
+    """A delisting looks like this from OpenFIGI. The ticker is history."""
+    candidate = Candidate(1, "00507V109", "ACTIVISION", Decimal(1000), ticker="ATVI")
+
+    resolution = resolve(candidate, MISSING, _listed("00507V109", "ACTIVISION BLIZZARD INC"))
+
+    assert resolution.kept
+    assert resolution.ticker == "ATVI"

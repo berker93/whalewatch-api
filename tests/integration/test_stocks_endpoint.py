@@ -28,6 +28,8 @@ Q1 = date(2024, 3, 31)
 Q2 = date(2024, 6, 30)
 Q3 = date(2024, 9, 30)
 Q4 = date(2024, 12, 31)
+#: Between Q1 and Q2: Facebook's 2022-06-09, moved to this file's year.
+RENAMED = date(2024, 6, 9)
 ALPHA = "11111A101"
 BRAVO = "22222B202"
 CHARLIE = "33333C303"
@@ -115,10 +117,22 @@ async def _security(
     return security_id
 
 
-async def _alias(session: AsyncSession, cusip: str, alias: str) -> None:
+async def _alias(
+    session: AsyncSession,
+    cusip: str,
+    ticker: str,
+    *,
+    valid_from: date | None = None,
+    valid_to: date | None = None,
+) -> None:
+    """``cusip`` traded as ``ticker`` over ``[valid_from, valid_to)``."""
     await session.execute(
         insert(SecurityAlias).values(
-            security_id=await _security(session, cusip), alias=alias, source="manual"
+            security_id=await _security(session, cusip),
+            ticker=ticker,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            source="manual",
         )
     )
 
@@ -181,19 +195,93 @@ async def test_a_ticker_is_found_whatever_its_case(
         assert (body["cusip"], body["ticker"]) == (ALPHA, "ALF"), ticker
 
 
-async def test_an_alias_finds_its_security_but_never_shadows_a_ticker(
+async def test_a_former_ticker_finds_its_security_but_never_shadows_a_current_one(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     filer = await _fund(db_session, "fund")
     await _quarter(db_session, filer, Q1, held(ALPHA, 100), held(BRAVO, 10))
     await _security(db_session, ALPHA, ticker="META")
-    await _alias(db_session, ALPHA, "fb")
-    # BRAVO once traded as META too. The ticker ALPHA holds now wins.
-    await _alias(db_session, BRAVO, "META")
+    await _alias(db_session, ALPHA, "FB", valid_to=RENAMED)
+    await _alias(db_session, ALPHA, "META", valid_from=RENAMED)
+    # BRAVO traded as META long before. The ticker ALPHA holds now wins.
+    await _alias(db_session, BRAVO, "META", valid_to=date(2015, 1, 1))
     await _publish(db_session)
 
-    assert (await _get(client, "/v1/stocks/FB"))["cusip"] == ALPHA
+    assert (await _get(client, "/v1/stocks/fb"))["cusip"] == ALPHA
     assert (await _get(client, "/v1/stocks/meta"))["cusip"] == ALPHA
+
+
+async def test_a_share_class_is_found_however_it_is_spelled(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    filer = await _fund(db_session, "fund")
+    await _quarter(db_session, filer, Q1, held(ALPHA, 100))
+    await _security(db_session, ALPHA, ticker="BRK.B")
+    await _publish(db_session)
+
+    for spelling in ("BRK.B", "brk-b"):
+        assert (await _get(client, f"/v1/stocks/{spelling}"))["cusip"] == ALPHA, spelling
+
+
+async def test_a_renamed_security_resolves_under_both_tickers_and_shows_each_in_its_period(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Facebook, 2024: FB until the rename between Q1 and Q2, META from it."""
+    filer = await _fund(db_session, "fund")
+    await _quarter(db_session, filer, Q1, held(ALPHA, 100))
+    await _quarter(db_session, filer, Q2, held(ALPHA, 120))
+    await _security(db_session, ALPHA, ticker="META")
+    await _alias(db_session, ALPHA, "FB", valid_to=RENAMED)
+    await _alias(db_session, ALPHA, "META", valid_from=RENAMED)
+    await _publish(db_session)
+
+    for ticker in ("FB", "META"):
+        detail = await _get(client, f"/v1/stocks/{ticker}")
+        assert (detail["cusip"], detail["ticker"], detail["current_ticker"]) == (
+            ALPHA,
+            "META",
+            "META",
+        ), ticker
+        for period in (Q1, Q2):
+            owners = await _get(client, f"/v1/stocks/{ticker}/owners", period=str(period))
+            assert [o["slug"] for o in owners["data"]] == ["fund"], (ticker, period)
+
+    # A historical view shows the ticker as it was, with the current one beside it.
+    for period, then in ((Q1, "FB"), (Q2, "META")):
+        portfolio = await _get(client, "/v1/investors/fund/portfolio", period=str(period))
+        [row] = portfolio["data"]
+        assert (row["ticker"], row["current_ticker"]) == (then, "META"), period
+    activity = await _get(client, "/v1/investors/fund/activity")
+    assert [(a["period"], a["ticker"], a["current_ticker"]) for a in activity["data"]] == [
+        (str(Q2), "META", "META")
+    ]
+
+
+async def test_a_recycled_ticker_names_the_company_that_held_it_in_the_period_viewed(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """ALPHA traded as XYZ until it was delisted in Q2; BRAVO took XYZ after."""
+    filer = await _fund(db_session, "fund")
+    await _quarter(db_session, filer, Q1, held(ALPHA, 100))
+    await _quarter(db_session, filer, Q3, held(BRAVO, 10))
+    await _security(db_session, ALPHA, ticker="XYZ")
+    await _security(db_session, BRAVO, ticker="XYZ")
+    await db_session.execute(update(Security).where(Security.cusip == ALPHA).values(delisted_by=Q2))
+    await _alias(db_session, ALPHA, "XYZ", valid_to=Q2)
+    await _alias(db_session, BRAVO, "XYZ", valid_from=Q2)
+    await _publish(db_session)
+
+    then = await _get(client, "/v1/stocks/xyz/owners", period=str(Q1))
+    now = await _get(client, "/v1/stocks/xyz/owners", period=str(Q3))
+    detail = await _get(client, "/v1/stocks/XYZ")
+
+    assert [o["slug"] for o in then["data"]] == ["fund"]
+    assert [o["slug"] for o in now["data"]] == ["fund"]
+    assert detail["cusip"] == BRAVO
+    assert detail["delisted_by"] is None
+    # The delisted one is still found by its CUSIP, flagged.
+    gone = await _get(client, f"/v1/stocks/{ALPHA}")
+    assert (gone["ticker"], gone["delisted_by"]) == ("XYZ", str(Q2))
 
 
 async def test_a_recycled_ticker_names_the_security_held_most_recently(
@@ -252,6 +340,8 @@ async def test_an_unknown_ticker_is_a_404_suggesting_tickers_and_names_like_it(
     assert body["detail"]["suggestions"][0] == {
         "cusip": CHARLIE,
         "ticker": "ACMEX",
+        "current_ticker": "ACMEX",
+        "delisted_by": None,
         "issuer_name": "UNRELATED HOLDINGS",
     }
 
@@ -282,6 +372,8 @@ async def test_the_detail_is_the_latest_period_held_and_traded(
     assert body == {
         "cusip": ALPHA,
         "ticker": None,
+        "current_ticker": None,
+        "delisted_by": None,
         "issuer_name": f"ISSUER {ALPHA}",
         "sector": None,
         "period": "2024-06-30",

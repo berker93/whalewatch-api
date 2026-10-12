@@ -182,6 +182,7 @@ security
   resolution_source text                    -- 'openfigi' | '13f_list' | 'manual' | '13f_column'
   resolved_at       timestamptz             -- when resolution_source was last set
   resolution_note   text                    -- why, for a manual resolution
+  delisted_by       date                    -- first quarter end off the 13(f) list
   check (ticker IS NULL OR resolution_source IS NOT NULL)
 ```
 
@@ -713,6 +714,46 @@ Append-only. Not foreign-keyed to `security`: it records what an external API
 said about nine characters. Like `ingestion_run`, it is in no layer above, and
 nothing reads it for correctness. `security.ticker` and `security.figi` are
 the resolved values; this table is the evidence they were resolved from.
+
+`delisted_by` (`0024_ticker_history`) flags a security that is no longer
+listed: the first quarter end by which it had left the SEC's 13(f) list, which
+is every exchange-traded equity a 13F must report. It is a bound rather than
+the day, since the list is quarterly. It is null while the security is listed,
+and for one no list has ever had, whose listing we cannot tell. `ticker` keeps
+the last ticker a delisted security had.
+
+### `security_alias`
+
+```
+id           bigint       pk
+security_id  bigint       fk -> security, cascade
+ticker       text         not null                -- as security.ticker spells it
+valid_from   date                                 -- null: as far back as we know
+valid_to     date                                 -- the first day it no longer was; null: still is
+source       text                                 -- openfigi | manual | 13f_column
+note         text
+created_at   timestamptz  not null default now()
+exclude using gist (security_id with =, daterange(valid_from, valid_to) with &&)
+index (upper(ticker) text_pattern_ops)
+```
+
+Every ticker each security has traded under, over half-open date ranges
+(`0018`, made a history in `0024_ticker_history`). The CUSIP is the stable key
+and the ticker a label. Facebook's CUSIP is `FB` until 2022-06-09 and `META`
+from then, and a delisted company's ticker can name another security later.
+The ranges are what let `/v1/stocks/{ticker}` find the security a ticker meant
+in the period being viewed, and let every row in a period show the ticker as
+it was then. Nothing inside the database joins on a ticker.
+
+One security has one ticker at a time, which the exclusion constraint
+enforces. Two securities may hold the same ticker at once. That is a collision
+that `cusip-coverage` reports, since either may be the stale one.
+
+Written by `resolve-cusips` and `resolve-cusip`: a first ticker opens a range
+with no start, and a different one ends the old range today and starts the
+new one. Delisting ends the open range at `delisted_by`, and hands the ticker
+to any other security holding it from an unknown start. Former tickers come
+from `ticker-alias`, which trims the ranges it overlaps.
 
 ### `manual_review`
 

@@ -358,6 +358,8 @@ async def test_a_feed_row_carries_its_periods_size_and_largest_trade(
     assert q4["largest_change"] == {
         "cusip": CHARLIE,
         "ticker": None,
+        "current_ticker": None,
+        "delisted_by": None,
         "issuer_name": f"ISSUER {CHARLIE}",
         "action": "exit",
         "shares_delta": "-1000.0000",

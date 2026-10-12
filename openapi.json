@@ -887,7 +887,7 @@
           "stocks"
         ],
         "summary": "Every tracked investor holding one stock in one period",
-        "description": "Holders, largest position first, each with its change since that\ninvestor's previous published period. Exits are not owners, and are not\nlisted.",
+        "description": "Holders, largest position first, each with its change since that\ninvestor's previous published period. Exits are not owners, and are not\nlisted. The ticker is read as of the period asked for (today without one):\nan old ticker finds the company that held it then.",
         "operationId": "getStockOwners",
         "parameters": [
           {
@@ -2091,9 +2091,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "issuer_name": {
@@ -3194,9 +3225,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "From `security`, our resolution. Null while the CUSIP is unresolved.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "value_usd": {
@@ -3806,9 +3868,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "issuer_name": {
@@ -3882,9 +3975,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "issuer_name": {
@@ -4509,9 +4633,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "issuer_name": {
@@ -4881,9 +5036,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "issuer_name": {
@@ -5080,9 +5266,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "issuer_name": {
@@ -5272,9 +5489,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "issuer_name": {
@@ -5557,9 +5805,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "issuer_name": {
@@ -5605,9 +5884,40 @@
               }
             ],
             "title": "Ticker",
-            "description": "Null while the CUSIP is unresolved, and for good for some.",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
             "examples": [
-              "AAPL"
+              "FB"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "META"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
             ]
           },
           "issuer_name": {

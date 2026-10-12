@@ -752,7 +752,8 @@ resolve-cusips  20,569 unresolved securities, $48.7tn held, in 52.9s
   13(f) list  7,718 named, no ticker ($6.2tn)
   neither     810 left with the name their filing gave ($21.8bn)
   changed     19,756 rows
-  aliases     151 share-class spellings added (BRK-B for BRK.B)
+  delisted    8,541 securities no longer on the 13(f) list (8,541 newly)
+  collisions  1 ticker held by two securities at once; see cusip-coverage
   review      5,825 fuzzy matches queued for 3,450 securities; 5,825 pending in all
   coverage    95.22% by value, 58.93% by row
 ```
@@ -766,9 +767,8 @@ one won:
    gets no ticker. That includes Exxon's own CUSIP, which OpenFIGI lists only on
    foreign venues. So does a preferred or a note, whose "ticker" is a
    description like `ALB 7.25 03/01/27`. A share class is stored with a dot
-   (`BRK.B`; OpenFIGI writes `BRK/B`, which cannot go in a path), and the
-   hyphen spelling is added to `security_alias`, so `/v1/stocks/BRK-B` works
-   too. A CINS (a CUSIP starting with a letter, such as Linde's `G54950103`)
+   (`BRK.B`; OpenFIGI writes `BRK/B`, which cannot go in a path). The lookup
+   reads `/` and `-` as a dot, so `/v1/stocks/BRK-B` works too. A CINS (a CUSIP starting with a letter, such as Linde's `G54950103`)
    is asked for as `ID_CINS`; asked as a CUSIP, OpenFIGI misses every one.
 2. **The SEC's 13(f) list** (`13f_list`): a name, and no ticker. The security
    stays unresolved, under the SEC's name rather than the filer's.
@@ -792,6 +792,22 @@ When no source names a security, it keeps the name its first filing gave it.
   resolved or not, and asks OpenFIGI again about all of them (about a minute
   with a key).
 - **A manual resolution is never touched**, `--force` included.
+- **A ticker is history, not state.** Each security's tickers are dated
+  ranges in `security_alias`. A first ticker's range has no known start. A
+  *different* ticker later is a rename: the old range ends today and the new
+  one starts today (`ticker-alias` corrects the date). A ticker is never
+  taken away. When OpenFIGI stops listing a security, which is what a
+  delisting looks like from there, it keeps the ticker it had (`kept`).
+- **Delistings come from the 13(f) lists.** A security on some list but not on
+  the latest one gets `security.delisted_by`: the first quarter end by which
+  it had left. Its open ticker range ends there. Another security holding the
+  same ticker from an unknown start takes it over from then. That is a CUSIP
+  change, or a recycled ticker, and it is what took the dev data's 182
+  tickers shared between securities down to one. `import-13f-list` does the
+  same after each import.
+- **Collisions are reported, not refused.** A ticker two securities hold over
+  overlapping ranges is counted here and listed by `cusip-coverage`, for a
+  person to settle with `ticker-alias`.
 - **Then drops every response the API has cached**, as any verb that changes
   what it serves does. No view needs refreshing, since no materialised view
   holds a ticker or a name.
@@ -843,12 +859,36 @@ resolve-cusip  30231G102 EXXON MOBIL CORP
   review      1 pending fuzzy match closed: 1 accepted, 0 superseded
 ```
 
+A different ticker from the one it had is a rename from today, in
+`security_alias`, as with `resolve-cusips`.
+
 Run it directly, not through `make cli`: that target's guard breaks on a quoted
 `--note`.
 
 ```bash
 docker compose exec api uv run python -m app.cli resolve-cusip 30231G102 --ticker XOM --note "foreign venues only"
 ```
+
+### `ticker-alias CUSIP --ticker T --to DATE [--from DATE] [--note TEXT]`
+
+Records a former ticker: the CUSIP traded as `T` from `--from` (or as far back
+as we know) until `--to`, the first day it no longer did. No source we read has
+ticker history, because OpenFIGI answers with today's ticker. So Facebook's
+`FB` is entered here:
+
+```
+ticker-alias  30303M102 META PLATFORMS INC-CLASS A
+  added       FB […, 2022-06-09)
+  trimmed     META […, …) to [2022-06-09, …)
+  current     META
+  note        Facebook began trading as META on 2022-06-09
+```
+
+The ranges it overlaps are trimmed to meet it, including any range whose
+start was unknown. A range it would swallow whole, or cut in two, is refused
+(exit 1), since which of the two is wrong is a person's call. One security has
+one ticker at a time; the database enforces it with an exclusion constraint.
+Then drops every response the API has cached.
 
 ### `runs [--job NAME] [--limit N]`
 
@@ -913,6 +953,7 @@ they started. Its `context` names them in `after_run_id`.
 | `resolve-cusips` | Securities it set out to resolve | Securities whose ticker, FIGI, name or source changed |
 | `cusip-coverage` | Securities | 0 |
 | `resolve-cusip` | 1 | 1 |
+| `ticker-alias` | 1 | 1 |
 
 **Every verb records its run except two.** `runs` reads the record, and a
 listing that added itself would always show itself first. `verify-investors`
@@ -1169,12 +1210,18 @@ curl "localhost:8000/v1/stocks/037833100/owners?period=2026Q1&limit=20"
 curl localhost:8000/v1/stocks/037833100/ownership-history
 ```
 
-- **`{ticker}` is a ticker, an alias, or a CUSIP**, in any case, tried in
-  that order. Aliases are `security_alias`: former tickers and other
-  spellings (`FB`, `BRK-B`). Nothing fills it yet, and no ticker is resolved
-  until Epic 4, so for now a stock is found by its CUSIP. When a ticker
-  names more than one security, recycled or across a CUSIP change, the one
-  held most recently wins.
+- **`{ticker}` is read as of the period being viewed**: `/owners`'
+  `?period=`, and today for the detail and the history. In any case, with `/`
+  or `-` for a share class's dot, it is tried as: a ticker the security had
+  *on that date* (from `security_alias`), its current ticker, a ticker it had
+  at any other time (most recent first), and its CUSIP. So `FB` and `META`
+  both find Meta, and a recycled ticker finds the company that held it in the
+  period asked about. Within a tier, the security held most recently wins.
+- **Every row in a period names the ticker as it was then**, with
+  `current_ticker` beside it, and `delisted_by` when the security is no
+  longer listed. Meta in a 2021Q4 portfolio is `FB`, now `META`. This applies
+  to portfolio, activity, filing holdings, the market endpoints and the
+  investors' top holding.
 - **An unknown one is a `404` with suggestions**, in
   `{code, detail, suggestions}`: up to five stocks whose ticker starts with
   what was asked for, then whose name has a word like it, the most dollars

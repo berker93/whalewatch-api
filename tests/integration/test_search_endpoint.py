@@ -356,7 +356,13 @@ async def test_a_stock_without_a_ticker_is_returned_by_its_cusip(
     cusip = await _stock(db_session, "UNRESOLVED INC")
 
     assert (await _search(client, "unresolved"))["securities"] == [
-        {"cusip": cusip, "ticker": None, "issuer_name": "UNRESOLVED INC"}
+        {
+            "cusip": cusip,
+            "ticker": None,
+            "current_ticker": None,
+            "delisted_by": None,
+            "issuer_name": "UNRESOLVED INC",
+        }
     ]
 
 

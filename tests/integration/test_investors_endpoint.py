@@ -231,6 +231,8 @@ async def test_a_row_is_the_filers_latest_published_period(
             "top_holding": {
                 "cusip": ALPHA,
                 "ticker": None,
+                "current_ticker": None,
+                "delisted_by": None,
                 "issuer_name": f"ISSUER {ALPHA}",
                 "weight_pct": "80.000000",
             },

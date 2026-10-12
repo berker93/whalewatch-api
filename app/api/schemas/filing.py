@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.api.schemas.types import Money, Quantity
+from app.api.schemas.types import CURRENT_TICKER, DELISTED_BY, TICKER_THEN, Money, Quantity
 from app.core.accession import ACCESSION_SHAPE
 from app.db.models.enums import AmendmentKind
 
@@ -44,11 +44,9 @@ class HoldingRead(BaseModel):
         description="From `security`, our resolution — not the issuer name this filing printed.",
         examples=["APPLE INC"],
     )
-    ticker: str | None = Field(
-        default=None,
-        description="From `security`, our resolution. Null while the CUSIP is unresolved.",
-        examples=["AAPL"],
-    )
+    ticker: str | None = Field(default=None, description=TICKER_THEN, examples=["FB"])
+    current_ticker: str | None = Field(default=None, description=CURRENT_TICKER, examples=["META"])
+    delisted_by: date | None = Field(default=None, description=DELISTED_BY, examples=[None])
 
     value_usd: Money = Field(
         description=(

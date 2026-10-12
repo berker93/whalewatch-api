@@ -64,6 +64,11 @@ TRACKED: Final = {
     "cusip-coverage": ("cusip-coverage", [], "success"),
     # No filing has reported it, so there is nothing to resolve.
     "resolve-cusip": ("resolve-cusip", ["037833100", "--ticker", "AAPL"], "failed"),
+    "ticker-alias": (
+        "ticker-alias",
+        ["30303M102", "--ticker", "FB", "--to", "2022-06-09"],
+        "failed",
+    ),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.

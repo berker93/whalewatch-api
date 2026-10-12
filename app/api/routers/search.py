@@ -248,7 +248,7 @@ def _securities(score: ColumnElement[Any], where: ColumnElement[bool], limit: in
     consensus = CONSENSUS_HOLDINGS
     latest = select(func.max(consensus.c.period_of_report)).scalar_subquery()
     return (
-        select(Security.cusip, Security.ticker, Security.name)
+        select(Security.cusip, Security.ticker, Security.name, Security.delisted_by)
         .outerjoin(
             consensus,
             and_(
@@ -352,7 +352,13 @@ async def search(
             for row in investors
         ],
         securities=[
-            StockMatch(cusip=row.cusip, ticker=row.ticker, issuer_name=row.name)
+            StockMatch(
+                cusip=row.cusip,
+                ticker=row.ticker,
+                current_ticker=row.ticker,
+                issuer_name=row.name,
+                delisted_by=row.delisted_by,
+            )
             for row in securities
         ],
     )

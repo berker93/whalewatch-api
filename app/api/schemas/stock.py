@@ -15,7 +15,14 @@ from pydantic import BaseModel, Field
 
 from app.api.schemas.envelope import Coverage, Envelope
 from app.api.schemas.error import Problem, ProblemError
-from app.api.schemas.types import Money, Percent, Quantity
+from app.api.schemas.types import (
+    CURRENT_TICKER,
+    DELISTED_BY,
+    TICKER_THEN,
+    Money,
+    Percent,
+    Quantity,
+)
 from app.db.models.position_change import ChangeAction
 
 
@@ -26,11 +33,9 @@ class StockRef(BaseModel):
         description="The security's nine-character CUSIP, which identifies it everywhere here.",
         examples=["037833100"],
     )
-    ticker: str | None = Field(
-        default=None,
-        description="Null while the CUSIP is unresolved, and for good for some.",
-        examples=["AAPL"],
-    )
+    ticker: str | None = Field(default=None, description=TICKER_THEN, examples=["FB"])
+    current_ticker: str | None = Field(default=None, description=CURRENT_TICKER, examples=["META"])
+    delisted_by: date | None = Field(default=None, description=DELISTED_BY, examples=[None])
     issuer_name: str | None = Field(
         default=None,
         description=(

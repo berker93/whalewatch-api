@@ -16,7 +16,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, Field
 
 from app.api.schemas.envelope import Envelope
-from app.api.schemas.types import Money, Percent
+from app.api.schemas.types import CURRENT_TICKER, DELISTED_BY, TICKER_THEN, Money, Percent
 from app.db.models.filer import FilerCategory
 
 #: How many quarters ``sparkline`` covers.
@@ -35,11 +35,9 @@ class TopHolding(BaseModel):
         description="The security's nine-character CUSIP, which identifies it everywhere here.",
         examples=["037833100"],
     )
-    ticker: str | None = Field(
-        default=None,
-        description="Null while the CUSIP is unresolved, and for good for some.",
-        examples=["AAPL"],
-    )
+    ticker: str | None = Field(default=None, description=TICKER_THEN, examples=["FB"])
+    current_ticker: str | None = Field(default=None, description=CURRENT_TICKER, examples=["META"])
+    delisted_by: date | None = Field(default=None, description=DELISTED_BY, examples=[None])
     issuer_name: str | None = Field(
         default=None,
         description=(

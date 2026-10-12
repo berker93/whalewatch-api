@@ -178,6 +178,8 @@ async def test_a_position_carries_its_change_and_its_first_period(
         {
             "cusip": ALPHA,
             "ticker": None,
+            "current_ticker": None,
+            "delisted_by": None,
             "issuer_name": f"ISSUER {ALPHA}",
             "put_call": None,
             "shares": "120.0000",
@@ -192,6 +194,8 @@ async def test_a_position_carries_its_change_and_its_first_period(
         {
             "cusip": CHARLIE,
             "ticker": None,
+            "current_ticker": None,
+            "delisted_by": None,
             "issuer_name": f"ISSUER {CHARLIE}",
             "put_call": None,
             "shares": "30.0000",
@@ -645,6 +649,8 @@ async def test_activity_is_newest_period_first_then_largest_trade(
     assert exit_row == {
         "cusip": BRAVO,
         "ticker": None,
+        "current_ticker": None,
+        "delisted_by": None,
         "issuer_name": f"ISSUER {BRAVO}",
         "period": "2024-06-30",
         "prev_period": "2024-03-31",

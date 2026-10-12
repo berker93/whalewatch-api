@@ -1,6 +1,6 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
 audit-amendments, check-data, recompute, backfill, runs, refresh-views, reconcile,
-import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip.
+import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -33,6 +33,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli resolve-cusips --limit 200
     uv run python -m app.cli cusip-coverage
     uv run python -m app.cli resolve-cusip 037833100 --ticker AAPL --note "OpenFIGI miss"
+    uv run python -m app.cli ticker-alias 30303M102 --ticker FB --to 2022-06-09
 
 Every run is recorded
 ---------------------
@@ -47,9 +48,9 @@ they load something) then runs ``refresh-views`` as a second run, which names
 the first in its ``after_run_id``.
 
 Every verb that changes what the API serves — those, ``refresh-views``,
-``seed-investors``, ``resolve-cusips`` and ``resolve-cusip`` — then drops every
-response the API has cached (:func:`_invalidate_cache`), and records how many
-in its run's ``metrics``.
+``seed-investors``, ``resolve-cusips``, ``resolve-cusip`` and ``ticker-alias``
+— then drops every response the API has cached (:func:`_invalidate_cache`),
+and records how many in its run's ``metrics``.
 
 Exit codes
 ----------
@@ -113,6 +114,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.periods import quarter_label
 from app.core.redis import create_redis
+from app.core.tickers import normalise_ticker
 from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
@@ -179,10 +181,16 @@ from app.ingestion.enrichment.figi import (
 from app.ingestion.enrichment.resolution import (
     ManualResolution,
     ResolutionReport,
-    UnknownSecurityError,
-    normalise_ticker,
     resolve_manually,
     resolve_securities,
+)
+from app.ingestion.enrichment.tickers import (
+    Delistings,
+    HistoryEntry,
+    TickerHistoryConflictError,
+    UnknownSecurityError,
+    add_ticker_history,
+    flag_delistings,
 )
 from app.ingestion.investors import (
     DEFAULT_INVESTORS_PATH,
@@ -2643,10 +2651,16 @@ async def _import_13f_list(period: date, *, path: Path | None, force: bool) -> N
                     f"quarter's file. Nothing was written. It is archived at {copy.key}"
                 )
             replaced = await load_13f_list(session, period, parsed)
+            # The lists are what says a security is no longer listed.
+            delistings = await flag_delistings(session)
         run.items_written = len(parsed.securities)
 
-        # Nothing the API serves reads sec_13f_security yet, so no cache to drop.
+        # The API serves delisted_by, and the ticker ranges a delisting ends.
+        if delistings.flagged or delistings.relisted:
+            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
         run.metrics |= {
+            "delisted_flagged": delistings.flagged,
+            "relisted": delistings.relisted,
             "source": copy.source,
             "raw_key": copy.key,
             "archived": copy.archived,
@@ -2666,7 +2680,7 @@ async def _import_13f_list(period: date, *, path: Path | None, force: bool) -> N
             replaced=replaced,
             raw_key=copy.key,
         )
-    _echo_13f_list(period, copy, parsed, check, replaced=replaced)
+    _echo_13f_list(period, copy, parsed, check, replaced=replaced, delistings=delistings)
 
 
 async def _list_from_sec(
@@ -2721,7 +2735,13 @@ async def _list_from_file(store: RawStore, period: date, path: Path, *, force: b
 
 
 def _echo_13f_list(
-    period: date, copy: _ListCopy, parsed: ThirteenFList, check: AdditionsCheck, *, replaced: int
+    period: date,
+    copy: _ListCopy,
+    parsed: ThirteenFList,
+    check: AdditionsCheck,
+    *,
+    replaced: int,
+    delistings: Delistings,
 ) -> None:
     typer.echo(f"import-13f-list  {quarter_label(period)}  {copy.key.rsplit('/', 1)[-1]}")
     _line("source", copy.key if copy.source == "archive" else copy.source)
@@ -2744,6 +2764,10 @@ def _echo_13f_list(
         already = f"{check.already_listed:,}" if check.already_listed else "none"
         _line("checked", f"{check.added:,} additions against {previous}: {already} already listed")
     _line("replaced", _count(replaced, "row") if replaced else "nothing, first import")
+    _line(
+        "delisted",
+        f"{delistings.flagged:,} securities newly off the list, {delistings.relisted:,} back on",
+    )
 
 
 # --- resolve-cusips ------------------------------------------------------------
@@ -2811,7 +2835,8 @@ async def _resolve_cusips(*, limit: int | None, force: bool) -> None:
             await engine.dispose()
         run.items_seen = report.candidates
         run.items_written = report.changed
-        if report.changed or report.aliases:
+        delistings = report.delistings
+        if report.changed or (delistings and (delistings.flagged or delistings.relisted)):
             run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
         run.metrics |= {
             "resolved": {
@@ -2820,7 +2845,11 @@ async def _resolve_cusips(*, limit: int | None, force: bool) -> None:
                 if report.count(source)
             },
             "misses_retried": report.misses_retried,
-            "aliases": report.aliases,
+            "kept": report.kept,
+            "renamed": report.renamed,
+            "delisted_flagged": delistings.flagged if delistings else 0,
+            "relisted": delistings.relisted if delistings else 0,
+            "collisions": len(coverage.collisions),
             "reviews_queued": report.reviews_queued,
             "reviews_superseded": report.reviews_superseded,
             "coverage_value_pct": _float_pct(coverage.value_pct),
@@ -2877,8 +2906,18 @@ def _echo_resolved(
         _line("changed", _count(report.changed, "row"))
     if report.misses_retried:
         _line("retried", f"{report.misses_retried:,} OpenFIGI misses older than 30 days")
-    if report.aliases:
-        _line("aliases", f"{report.aliases:,} share-class spellings added (BRK-B for BRK.B)")
+    if report.kept:
+        _line("kept", f"{report.kept:,} OpenFIGI no longer lists keep the ticker they had")
+    if report.renamed:
+        _line("renamed", f"{report.renamed:,} under a new ticker; the old one's range ends today")
+    if report.delistings is not None:
+        _echo_delistings(report.delistings, coverage)
+    if coverage.collisions:
+        _line(
+            "collisions",
+            f"{_count(len(coverage.collisions), 'ticker')} held by two securities at once; "
+            "see cusip-coverage",
+        )
     _line(
         "review",
         f"{_count(report.reviews_queued, 'fuzzy match', 'fuzzy matches')} queued for "
@@ -2890,6 +2929,19 @@ def _echo_resolved(
     _line(
         "coverage",
         f"{_pct_text(coverage.value_pct)} by value, {_pct_text(coverage.row_pct)} by row",
+    )
+
+
+def _echo_delistings(delistings: Delistings, coverage: CusipCoverage) -> None:
+    changes = []
+    if delistings.flagged:
+        changes.append(f"{delistings.flagged:,} newly")
+    if delistings.relisted:
+        changes.append(f"{delistings.relisted:,} listed again")
+    _line(
+        "delisted",
+        f"{_count(coverage.delisted, 'security', 'securities')} no longer on the 13(f) list"
+        + (f" ({', '.join(changes)})" if changes else ""),
     )
 
 
@@ -2943,12 +2995,14 @@ async def _cusip_coverage(*, top: int, threshold: Decimal) -> bool:
             "threshold_pct": float(threshold),
             "passes": coverage.passes(threshold),
             "pending_reviews": coverage.pending_reviews,
+            "delisted": coverage.delisted,
+            "collisions": len(coverage.collisions),
         }
-    _echo_coverage(coverage, threshold=threshold)
+    _echo_coverage(coverage, threshold=threshold, top=top)
     return coverage.passes(threshold)
 
 
-def _echo_coverage(coverage: CusipCoverage, *, threshold: Decimal) -> None:
+def _echo_coverage(coverage: CusipCoverage, *, threshold: Decimal, top: int) -> None:
     verdict = "passes" if coverage.passes(threshold) else "BELOW"
     typer.echo(
         f"cusip-coverage  {_pct_text(coverage.value_pct)} resolved by value — "
@@ -2976,6 +3030,11 @@ def _echo_coverage(coverage: CusipCoverage, *, threshold: Decimal) -> None:
     ]
     sources.append(f"none {coverage.by_source.get(None, 0):,}")
     _line("sources", ", ".join(sources))
+    _line(
+        "delisted",
+        f"{_count(coverage.delisted, 'security', 'securities')} no longer on the 13(f) list "
+        f"({_held(coverage.delisted_value)} held)",
+    )
     if coverage.unnamed:
         _line(
             "unnamed",
@@ -2987,6 +3046,7 @@ def _echo_coverage(coverage: CusipCoverage, *, threshold: Decimal) -> None:
         f"{_count(coverage.pending_reviews, 'fuzzy match', 'fuzzy matches')} pending for "
         f"{_count(coverage.pending_review_securities, 'security', 'securities')}",
     )
+    _echo_collisions(coverage, top=top)
     if not coverage.unresolved:
         return
     typer.echo("  unresolved, highest value first:")
@@ -3003,6 +3063,27 @@ def _echo_coverage(coverage: CusipCoverage, *, threshold: Decimal) -> None:
                 f"{s.ticker} ({s.similarity:.2f})" for s in security.suggestions
             )
         typer.echo(line)
+
+
+def _echo_collisions(coverage: CusipCoverage, *, top: int) -> None:
+    if not coverage.collisions:
+        _line("collisions", "none: no ticker is held by two securities at once")
+        return
+    _line(
+        "collisions",
+        f"{_count(len(coverage.collisions), 'ticker')} held by two securities at once; "
+        "settle with ticker-alias",
+    )
+    for collision in coverage.collisions[:top]:
+        held = "; ".join(
+            f"{s.cusip} {(s.name or '')[:24]} {_range(s.valid_from, s.valid_to)}"
+            for s in collision.securities
+        )
+        typer.echo(f"    {collision.ticker:<8}  {held}")
+
+
+def _range(start: date | None, end: date | None) -> str:
+    return f"[{start or '…'}, {end or '…'})"
 
 
 # --- resolve-cusip ---------------------------------------------------------------
@@ -3073,6 +3154,12 @@ def _echo_manual(resolved: ManualResolution, *, note: str | None) -> None:
     if resolved.previous_source:
         was += f", from {resolved.previous_source}"
     _line("ticker", f"{resolved.ticker}  (was {was})")
+    if resolved.renamed:
+        _line(
+            "history",
+            f"{resolved.previous_ticker}'s range ends today and {resolved.ticker}'s starts; "
+            "ticker-alias sets the real date",
+        )
     _line("source", "manual: resolve-cusips leaves it alone, --force included")
     if note:
         _line("note", note)
@@ -3083,6 +3170,130 @@ def _echo_manual(resolved: ManualResolution, *, note: str | None) -> None:
             f"{_count(closed, 'pending fuzzy match', 'pending fuzzy matches')} closed: "
             f"{resolved.reviews_accepted:,} accepted, {resolved.reviews_superseded:,} superseded",
         )
+
+
+# --- ticker-alias ----------------------------------------------------------------
+
+
+def _day(value: str) -> date:
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as failure:
+        raise typer.BadParameter(
+            f"{value!r} is not a date: expected one like 2022-06-09"
+        ) from failure
+
+
+@app.command("ticker-alias")
+def ticker_alias_command(
+    cusip: Annotated[str, typer.Argument(metavar="CUSIP", help="The nine-character CUSIP.")],
+    ticker: Annotated[str, typer.Option("--ticker", help="The ticker it traded under.")],
+    valid_to: Annotated[
+        date,
+        typer.Option(
+            "--to",
+            metavar="YYYY-MM-DD",
+            parser=_day,
+            help="The first day it no longer traded under it: the rename or delisting.",
+        ),
+    ],
+    valid_from: Annotated[
+        date | None,
+        typer.Option(
+            "--from",
+            metavar="YYYY-MM-DD",
+            parser=_day,
+            help="The first day it did. Leave out for as far back as we know.",
+        ),
+    ] = None,
+    note: Annotated[
+        str | None, typer.Option("--note", help="Why: kept on the history's row.")
+    ] = None,
+) -> None:
+    """Record a former ticker: CUSIP traded as TICKER from --from until --to.
+
+    For history no source we read has: OpenFIGI answers with today's ticker,
+    so FB before Facebook became Meta is entered here. The ticker ranges it
+    overlaps are trimmed to meet it, so entering FB up to 2022-06-09 starts
+    META on 2022-06-09. A range it would swallow whole or cut in two is
+    refused. The current ticker is set with resolve-cusip, not here. Then
+    drops every response the API has cached.
+    """
+    try:
+        asyncio.run(
+            _ticker_alias(cusip, ticker, valid_from=valid_from, valid_to=valid_to, note=note)
+        )
+    except CommandError as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+async def _ticker_alias(
+    cusip: str, ticker: str, *, valid_from: date | None, valid_to: date, note: str | None
+) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    cusip = cusip.strip().upper()
+    normalised = normalise_ticker(ticker)
+
+    async with track_run(
+        settings,
+        "ticker-alias",
+        cusip=cusip,
+        ticker=normalised,
+        valid_from=valid_from,
+        valid_to=valid_to,
+    ) as run:
+        if len(cusip) != 9 or not cusip.isalnum():
+            raise CommandError(f"{cusip!r} is not a CUSIP: expected nine letters and digits")
+        if not _TICKER.fullmatch(normalised):
+            raise CommandError(f"{ticker!r} is not a ticker")
+        if valid_from is not None and valid_from >= valid_to:
+            raise CommandError(f"--from {valid_from} is not before --to {valid_to}")
+        run.items_seen = 1
+        async with session_scope(settings) as session:
+            try:
+                entry = await add_ticker_history(
+                    session,
+                    cusip,
+                    normalised,
+                    valid_from=valid_from,
+                    valid_to=valid_to,
+                    note=note,
+                )
+            except UnknownSecurityError as failure:
+                raise CommandError(
+                    f"no filing has reported {cusip}: there is no security to give a ticker"
+                ) from failure
+            except TickerHistoryConflictError as failure:
+                raise CommandError(
+                    f"{normalised} {_range(valid_from, valid_to)} does not fit {cusip}'s "
+                    f"history: {failure}. Nothing was written."
+                ) from failure
+            await flag_delistings(session)
+        run.items_written = 1
+        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+    _echo_ticker_alias(entry, normalised, valid_from=valid_from, valid_to=valid_to, note=note)
+
+
+def _echo_ticker_alias(
+    entry: HistoryEntry,
+    ticker: str,
+    *,
+    valid_from: date | None,
+    valid_to: date,
+    note: str | None,
+) -> None:
+    typer.echo(f"ticker-alias  {_security(entry.cusip, entry.name)}")
+    _line("added", f"{ticker} {_range(valid_from, valid_to)}")
+    for trimmed in entry.trimmed:
+        _line(
+            "trimmed",
+            f"{trimmed.ticker} {_range(*trimmed.was)} to {_range(*trimmed.now)}",
+        )
+    _line("current", entry.current_ticker or "no ticker")
+    if note:
+        _line("note", note)
 
 
 def _held(value: Decimal) -> str:

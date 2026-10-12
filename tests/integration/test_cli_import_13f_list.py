@@ -182,6 +182,8 @@ def test_the_summary_says_what_was_read_and_written(runner: CliRunner) -> None:
         "  securities  15: 10 listed, 3 added, 2 deleted; 5 with listed options",
         "  checked     not checked: 2025Q4 is not imported",
         "  replaced    nothing, first import",
+        # No security is in the empty database to flag.
+        "  delisted    0 securities newly off the list, 0 back on",
     ]
 
 
@@ -196,6 +198,9 @@ def test_the_run_is_recorded_with_where_the_list_came_from(
     status, seen, written, metrics, _ = _last_run(migrated_engine)
     assert (status, seen, written) == ("success", 19, 15)
     assert metrics == {
+        # Nothing in security to flag, so no cache to drop either.
+        "delisted_flagged": 0,
+        "relisted": 0,
         "source": Q1_URL,
         "raw_key": Q1_KEY,
         "archived": True,

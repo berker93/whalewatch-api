@@ -16,14 +16,21 @@
 
 Finding the stock
 -----------------
-``{ticker}`` is matched ignoring case against, in order, ``security.ticker``,
-``security_alias``, and the CUSIP: the last so that a security no ticker has
-been resolved for, which is nearly all of them until enrichment runs, can
-still be asked for. A ticker can match more than one security: it may have
-been recycled from a delisted company, or a CUSIP change may have left an old
-and a new security both resolving to it. The one held most recently wins,
-then the newer row. When nothing matches, the 404 suggests what might have
-been meant (:func:`suggestions_query`).
+``{ticker}`` is a label, read as of the period being viewed: the owners'
+``?period=``, and today for the detail and the history. It is spelled as
+stored first (``brk-b`` and ``BRK/B`` are ``BRK.B``), then matched against, in
+order (:func:`lookup_query`):
+
+1. a ticker the security traded under *on that date*, from ``security_alias``;
+2. its current ticker, ``security.ticker``;
+3. a ticker it traded under at any other time, the most recent first, so
+   ``FB`` still finds Meta;
+4. its CUSIP, so a security no ticker resolved for can still be asked for.
+
+So a recycled ticker finds the company that held it in the period being
+viewed, and a renamed one is found under either name. Within a tier, the
+security held most recently wins, then the newer row. When nothing matches,
+the 404 suggests what might have been meant (:func:`suggestions_query`).
 
 The five in the history
 -----------------------
@@ -42,6 +49,7 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, HTTPException, Path, Query, status
 from sqlalchemy import (
     BindParameter,
+    Date,
     Float,
     Integer,
     Row,
@@ -81,7 +89,9 @@ from app.api.schemas.stock import (
 )
 from app.api.schemas.types import Period
 from app.core.periods import quarter_label, quarters_between
+from app.core.tickers import normalise_ticker
 from app.db.models import Filer, PositionChange, PositionSnapshot, Security, SecurityAlias
+from app.db.queries.tickers import valid_on
 from app.derived.views import CONSENSUS_HOLDINGS, FILER_SUMMARY, QUARTER_FLOWS
 
 router = APIRouter(tags=["stocks"])
@@ -108,8 +118,8 @@ _NO_DOLLARS: Final = Decimal("0.00")
 
 
 def _key(ticker: str) -> str:
-    """What every comparison is against: the path segment, upper-cased."""
-    return ticker.strip().upper()
+    """What every comparison is against: the path segment, spelled as stored."""
+    return normalise_ticker(ticker)
 
 
 def _last_held(security_id: Any) -> Any:
@@ -123,37 +133,53 @@ def _last_held(security_id: Any) -> Any:
     )
 
 
-def lookup_query(key: str | BindParameter[str], *, cusip: bool) -> Select[Any]:
-    """The security ``key`` names, as one row, or none.
+def lookup_query(
+    key: str | BindParameter[str], *, cusip: bool, on: PeriodEnd | None = None
+) -> Select[Any]:
+    """The security ``key`` names on ``on``, as one row, or none.
 
-    :param key: Upper-cased (:func:`_key`).
+    See the module docstring for the order of tiers.
+
+    :param key: As stored (:func:`_key`).
     :param cusip: Whether to try ``key`` as a CUSIP too. Only a nine-character
         key can be one, and comparing a longer one with ``char(9)`` would
         either fail or, cast, compare its first nine characters.
+    :param on: The date being viewed. Today when ``None``.
     """
+    alias = SecurityAlias
+    day: Any = on if on is not None else func.current_date()
+    # How recent a range is: an open one is the most recent of all.
+    recency = func.coalesce(alias.valid_to, literal(date.max, Date))
+    always = literal(date.max, Date)
     candidates = [
-        select(Security.id.label("security_id"), literal_column("0", Integer).label("via")).where(
+        select(
+            alias.security_id.label("security_id"),
+            literal_column("0", Integer).label("via"),
+            recency.label("recency"),
+        ).where(func.upper(alias.ticker) == key, valid_on(day, alias)),
+        select(Security.id, literal_column("1", Integer), always).where(
             func.upper(Security.ticker) == key
         ),
-        select(SecurityAlias.security_id, literal_column("1", Integer)).where(
-            func.upper(SecurityAlias.alias) == key
+        select(alias.security_id, literal_column("2", Integer), recency).where(
+            func.upper(alias.ticker) == key
         ),
     ]
     if cusip:
         # Cast, or a parameter shared with the text comparisons above is typed
         # text, cusip is compared as text, and uq_security_cusip is no use.
         candidates.append(
-            select(Security.id, literal_column("2", Integer)).where(
+            select(Security.id, literal_column("3", Integer), always).where(
                 Security.cusip == cast(key, Security.cusip.type)
             )
         )
     matches = union_all(*candidates).subquery("matches")
 
     return (
-        select(Security.id, Security.cusip, Security.ticker, Security.name)
+        select(Security.id, Security.cusip, Security.ticker, Security.name, Security.delisted_by)
         .join(matches, matches.c.security_id == Security.id)
         .order_by(
             matches.c.via,
+            matches.c.recency.desc(),
             _last_held(Security.id).desc().nulls_last(),
             Security.id.desc(),
         )
@@ -164,7 +190,7 @@ def lookup_query(key: str | BindParameter[str], *, cusip: bool) -> Select[Any]:
 def suggestions_query(key: str) -> Select[Any]:
     """Up to :data:`SUGGESTIONS` securities ``key`` may have been meant for.
 
-    A ticker or alias starting with it first, then a name with a word like it
+    A ticker, current or former, starting with it first, then a name with a word like it
     (``pg_trgm``'s ``<%``, which the trigram index on ``security.name``
     serves). Within each, the most dollars held in the latest period first,
     which is what puts APPLE INC above APPLIED DNA SCIENCES for ``APPL``.
@@ -180,7 +206,7 @@ def suggestions_query(key: str) -> Select[Any]:
         ).where(func.upper(Security.ticker).like(prefix, escape="\\")),
         select(
             SecurityAlias.security_id, literal_column("0", Integer), literal_column("1.0", Float)
-        ).where(func.upper(SecurityAlias.alias).like(prefix, escape="\\")),
+        ).where(func.upper(SecurityAlias.ticker).like(prefix, escape="\\")),
     ]
     if len(key) >= _MIN_NAME_QUERY:
         candidates.append(
@@ -204,7 +230,7 @@ def suggestions_query(key: str) -> Select[Any]:
     consensus = CONSENSUS_HOLDINGS
     latest = select(func.max(consensus.c.period_of_report)).scalar_subquery()
     return (
-        select(Security.cusip, Security.ticker, Security.name)
+        select(Security.cusip, Security.ticker, Security.name, Security.delisted_by)
         .select_from(best)
         .join(Security, Security.id == best.c.security_id)
         .outerjoin(
@@ -224,13 +250,15 @@ def suggestions_query(key: str) -> Select[Any]:
     )
 
 
-async def _resolve(session: AsyncSession, ticker: str) -> Row[Any]:
-    """The security ``ticker`` names: ``id``, ``cusip``, ``ticker``, ``name``.
+async def _resolve(session: AsyncSession, ticker: str, *, on: date | None = None) -> Row[Any]:
+    """The security ``ticker`` names on ``on`` (today when ``None``): ``id``,
+    ``cusip``, ``ticker``, ``name``, ``delisted_by``.
 
     :raises ApiError: 404, with suggestions, when it names none.
     """
     key = _key(ticker)
-    row = (await session.execute(lookup_query(key, cusip=len(key) == 9))).one_or_none()
+    statement = lookup_query(key, cusip=len(key) == 9, on=on)
+    row = (await session.execute(statement)).one_or_none()
     if row is not None:
         return row
 
@@ -242,7 +270,13 @@ async def _resolve(session: AsyncSession, ticker: str) -> Row[Any]:
         "have a ticker resolved yet, so a stock may only be found by its CUSIP.",
         detail=StockNotFoundDetail(
             suggestions=[
-                StockSuggestion(cusip=s.cusip, ticker=s.ticker, issuer_name=s.name)
+                StockSuggestion(
+                    cusip=s.cusip,
+                    ticker=s.ticker,
+                    current_ticker=s.ticker,
+                    issuer_name=s.name,
+                    delisted_by=s.delisted_by,
+                )
                 for s in suggested
             ],
         ),
@@ -597,7 +631,13 @@ async def read_stock(ticker: TickerParam, session: SessionDep) -> StockDetail:
     security = await _resolve(session, ticker)
     row = (await session.execute(detail_query(security.id))).one()
 
-    stock = StockDetail(cusip=security.cusip, ticker=security.ticker, issuer_name=security.name)
+    stock = StockDetail(
+        cusip=security.cusip,
+        ticker=security.ticker,
+        current_ticker=security.ticker,
+        issuer_name=security.name,
+        delisted_by=security.delisted_by,
+    )
     if row.period is None:
         return stock
     stock.period = row.period
@@ -638,8 +678,9 @@ async def read_owners(
 ) -> Envelope[StockOwner]:
     """Holders, largest position first, each with its change since that
     investor's previous published period. Exits are not owners, and are not
-    listed."""
-    security = await _resolve(session, ticker)
+    listed. The ticker is read as of the period asked for (today without one):
+    an old ticker finds the company that held it then."""
+    security = await _resolve(session, ticker, on=period)
     period = await _owners_period(session, period)
     statement = owners_query(security.id, period, page)
     rows, page_info = page_of(list(await session.execute(statement)), OWNERS_KEYSET, page)
