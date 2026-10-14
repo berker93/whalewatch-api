@@ -30,6 +30,21 @@ Only the changes walk forward. The next period's snapshot does not depend on
 this one, and rebuilding it would withhold it again if it was published with
 ``--include-suspect``.
 
+Implied prices
+--------------
+``implied_price`` is the third table, and it is on another axis: a price
+belongs to a ``(security, period)``, and is computed across every filer that
+held the security. So the rebuild finds the securities the pairs in scope held,
+before the snapshot is rebuilt and after it, and rebuilds the price of each of
+those in that period, and of nothing else
+(:mod:`app.derived.implied_price`). A filing of forty positions rebuilds forty
+prices.
+
+Prices do not walk forward. A price depends on its own period's snapshot rows,
+and the period after keeps the snapshot it had, so its prices cannot have
+moved. Rebuilding them would be the changes' cascade applied where nothing
+cascades.
+
 One rebuild at a time
 ---------------------
 Each rebuild deletes and inserts in its own transaction, and two of them over
@@ -60,6 +75,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.queries.periods import FILER_PERIOD
+from app.derived.implied_price import PriceRebuild, held_in, recompute_implied_price
 from app.derived.position_change import ChangeRebuild, recompute_position_change
 from app.derived.position_snapshot import SnapshotRebuild, recompute_position_snapshot
 from app.derived.scope import Pair, Scope
@@ -81,6 +97,9 @@ class Recomputed:
     following: frozenset[Pair]
     """The next published period after each one in :attr:`scope`, outside it,
     whose changes start from a period this rebuilt."""
+    prices: PriceRebuild
+    """``implied_price`` for every security held in :attr:`scope`, before the
+    rebuild or after it, in its period there."""
 
 
 async def hold_recompute_lock(session: AsyncSession) -> None:
@@ -97,23 +116,32 @@ async def hold_recompute_lock(session: AsyncSession) -> None:
 async def recompute(
     session: AsyncSession, scope: Scope, *, include_suspect: bool = False
 ) -> Recomputed:
-    """Rebuild ``position_snapshot`` for ``scope``, then ``position_change`` for it and after it.
+    """Rebuild ``position_snapshot`` for ``scope``, then ``position_change`` and ``implied_price``.
 
-    The snapshot first, since the changes are read from it. The changes for
-    ``scope`` and for the next published period after each pair in it. Both in
-    the caller's transaction, which commits them together: a reader sees both
-    tables rebuilt, or neither.
+    The snapshot first, since the other two are read from it. The changes for
+    ``scope`` and for the next published period after each pair in it. The
+    prices of the securities held in ``scope``, before or after, in its
+    periods. All in the caller's transaction, which commits them together: a
+    reader sees every table rebuilt, or none.
 
     :param include_suspect: Publish the periods in scope that a suspect filing
         counts toward, marked ``suspect``, instead of withholding them.
     """
     await hold_recompute_lock(session)
+    # Before the snapshot too: a security the rebuild drops from a period
+    # still has a price there that counted it.
+    held_before = None if scope.everything else await held_in(session, scope)
     snapshot = await recompute_position_snapshot(session, scope, include_suspect=include_suspect)
     # After the snapshot: a period it now publishes, or withholds, is or is
     # not a "next period" for the one before it.
     following = await _following(session, scope)
     changes = await recompute_position_change(session, scope | Scope.of(following))
-    return Recomputed(scope=scope, snapshot=snapshot, changes=changes, following=following)
+    prices = await recompute_implied_price(
+        session, None if held_before is None else held_before | await held_in(session, scope)
+    )
+    return Recomputed(
+        scope=scope, snapshot=snapshot, changes=changes, following=following, prices=prices
+    )
 
 
 async def _following(session: AsyncSession, scope: Scope) -> frozenset[Pair]:

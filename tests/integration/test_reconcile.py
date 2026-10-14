@@ -112,6 +112,7 @@ from app.db.models import (
     FilerCik,
     Filing,
     Holding,
+    ImpliedPrice,
     PositionChange,
     PositionSnapshot,
     Security,
@@ -253,6 +254,32 @@ SNAPSHOT: Final = {
     (CHARLIE, Q4, ACME): (800,    12_000,  30,             "charlie 2024Q4"),
     (CHARLIE, Q4, CORE): (200,    10_000,  25,             "charlie 2024Q4"),
     (CHARLIE, Q4, ECHO): (180,    18_000,  45,             "charlie 2024Q4"),
+}
+
+#: (period, security): (price, observation_count, confidence). Every holder at
+#: :data:`PRICES`, so every one agrees, and the confidence is the head count:
+#: one is low, two medium, three high. Charlie's Q2 CORE calls and its BOND
+#: principal are not common stock, so not observations: CORE's Q2 price is
+#: Charlie's 200 shares alone, and BOND has none.
+IMPLIED_PRICES: Final = {
+    (Q1, ACME): (10,  2, "medium"),
+    (Q1, BOLT): (20,  2, "medium"),
+    (Q1, CORE): (50,  2, "medium"),
+    (Q2, ACME): (12,  3, "high"),
+    (Q2, BOLT): (20,  2, "medium"),
+    (Q2, CORE): (40,  1, "low"),
+    (Q2, DYNA): (5,   1, "low"),
+    (Q2, ECHO): (100, 1, "low"),
+    (Q3, ACME): (15,  2, "medium"),
+    (Q3, BOLT): (25,  2, "medium"),
+    (Q3, CORE): (40,  1, "low"),
+    (Q3, DYNA): (10,  1, "low"),
+    (Q3, ECHO): (100, 1, "low"),
+    (Q4, ACME): (15,  3, "high"),
+    (Q4, BOLT): (25,  1, "low"),
+    (Q4, CORE): (50,  2, "medium"),
+    (Q4, DYNA): (10,  1, "low"),
+    (Q4, ECHO): (100, 1, "low"),
 }
 
 #: (filer, period, security): three lines of four,
@@ -726,6 +753,25 @@ async def test_filer_summary_is_the_one_worked_out_by_hand(published: AsyncSessi
     assert await _per_filer(published) == _unsuspected(SUMMARY)
 
 
+async def test_the_implied_prices_are_the_ones_worked_out_by_hand(published: AsyncSession) -> None:
+    """Alpha's Q4 CORE is one observation of 900 shares, the original and the
+    addition summed, not two."""
+    price = ImpliedPrice
+    rows = await published.execute(
+        select(
+            price.period_of_report,
+            Security.cusip,
+            price.price,
+            price.observation_count,
+            price.confidence,
+            price.suspect,
+        ).join(Security, Security.id == price.security_id)
+    )
+    assert {(row[0], row[1]): tuple(row[2:]) for row in rows.tuples()} == (
+        _unsuspected(IMPLIED_PRICES)
+    )
+
+
 async def test_every_invariant_holds_on_the_fixture(published: AsyncSession) -> None:
     report = await reconcile(published, sample=None)
 
@@ -929,6 +975,23 @@ async def _exit_with_shares(session: AsyncSession) -> None:
     await _set(session, PositionChange, ALPHA, Q2, CORE, shares=5)
 
 
+async def _negative_value(session: AsyncSession) -> None:
+    """Charlie's Q4 ACME at minus its value in both tables, its delta moved
+    with it so that the period still adds up. Still 800 shares, so still an
+    observation of ACME's price, and neither priced nor worth nothing: only
+    the sign is wrong."""
+    await _set(session, PositionSnapshot, CHARLIE, Q4, ACME, value_usd=-12_000)
+    await _set(
+        session,
+        PositionChange,
+        CHARLIE,
+        Q4,
+        ACME,
+        value_usd=-12_000,
+        value_delta=PositionChange.value_delta - 24_000,
+    )
+
+
 async def _value_delta_a_dollar_off(session: AsyncSession) -> None:
     await _set(session, PositionChange, BRAVO, Q4, BOLT, value_delta=PositionChange.value_delta + 1)
 
@@ -937,6 +1000,47 @@ async def _negative_shares(session: AsyncSession) -> None:
     """Negative in both tables, so that they agree and only the sign is wrong."""
     await _set(session, PositionSnapshot, CHARLIE, Q4, ECHO, shares=-180)
     await _set(session, PositionChange, CHARLIE, Q4, ECHO, shares=-180)
+
+
+def _price(period: date, cusip: str) -> tuple[Any, ...]:
+    """A ``WHERE`` for the one implied price at ``(period, security)``."""
+    return (
+        ImpliedPrice.period_of_report == period,
+        ImpliedPrice.security_id
+        == select(Security.id).where(Security.cusip == cusip).scalar_subquery(),
+    )
+
+
+async def _set_price(session: AsyncSession, period: date, cusip: str, **values: Any) -> None:
+    await session.execute(
+        update(ImpliedPrice)
+        .where(*_price(period, cusip))
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def _price_lost(session: AsyncSession) -> None:
+    await session.execute(delete(ImpliedPrice).where(*_price(Q2, ACME)))
+
+
+async def _price_miscounting_its_holders(session: AsyncSession) -> None:
+    """ACME's Q4 counting a fourth holder: a filer's row left over from before
+    a restatement removed it, the bug reading the keys after the rebuild alone
+    would have."""
+    await _set_price(session, Q4, ACME, observation_count=4)
+
+
+async def _price_of_zero(session: AsyncSession) -> None:
+    await session.execute(
+        text("ALTER TABLE implied_price DROP CONSTRAINT ck_implied_price_price_is_positive")
+    )
+    await _set_price(session, Q1, ACME, price=0)
+
+
+async def _price_nobody_reported(session: AsyncSession) -> None:
+    """$11 for ACME's Q1, which both its holders filed at $10."""
+    await _set_price(session, Q1, ACME, price=11)
 
 
 async def _corrected_without_a_refresh(session: AsyncSession) -> None:
@@ -1071,7 +1175,42 @@ BREAKAGES: Final = {
     ),
     "negative shares": _Breakage(
         _negative_shares,
-        {"nothing_negative": {(CHARLIE, Q4, ECHO, "negative shares")}},
+        {
+            "nothing_negative": {(CHARLIE, Q4, ECHO, "negative shares")},
+            # Charlie was ECHO's only holder in Q4, and a row with no shares
+            # observes nothing.
+            "prices_count_every_observation": {
+                (None, Q4, ECHO, "an implied price with no observations")
+            },
+        },
+    ),
+    "a negative value": _Breakage(
+        _negative_value,
+        {"nothing_negative": {(CHARLIE, Q4, ACME, "a negative value")}},
+    ),
+    "an implied price lost": _Breakage(
+        _price_lost,
+        {
+            "prices_count_every_observation": {
+                (None, Q2, ACME, "observations with no implied price")
+            }
+        },
+    ),
+    "an implied price miscounting its holders": _Breakage(
+        _price_miscounting_its_holders,
+        {
+            "prices_count_every_observation": {
+                (None, Q4, ACME, "an implied price that does not count every observation")
+            }
+        },
+    ),
+    "an implied price of zero": _Breakage(
+        _price_of_zero,
+        {"prices_are_positive": {(None, Q1, ACME, "an implied price of zero")}},
+    ),
+    "an implied price nobody reported": _Breakage(
+        _price_nobody_reported,
+        {"prices_are_medians": {(None, Q1, ACME, "an implied price no holder reported")}},
     ),
     "a correction published without refreshing the views": _Breakage(
         _corrected_without_a_refresh,
@@ -1157,7 +1296,11 @@ async def test_a_period_published_suspect_passes_only_when_reconciled_as_one(
     }
     assert as_published.clean
     assert _caught(unmarked) == {
-        "snapshot_traces_to_filing": {(ALPHA, Q2, BOLT, "its suspect flag is wrong")}
+        "snapshot_traces_to_filing": {(ALPHA, Q2, BOLT, "its suspect flag is wrong")},
+        # Charlie's Q2 BOLT was never suspect, and now no observation is.
+        "prices_count_every_observation": {
+            (None, Q2, BOLT, "an implied price whose suspect is not its observations'")
+        },
     }
 
 
@@ -1222,7 +1365,7 @@ def test_reconcile_exits_zero_and_lists_every_invariant_when_all_hold(
 
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
-        "reconcile  29 positions and 33 changes in 10 periods: all 8 invariants hold",
+        "reconcile  29 positions and 33 changes in 10 periods: all 11 invariants hold",
         *_invariant_lines({}),
     ]
 
@@ -1237,7 +1380,7 @@ def test_reconcile_exits_one_and_shows_the_rows_that_break_an_invariant(
 
     assert result.exit_code == 1, result.output
     assert result.stdout.splitlines() == [
-        "reconcile  29 positions and 32 changes in 10 periods: 2 of 8 invariants fail",
+        "reconcile  29 positions and 32 changes in 10 periods: 2 of 11 invariants fail",
         *_invariant_lines(
             {
                 "changes_follow_previous_period": [

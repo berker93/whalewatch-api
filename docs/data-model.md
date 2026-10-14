@@ -18,6 +18,7 @@ as three layers rather than one is what makes a parser bug survivable.
         |
         v
   position_snapshot / position_change /       derived, recomputable, droppable
+  implied_price /
   mv_consensus_holdings / mv_quarter_flows /
   mv_filer_summary
 ```
@@ -565,6 +566,71 @@ changes of each filer's next published period after them, which is next across
 a gap or a withheld quarter, not the next calendar quarter. Only the changes
 walk forward, because the next period's snapshot does not depend on this one.
 
+### `implied_price`
+
+Derived (`0025_implied_price`). Each security's quarter-end price in each
+period, implied by the filings of the managers who held it, with no market data
+vendor involved. Rebuilt from `position_snapshot` by `whalewatch recompute`, in
+the same transaction as the snapshot and the changes.
+
+```
+security_id        bigint    fk -> security, on delete cascade
+period_of_report   date      not null
+price              numeric(20,8)          -- > 0; null when no observation is priced
+observation_count  integer   not null     -- snapshot rows with shares: one per holder
+unpriced_count     integer   not null     -- of those, worth $0; left out of the median
+agreeing_count     integer   not null     -- priced, and within 2% of the median
+confidence         text                   -- high | medium | low; null exactly when price is
+suspect            boolean   not null     -- an observation is from a period published suspect
+computed_at        timestamptz  not null default now()
+primary key (security_id, period_of_report)
+```
+
+**Every snapshot row with shares is one observation**, of `value_usd / shares`.
+A 13F value is the position's market value at the quarter end, so forty
+managers holding a stock are forty observations of its closing price. The
+snapshot is common stock only, so option notionals and bond principal never
+reach it. A row with no shares observes nothing.
+
+**The price is the median observation**, by `percentile_disc(0.5)`: always one
+of the observations, the lower of the middle two when there is an even number,
+in exact `numeric`. Holders who disagree with the rest are not noise around
+the price. They are mistakes: a filer still reporting in thousands after 2023,
+a share count from before a split against a value from after it, a strategic
+stake carried at book value. On the five-year backfill, 6% of
+`(security, period)`s held by two or more filers spread more than 2%, and about
+400 by more than a factor of ten. A value-weighted price, `SUM(value) /
+SUM(shares)`, follows the largest of those wherever it goes: Coinbase at $78 at
+the end of 2022Q2 instead of $47.02, Magna at $66 instead of $47. The median
+ignores any minority of them, however large.
+
+**Confidence is agreement.** An observation agrees when it is within 2% of the
+median, which lets through the rounding of a value reported in thousands
+before 2023 and nothing like a split or a scale error. `high` is three or more
+agreeing and a majority of the priced observations, `medium` is two and a
+majority, `low` is everything else: one holder, or no majority. On the backfill
+that is 55%, 14% and 31%. Most of the `low` prices are of securities only one
+filer holds.
+
+**$0 is not a price.** A position reported at nothing is a filer that did not
+value it, so it is counted in `unpriced_count` and left out of the median. A
+security every holder reported at $0, 726 `(security, period)`s on the
+backfill, has a row with a null price and null confidence. Never a price of
+zero, and a `CHECK` holds `price > 0`. Eight places, because a dollar value
+over a large share count is small: the cheapest observation on the backfill is
+$0.009.
+
+**Rebuilt by security, not by filer.** The snapshot and the changes belong to a
+`(filer, period)`, and a price belongs to a `(security, period)` across every
+filer. A rebuild of some pairs reads which securities they held, before the
+rebuild and after it, and rebuilds the price of each in its period. Before, so
+that a security a restatement drops is repriced without it. The keys go to
+Postgres as two arrays, unnested back into pairs, because one filer's every
+period is tens of thousands of keys and asyncpg takes at most 32,767 bind
+parameters. Prices do not walk forward with the changes: the next period's
+snapshot is unchanged, so its prices are too. `recompute --all` rebuilds every
+row, in under a second.
+
 ### `filer_period`
 
 View (`0013_position_change_exits`). Every `(filer, period)` published in
@@ -1012,6 +1078,9 @@ The ones worth a constraint rather than a convention. Everything marked
   (`0012_position_change`). An `exit` has zero shares, value and weight
   (`0013_position_change_exits`). A row whose action and figures disagree has
   every reader believing one of the two.
+- **enforced** — `implied_price.price > 0`, its `confidence IN ('high',
+  'medium','low')` and null exactly when the price is, and its counts nest:
+  agreeing within priced within observed (`0025_implied_price`).
 - **enforced** — every materialised view has a unique index on plain columns,
   with no `WHERE`, which is what `REFRESH ... CONCURRENTLY` needs
   (`0014_materialised_views`). `test_materialised_views.py` checks every

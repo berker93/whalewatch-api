@@ -20,3 +20,8 @@ graphify-out/
 
 # The local raw store (RAW_STORE_BACKEND=local): archived EDGAR documents
 data/raw/
+
+# Epic 6 working drafts and the build plan derived from them — kept local
+docs/06-epic-securities-and-insiders*.md
+docs/06c-price-tickets-slotted*.md
+docs/06d-epic-6-how-to-proceed.md

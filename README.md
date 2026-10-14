@@ -497,6 +497,17 @@ an `exit`, a row of zero shares whose deltas are the whole previous position. A
 filer's latest period has no exits until it files the next one: a missing
 filing is not an exit.
 
+Then `implied_price`, each security's quarter-end price in each period, read off
+the snapshot rather than bought from a vendor. A 13F value is the position's
+market value at the quarter end, so every holder's `value_usd / shares` is an
+observation of the closing price. The price is the median observation, graded
+`high` (three or more within 2% of it, and a majority), `medium` (two, and a
+majority) or `low`. A median, because the holders who disagree are mistakes, not
+noise: a filer still reporting in thousands, a share count from before a split,
+a stake carried at book value. On the backfill, a value-weighted average would
+have put Coinbase at $78 at the end of 2022Q2. It closed at $47.02, which is the
+median. A holder that reports a position at $0 is counted, not priced.
+
 **What it rebuilds is a set of `(filer, period)` pairs.** `--filer` is every
 period the filer has filed for or published, `--period 2026Q1` is every filer's
 2026Q1, the two together are one pair, and `--all` is every pair there is. One
@@ -509,6 +520,7 @@ an upsert would leave them behind. Over the same fixtures as above:
 ```
 recompute  position_snapshot for every filer: 144 positions in 3 periods of 1 filer
   changes     position_change: 62 new, 8 add, 15 trim, 59 hold, 16 exit
+  prices      implied_price: 144 prices (0 high, 0 medium, 144 low, 0 unpriced)
   withheld    1 period with a suspect filing — check-data lists them; --include-suspect publishes them
 ```
 
@@ -526,6 +538,7 @@ and the `next` line says which:
 recompute  position_snapshot for 2022Q4: 49 positions in 1 period of 1 filer
   changes     position_change: 13 new, 8 add, 15 trim, 59 hold, 16 exit
   next        also the changes of 1 next period, which start from a rebuilt one: 2023Q3
+  prices      implied_price: 49 prices (0 high, 0 medium, 49 low, 0 unpriced)
 ```
 
 Next *published*, not next calendar quarter: 2023Q3 follows 2022Q4 across two
@@ -534,6 +547,14 @@ quarters with nothing loaded, and 2023Q3 has no next period at all while
 period and the one before it and nothing else. Only the changes walk forward.
 The next period's snapshot does not depend on this one, and rebuilding it would
 withhold it again if it had been published with `--include-suspect`.
+
+**Prices are rebuilt by security, not by filer.** A price belongs to a
+`(security, period)` and counts every filer that held it. So a rebuild reprices
+the securities its pairs held, before the rebuild or after it, in those periods,
+and nothing else: one filing of forty positions reprices forty securities. A
+security a restatement drops is repriced without it. Prices do not walk forward,
+because the next period's snapshot, which they are read from, is unchanged.
+One filer alone holds everything in these fixtures, so every price is `low`.
 
 **Ingesting a filing runs it for you.** `ingest-filing` and `backfill` rebuild
 the pair each filing is filed under, and the period after, in the transaction
@@ -559,8 +580,9 @@ published with one. Exit 1 if `--filer` names no filer, and 2 without `--filer`,
 `--period` or `--all`, or with `--all` and either of them.
 
 Migrations `0011` and `0012` create the two tables empty, in their current
-shape, and `0013` adds exits without writing any, so run `recompute --all` once
-after upgrading past them. That refreshes the views too.
+shape, `0013` adds exits without writing any, and `0025` creates
+`implied_price` empty, so run `recompute --all` once after upgrading past them.
+That refreshes the views too.
 
 ### `refresh-views [--view NAME] [--no-concurrent]`
 
@@ -652,12 +674,12 @@ creates the views filled from whatever the derived tables held then.
 The published tables checked after the fact: against each other, against the
 filings they came from, and against the views built on them. `check-data`
 looks at filings before they are published; this looks at what was. Read-only,
-one `REPEATABLE READ` snapshot for every check, about 7 s over the full
+one `REPEATABLE READ` snapshot for every check, about 20 s over the full
 backfill. `make reconcile` runs it in the container. Output with one exit
 missing:
 
 ```
-reconcile  29 positions and 32 changes in 10 periods: 2 of 8 invariants fail
+reconcile  29 positions and 32 changes in 10 periods: 2 of 11 invariants fail
   ok    weights_sum_to_100              every (filer, period)'s weights sum to 100 ± 0.01
   ok    snapshot_traces_to_filing       every position traces to a non-suspect filing that counts toward its period
   ok    changes_match_snapshot          every change but an exit is a snapshot row, and every snapshot row has its change
@@ -671,6 +693,9 @@ reconcile  29 positions and 32 changes in 10 periods: 2 of 8 invariants fail
           charlie-fund  2024Q4  value deltas do not add up to the change in portfolio value
             deltas sum to $20000.00; the portfolio went from $40000.00 to $40000.00, a change of $0.00
   ok    nothing_negative                no position has negative shares or value
+  ok    prices_count_every_observation  every position with shares is one observation of exactly one implied price
+  ok    prices_are_positive             no implied price is negative or zero
+  ok    prices_are_medians              every implied price is the median of its priced observations
   ok    views_match_live                every materialised view holds what its live query returns now
 ```
 

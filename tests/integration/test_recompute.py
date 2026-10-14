@@ -38,6 +38,7 @@ from app.db.models import (
     FilerCik,
     Filing,
     Holding,
+    ImpliedPrice,
     PositionChange,
     PositionSnapshot,
     Security,
@@ -180,11 +181,11 @@ def _change(change: PositionChange) -> tuple[object, ...]:
     return (change.action, change.prev_period_of_report, change.prev_shares, change.shares_delta)
 
 
-_TABLES: tuple[type[Base], ...] = (PositionSnapshot, PositionChange)
+_TABLES: tuple[type[Base], ...] = (PositionSnapshot, PositionChange, ImpliedPrice)
 
 
 async def _published(session: AsyncSession) -> dict[str, list[tuple[Any, ...]]]:
-    """Both tables, every column but ``computed_at``, in key order: all a reader sees."""
+    """Every derived table, every column but ``computed_at``, in key order: all a reader sees."""
     published = {}
     for model in _TABLES:
         mapper = inspect(model)
@@ -197,24 +198,59 @@ async def _published(session: AsyncSession) -> dict[str, list[tuple[Any, ...]]]:
     return published
 
 
-async def _stored(session: AsyncSession) -> dict[tuple[str, int, date, int], str]:
-    """Where every row of both tables is stored, by table and key. A row deleted
-    and inserted again is stored somewhere new, even unchanged and in the same
-    transaction."""
+#: ``(table, period, security_id, filer_id)``: a row's key, ``filer_id`` null for
+#: a price, which belongs to no filer.
+_Key = tuple[str, date, int, int | None]
+
+
+async def _stored(session: AsyncSession) -> dict[_Key, str]:
+    """Where every row of every derived table is stored, by table and key. A row
+    deleted and inserted again is stored somewhere new, even unchanged and in
+    the same transaction."""
     stored = {}
     for model in _TABLES:
-        key = inspect(model).primary_key
-        rows = await session.execute(select(literal_column("ctid::text", Text), *key))
-        for ctid, filer_id, period, security_id in rows.tuples():
-            stored[(model.__tablename__, filer_id, period, security_id)] = ctid
+        filer_id = getattr(model, "filer_id", None)
+        rows = await session.execute(
+            select(
+                literal_column("ctid::text", Text),
+                model.period_of_report,  # type: ignore[attr-defined]
+                model.security_id,  # type: ignore[attr-defined]
+                filer_id if filer_id is not None else literal_column("NULL::bigint"),
+            )
+        )
+        for ctid, period, security_id, filer in rows.tuples():
+            stored[(model.__tablename__, period, security_id, filer)] = ctid
     return stored
 
 
-def _rewritten(
-    before: dict[tuple[str, int, date, int], str], after: dict[tuple[str, int, date, int], str]
-) -> set[tuple[str, date]]:
+def _rewritten(before: dict[_Key, str], after: dict[_Key, str]) -> set[tuple[str, date]]:
     """Each ``(table, period)`` with a row deleted, inserted or moved between the two."""
-    return {(table, period) for (table, _, period, _), _ in (before.items() ^ after.items())}
+    return {(table, period) for (table, period, _, _), _ in (before.items() ^ after.items())}
+
+
+async def _prices_rewritten(before: dict[_Key, str], after: dict[_Key, str]) -> set[int]:
+    """The securities with a price deleted, inserted or moved between the two."""
+    return {
+        security_id
+        for (table, _, security_id, _), _ in (before.items() ^ after.items())
+        if table == ImpliedPrice.__tablename__
+    }
+
+
+async def _security_id(session: AsyncSession, cusip: str) -> int:
+    security_id = await session.scalar(select(Security.id).where(Security.cusip == cusip))
+    assert security_id is not None
+    return security_id
+
+
+async def _holders(session: AsyncSession, period: date) -> dict[str, int]:
+    """One period's implied prices, as how many holders observed each, by CUSIP."""
+    rows = await session.execute(
+        select(Security.cusip, ImpliedPrice.observation_count)
+        .join(Security, Security.id == ImpliedPrice.security_id)
+        .where(ImpliedPrice.period_of_report == period)
+    )
+    return dict(rows.tuples().all())
 
 
 async def _matches_rebuilding_everything(session: AsyncSession) -> None:
@@ -292,10 +328,12 @@ async def test_amending_q3_rebuilds_q3_and_q4_s_changes_and_nothing_else(
     assert await _snapshot(db_session, Q3) == {ALPHA: 150}
     assert _change((await _changes(db_session, Q3))[ALPHA]) == ("add", Q2, 100, 50)
     assert _change((await _changes(db_session, Q4))[ALPHA]) == ("hold", Q3, 150, 0)
+    # Q4's prices are not rebuilt: its snapshot, which they are read from, was not.
     assert _rewritten(before, await _stored(db_session)) == {
         ("position_snapshot", Q3),
         ("position_change", Q3),
         ("position_change", Q4),
+        ("implied_price", Q3),
     }
     await _matches_rebuilding_everything(db_session)
 
@@ -401,6 +439,71 @@ async def test_a_filer_s_latest_period_has_no_period_after_to_rebuild(
     rebuilt = await recompute(db_session, _pair(fund, Q2))
 
     assert rebuilt.following == frozenset()
+
+
+# --- implied prices: the securities, not the filers ---------------------------------
+
+
+async def test_a_rebuild_reprices_the_securities_it_held_and_no_others(
+    db_session: AsyncSession,
+) -> None:
+    """A and B both hold Alpha in Q3, and B alone holds Charlie. Restating A's
+    Q3 rebuilds Alpha's price, which counts B's row too, and Bravo's, which A
+    alone held. Charlie's is where it was stored: A never held it."""
+    a = await _fund(db_session)
+    b = await _fund(db_session, "b-fund", OTHER_CIK)
+    await _file(db_session, a, Q3, held(ALPHA, 100), held(BRAVO, 100))
+    await _file(db_session, b, Q3, held(ALPHA, 100), held(CHARLIE, 100), cik=OTHER_CIK)
+    await recompute(db_session, EVERYTHING)
+    before = await _stored(db_session)
+
+    await _file(db_session, a, Q3, held(ALPHA, 150), held(BRAVO, 100), amends=RESTATEMENT)
+    rebuilt = await recompute(db_session, _pair(a, Q3))
+
+    assert await _prices_rewritten(before, await _stored(db_session)) == {
+        await _security_id(db_session, ALPHA),
+        await _security_id(db_session, BRAVO),
+    }
+    assert rebuilt.prices.prices == 2
+    await _matches_rebuilding_everything(db_session)
+
+
+async def test_a_security_a_restatement_drops_is_repriced_without_it(
+    db_session: AsyncSession,
+) -> None:
+    """Why the keys are read before the rebuild as well as after. A's restated
+    Q3 no longer holds Alpha or Bravo. Alpha's price loses A's observation and
+    keeps B's. Bravo's, which only A observed, is gone. Read after the
+    rebuild alone, neither is a key, and both would keep counting A."""
+    a = await _fund(db_session)
+    b = await _fund(db_session, "b-fund", OTHER_CIK)
+    await _file(db_session, a, Q3, held(ALPHA, 100), held(BRAVO, 100))
+    await _file(db_session, b, Q3, held(ALPHA, 100), cik=OTHER_CIK)
+    await recompute(db_session, EVERYTHING)
+    assert await _holders(db_session, Q3) == {ALPHA: 2, BRAVO: 1}
+
+    await _file(db_session, a, Q3, held(CHARLIE, 100), amends=RESTATEMENT)
+    await recompute(db_session, _pair(a, Q3))
+
+    assert await _holders(db_session, Q3) == {ALPHA: 1, CHARLIE: 1}
+    await _matches_rebuilding_everything(db_session)
+
+
+async def test_a_period_withheld_takes_its_observations_out_of_the_prices(
+    db_session: AsyncSession,
+) -> None:
+    """A suspect addition withholds A's Q2, and Alpha's Q2 price is B's alone."""
+    a = await _fund(db_session)
+    b = await _fund(db_session, "b-fund", OTHER_CIK)
+    await _file(db_session, a, Q2, held(ALPHA, 100))
+    await _file(db_session, b, Q2, held(ALPHA, 100), cik=OTHER_CIK)
+    await recompute(db_session, EVERYTHING)
+
+    await _file(db_session, a, Q2, held(BRAVO, 10), amends=NEW_HOLDINGS, suspect=True)
+    await recompute(db_session, _pair(a, Q2))
+
+    assert await _holders(db_session, Q2) == {ALPHA: 1}
+    await _matches_rebuilding_everything(db_session)
 
 
 # --- the same tables, however they are reached --------------------------------------
@@ -590,6 +693,8 @@ def test_recompute_period_rebuilds_the_quarter_and_the_changes_after_it(
         # Q3: A's add and B's hold. Q4: A's trim back to 100, and B's hold.
         "  changes     position_change: 0 new, 1 add, 1 trim, 2 hold, 0 exit",
         "  next        also the changes of 2 next periods, which start from a rebuilt one: 2024Q4",
+        # Alpha's Q3, both filers at $10: the one security either held there.
+        "  prices      implied_price: 1 price (0 high, 1 medium, 0 low, 0 unpriced)",
     ]
     assert refresh.startswith("refresh-views  5 materialised views refreshed in ")
 
@@ -605,6 +710,8 @@ def test_recompute_filer_and_period_rebuild_that_one_pair(committed: AsyncEngine
         "recompute  position_snapshot for a-fund 2024Q3: 1 position in 1 period of 1 filer",
         "  changes     position_change: 0 new, 1 add, 1 trim, 0 hold, 0 exit",
         "  next        also the changes of 1 next period, which start from a rebuilt one: 2024Q4",
+        # B's row is in it too: a price is every holder's, whichever was rebuilt.
+        "  prices      implied_price: 1 price (0 high, 1 medium, 0 low, 0 unpriced)",
     ]
 
 

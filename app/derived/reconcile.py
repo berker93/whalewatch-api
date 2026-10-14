@@ -40,6 +40,16 @@ In the order :data:`INVARIANTS` runs them:
     portfolio's value since the filer's previous published period.
 ``nothing_negative``
     No snapshot row has negative shares or a negative value.
+``prices_count_every_observation``
+    Every snapshot row with shares is one observation of exactly one implied
+    price, its own security's in its own period. That price counts every one
+    of them, and the ones worth nothing, and no price has no observations.
+``prices_are_positive``
+    No implied price is negative or zero. A security with no priced
+    observation has no price, not a price of nothing.
+``prices_are_medians``
+    Each implied price is one of its priced observations, with at least half
+    of them at or below it and half at or above. Null only when none is priced.
 ``views_match_live``
     Every materialised view holds exactly the rows its live query returns now.
 
@@ -57,9 +67,10 @@ its size, is ``changes_follow_previous_period``'s to catch.
 
 Overlap with the schema
 -----------------------
-``new_and_exit_rows`` and ``nothing_negative`` restate ``CHECK`` constraints
-(``new_when_not_held_before``, ``an_exit_holds_nothing``, and ``holding``'s
-non-negative columns, which every snapshot row is a sum of). They are here so
+``new_and_exit_rows``, ``nothing_negative`` and ``prices_are_positive`` restate
+``CHECK`` constraints (``new_when_not_held_before``, ``an_exit_holds_nothing``,
+``holding``'s non-negative columns, which every snapshot row is a sum of, and
+``price_is_positive``). They are here so
 that the list is the whole contract in one place. A constraint dropped or added
 ``NOT VALID`` by a later migration would otherwise stop being checked without
 anyone noticing.
@@ -101,11 +112,13 @@ from sqlalchemy.orm import aliased
 from app.db.models.filer import Filer
 from app.db.models.filing import Filing, ParseStatus
 from app.db.models.holding import Holding
+from app.db.models.implied_price import ImpliedPrice
 from app.db.models.position_change import ChangeAction, PositionChange
 from app.db.models.position_snapshot import PositionSnapshot
 from app.db.models.security import Security
 from app.db.queries.effective import EFFECTIVE_FILING
 from app.db.queries.periods import FILER_PERIOD
+from app.derived.implied_price import PRICE_PLACES
 from app.derived.views import MATERIALISED_VIEWS, MaterialisedView
 
 #: How far a period's stored weights may sum from 100. Each weight is rounded to
@@ -801,6 +814,155 @@ def nothing_negative(published: Published) -> Select[Any]:
     ).where(or_(snapshot.shares < 0, snapshot.value_usd < 0))
 
 
+def prices_count_every_observation(published: Published) -> Select[Any]:
+    """Each ``(security, period)`` whose implied price does not count its observations.
+
+    An observation is a snapshot row with shares. A price must exist for every
+    ``(security, period)`` that has one, and for no other, and its counts and
+    ``suspect`` must be its observations'. With the primary key, that is every
+    observation in exactly one price.
+    """
+    snapshot, price = PositionSnapshot, ImpliedPrice
+    observed = (
+        select(
+            snapshot.security_id,
+            snapshot.period_of_report,
+            func.count().label("observations"),
+            func.count().filter(snapshot.value_usd == 0).label("unpriced"),
+            func.bool_or(snapshot.suspect).label("suspect"),
+        )
+        .where(snapshot.shares > 0)
+        .group_by(snapshot.security_id, snapshot.period_of_report)
+        .subquery("observed")
+    )
+    return _found(
+        select(
+            *_violation(
+                filer_id=None,
+                period=func.coalesce(observed.c.period_of_report, price.period_of_report),
+                security_id=func.coalesce(observed.c.security_id, price.security_id),
+                problem=case(
+                    (price.security_id.is_(None), "observations with no implied price"),
+                    (observed.c.security_id.is_(None), "an implied price with no observations"),
+                    (
+                        price.observation_count != observed.c.observations,
+                        "an implied price that does not count every observation",
+                    ),
+                    (
+                        price.unpriced_count != observed.c.unpriced,
+                        "an implied price that miscounts the observations worth nothing",
+                    ),
+                    (
+                        price.suspect != observed.c.suspect,
+                        "an implied price whose suspect is not its observations'",
+                    ),
+                ),
+                detail=_text(
+                    "%s observations, %s worth nothing; the price counts %s and %s",
+                    observed.c.observations,
+                    observed.c.unpriced,
+                    price.observation_count,
+                    price.unpriced_count,
+                ),
+            )
+        )
+        .select_from(observed)
+        .outerjoin(
+            price,
+            and_(
+                price.security_id == observed.c.security_id,
+                price.period_of_report == observed.c.period_of_report,
+            ),
+            full=True,
+        )
+    )
+
+
+def prices_are_positive(published: Published) -> Select[Any]:
+    """Each implied price of zero or less. No price at all is allowed: nothing was priced."""
+    price = ImpliedPrice
+    return select(
+        *_violation(
+            filer_id=None,
+            period=price.period_of_report,
+            security_id=price.security_id,
+            problem=case(
+                (price.price < 0, "a negative implied price"), else_="an implied price of zero"
+            ),
+            detail=_text("$%s", price.price),
+        )
+    ).where(price.price <= 0)
+
+
+def prices_are_medians(published: Published) -> Select[Any]:
+    """Each implied price that is not a median of its priced observations.
+
+    A median here is a value one of them has, with at least half of them at or
+    below it and at least half at or above. Compared at the stored precision,
+    which rounding cannot reorder. A price that is null although an observation
+    is priced breaks it too, which a median that rounded to nothing would. A
+    price with no observations at all is left to
+    :func:`prices_count_every_observation`, and one of zero or less to
+    :func:`prices_are_positive`.
+    """
+    snapshot, price = PositionSnapshot, ImpliedPrice
+    observed = (
+        select(
+            snapshot.security_id,
+            snapshot.period_of_report,
+            func.round(snapshot.value_usd / snapshot.shares, PRICE_PLACES).label("price"),
+            (snapshot.value_usd > 0).label("priced"),
+        )
+        .where(snapshot.shares > 0)
+        .subquery("observed")
+    )
+    observations = func.count(observed.c.security_id)
+    priced = func.count().filter(observed.c.priced)
+    below = func.count().filter(observed.c.priced, observed.c.price <= price.price)
+    above = func.count().filter(observed.c.priced, observed.c.price >= price.price)
+    reported = func.count().filter(observed.c.priced, observed.c.price == price.price)
+    return _found(
+        select(
+            *_violation(
+                filer_id=None,
+                period=price.period_of_report,
+                security_id=price.security_id,
+                problem=case(
+                    # prices_count_every_observation's to report.
+                    (observations == 0, null()),
+                    (
+                        price.price.is_(None),
+                        case((priced > 0, "no implied price though an observation is priced")),
+                    ),
+                    # prices_are_positive's to report, and no observation is.
+                    (price.price <= 0, null()),
+                    (reported == 0, "an implied price no holder reported"),
+                    (
+                        or_(below * 2 < priced, above * 2 < priced),
+                        "an implied price that is not the median",
+                    ),
+                ),
+                detail=_text(
+                    "$%s: %s of %s priced observations at or below it, %s at or above",
+                    price.price,
+                    below,
+                    priced,
+                    above,
+                ),
+            )
+        )
+        .select_from(price)
+        .outerjoin(
+            observed,
+            and_(
+                observed.c.security_id == price.security_id,
+                observed.c.period_of_report == price.period_of_report,
+            ),
+        )
+        .group_by(price.security_id, price.period_of_report, price.price)
+    )
+
+
 def views_match_live(published: Published) -> Select[Any]:
     """Each materialised view's row that its live query does not return, and the reverse.
 
@@ -893,6 +1055,21 @@ INVARIANTS: Final = (
         "nothing_negative",
         "no position has negative shares or value",
         nothing_negative,
+    ),
+    Invariant(
+        "prices_count_every_observation",
+        "every position with shares is one observation of exactly one implied price",
+        prices_count_every_observation,
+    ),
+    Invariant(
+        "prices_are_positive",
+        "no implied price is negative or zero",
+        prices_are_positive,
+    ),
+    Invariant(
+        "prices_are_medians",
+        "every implied price is the median of its priced observations",
+        prices_are_medians,
     ),
     Invariant(
         "views_match_live",

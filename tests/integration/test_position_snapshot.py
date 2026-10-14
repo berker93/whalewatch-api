@@ -633,6 +633,8 @@ def test_recompute_says_what_it_published_and_what_it_withheld(committed: AsyncE
     assert _rebuild(result.stdout) == [
         "recompute  position_snapshot for every filer: 49 positions in 1 period of 1 filer",
         "  changes     position_change: 49 new, 0 add, 0 trim, 0 hold, 0 exit",
+        # One filer, so one holder of each: low, every one.
+        "  prices      implied_price: 49 prices (0 high, 0 medium, 49 low, 0 unpriced)",
         "  withheld    1 period with a suspect filing — check-data lists them; "
         "--include-suspect publishes them",
     ]
@@ -653,6 +655,7 @@ def test_recompute_include_suspect_says_what_it_published_unchecked(
         "recompute  position_snapshot for berkshire-hathaway: 90 positions in 2 periods of 1 filer",
         # 2022Q4's 49 positions, less the 31 still held in 2023Q4, are 18 exits.
         "  changes     position_change: 59 new, 4 add, 6 trim, 21 hold, 18 exit",
+        "  prices      implied_price: 90 prices (0 high, 0 medium, 90 low, 0 unpriced)",
         "  suspect     1 period with a suspect filing published, every row marked suspect",
     ]
 

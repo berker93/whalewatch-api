@@ -126,6 +126,7 @@ from app.db.queries.cusip_coverage import DEFAULT_THRESHOLD_PCT, CusipCoverage, 
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.queries.runs import RunSummary, job_names, recent_runs
 from app.db.session import create_engine, create_session_factory, session_scope
+from app.derived.implied_price import PriceRebuild
 from app.derived.position_change import ChangeRebuild
 from app.derived.recompute import Recomputed, hold_recompute_lock, recompute
 from app.derived.reconcile import INVARIANTS, SAMPLE, Reconciliation, reconcile
@@ -802,6 +803,7 @@ def _echo_published(published: Recomputed) -> None:
         _line("published", f"{_count(snapshot.positions, 'position')} in {periods}")
     changed = published.scope | Scope.of(published.following)
     _line("changes", f"{_actions(published.changes)} in {_quarters(changed)}")
+    _line("prices", f"{_grades(published.prices)} in {periods}")
 
 
 def _line(label: str, value: str) -> None:
@@ -1902,7 +1904,7 @@ def recompute_command(
         ),
     ] = True,
 ) -> None:
-    """Rebuild position_snapshot, the published portfolio, and position_change, what changed in it.
+    """Rebuild position_snapshot, the published portfolio, position_change, and implied_price.
 
     position_snapshot has one row per security per filer and period, summed over
     the filings that count once amendments and overlapping CIKs are resolved,
@@ -1913,12 +1915,15 @@ def recompute_command(
     and this one does not. A filer's latest period has no exits until it files
     the next. A period that a suspect filing counts toward is withheld
     from both unless --include-suspect, which publishes it with every row
-    marked suspect.
+    marked suspect. implied_price has each security's quarter-end price per
+    period, the median of value / shares over the filers that held it, graded
+    high, medium or low by how many of them agree.
 
     Rebuilds the (filer, period) pairs --filer and --period pick out, together
     or alone, or every pair with --all. Each filer's next period after a
     rebuilt one has its position_change rebuilt too, as its deltas start from
-    it. All of it in one transaction. ingest-filing and backfill do this for
+    it. The implied price of every security those pairs held, before or after,
+    is rebuilt in its period. All of it in one transaction. ingest-filing and backfill do this for
     each filing they load; run it by hand after anything else that changes what
     counts, or with --all after a change to how either table is built.
 
@@ -1998,6 +2003,16 @@ async def _recompute(
             hold=changes.hold,
             exit=changes.exit,
         )
+        logger.info(
+            "implied_price.recomputed",
+            filer=slug,
+            period=None if period is None else _quarter(period),
+            prices=rebuilt.prices.prices,
+            high=rebuilt.prices.high,
+            medium=rebuilt.prices.medium,
+            low=rebuilt.prices.low,
+            unpriced=rebuilt.prices.unpriced,
+        )
     _echo_rebuild(rebuilt, scope=described or "every filer")
     # Even after a rebuild that published nothing: it may have deleted rows
     # that the views still count.
@@ -2020,6 +2035,7 @@ def _echo_rebuild(rebuilt: Recomputed, *, scope: str) -> None:
             f"also the changes of {_count(len(rebuilt.following), 'next period')}, "
             f"which start from a rebuilt one: {_quarters(Scope.of(rebuilt.following))}",
         )
+    _line("prices", f"implied_price: {_grades(rebuilt.prices)}")
     if not rebuild.suspect_periods:
         return
     periods = _count(rebuild.suspect_periods, "period")
@@ -2037,6 +2053,14 @@ def _actions(changes: ChangeRebuild) -> str:
     return (
         f"{changes.new:,} new, {changes.add:,} add, {changes.trim:,} trim, "
         f"{changes.hold:,} hold, {changes.exit:,} exit"
+    )
+
+
+def _grades(prices: PriceRebuild) -> str:
+    """The implied prices rebuilt, by confidence, and those no holder put a value on."""
+    return (
+        f"{_count(prices.prices, 'price')} ({prices.high:,} high, "
+        f"{prices.medium:,} medium, {prices.low:,} low, {prices.unpriced:,} unpriced)"
     )
 
 
