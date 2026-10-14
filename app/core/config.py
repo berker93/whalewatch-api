@@ -112,6 +112,23 @@ class Settings(BaseSettings):
     # a cached one is a quietly out-of-date answer.
     edgar_cache_dir: Path | None = None
 
+    # --- Form 4 crawl ----------------------------------------------------------
+    # Which issuers' Form 4s ``crawl-form4`` queues (app/ingestion/insider_discovery.py).
+    # All of EDGAR is about 1,700 Form 4s a business day. "held" is the issuers
+    # tracked investors hold, "sp500" the S&P 500 from form4_sp500_path.
+    form4_universe: Literal["held", "sp500"] = "held"
+
+    # For "held": an issuer counts when it was at least this percentage of one
+    # tracked portfolio in the last four quarters. The default, 1.0, is ~740
+    # issuers and ~420 Form 4s a business day on 2026's data; 0 is everything
+    # held (~4,800 issuers and ~1,400 a day, most of EDGAR), because a stock a
+    # trillion-dollar manager holds at 0.001% is not one it holds for a reason.
+    form4_min_weight_pct: float = Field(default=1.0, ge=0, le=100)
+
+    # For "sp500": a CSV with a CIK column. Unset is the snapshot shipped in
+    # data/universe/sp500.csv.
+    form4_sp500_path: Path | None = None
+
     # --- OpenFIGI -------------------------------------------------------------
     # Optional, and worth having: a free key (a form at openfigi.com) is ten
     # times the request rate and ten times the CUSIPs per request. Unset, the

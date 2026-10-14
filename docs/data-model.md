@@ -840,9 +840,9 @@ and there is no `issuer` table to hang it on (see `issuer` / `security`).
 ```
 accession_no   char(20)     pk
 cik            char(10)     not null            -- whose archive holds it
-form_type      text         not null            -- 13F-HR | 13F-HR/A
+form_type      text         not null            -- 13F-HR | 13F-HR/A | 4 | 4/A
 filing_date    date         not null
-report_date    date
+report_date    date                             -- null for a Form 4
 discovered_at  timestamptz  not null default now()
 status         text         not null default 'pending'  -- pending | failed | done
 attempts       integer      not null default 0
@@ -856,6 +856,45 @@ from `filing` because a discovered filing has no `filed_at` or
 `value_multiplier` yet, and inventing either is the 1000x error. No foreign key
 to `filing` for the same reason. Rows are kept after `done`, so a filing that
 took three tries keeps its history.
+
+Form 4s share it. `crawl-form4` queues `4` and `4/A` rows, with the CIK of the
+daily index line that matched (usually the issuer's), and `backfill` reads only
+the `13F` rows.
+
+### `crawl_watermark`
+
+```
+job         text         pk                       -- 'crawl-form4'
+last_date   date         not null                 -- every day up to here read in full
+updated_at  timestamptz  not null default now()
+```
+
+How far an incremental crawl has got (`0029_form4_crawl`). It moves only to
+the day after itself, in the same transaction as that day's queue rows. A
+failed day stops it, and a day crawled out of order leaves it alone. So
+nothing at or before it was skipped, and `crawl-form4 --catch-up` starts the
+day after. Kept as a table because "no Form 4s were queued for 25 December"
+and "25 December was never read" leave the same queue behind.
+
+### `sec_company_ticker`
+
+```
+ticker   text         pk                          -- as SEC spells it: BRK-B
+cik      char(10)     not null
+name     text         not null                    -- SEC's title
+seen_at  timestamptz  not null                    -- latest import that listed it
+index (cik)
+```
+
+SEC's `company_tickers.json` (`0029_form4_crawl`): about 10,000 listed
+companies, a row per ticker with its company's CIK. It is the only place the
+schema joins a security to a CIK. `crawl-form4` refreshes it on each `held` run,
+and joins `security.ticker` to it with the share-class dot turned into SEC's
+dash, to bound the crawl to held issuers. The insider loader can use it to link
+an issuer CIK back to a security. A ticker missing from a later file is kept
+with its old `seen_at`, because SEC lists only today's companies. A ticker given
+to a new company moves to the new CIK. Not foreign-keyed to `security`, for
+`sec_13f_security`'s reason.
 
 
 ```

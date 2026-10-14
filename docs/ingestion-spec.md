@@ -42,6 +42,11 @@ the block is by IP.
 it faster makes it permanent. Treat 403 as fatal for the run and log it loudly;
 retry 429 and 5xx with exponential backoff and jitter.
 
+Not every 403 is EDGAR. Parts of the archive (`daily-index/`) are served from
+S3, which answers a key that does not exist with a 403 and an XML
+`AccessDenied` body. The client raises that as `EdgarNotFound`, a 404, rather
+than waiting out a block that is not there.
+
 **Archive before parse.** Every fetched document is written to the raw store
 (`app/storage`) before a parser sees it, uncompressed and unmodified, under
 `raw/13f/{cik}/{accession_no}/{filename}` — cover page, information table and
@@ -69,10 +74,39 @@ difference finds it on the next run with no special case. It also finds a
 deleted row and an amendment filed late for a closed period. The window defaults
 to five years of filing dates; `--all` reads a CIK's whole history.
 
-**Form 4** is push-based, per day. There is no useful "all insiders" list, so we
-walk the daily index for each business day, filter to form type `4`, and enqueue.
-Weekends and market holidays have no index file — a 404 there is expected and is
-not an error. Backfilling insiders means walking every day in the range.
+**Form 4** is push-based, per day. There is no useful "all insiders" list, so
+`crawl-form4` ([app/ingestion/insider_discovery.py](../app/ingestion/insider_discovery.py))
+walks the daily form index (`form.YYYYMMDD.idx`) a day at a time, keeps form
+types `4` and `4/A`, and enqueues into the same `pending_filing`, through the
+same set difference as 13Fs. `backfill` takes only the 13F rows. Backfilling
+insiders means walking every day in the range: one request per business day.
+
+- **Bounded to a universe.** EDGAR has about 1,700 Form 4s on a busy business
+  day. `FORM4_UNIVERSE=held` keeps the issuers that were at least
+  `FORM4_MIN_WEIGHT_PCT` (default 1) percent of a tracked portfolio in the last
+  four quarters. That was ~740 issuers and ~90–125 filings a day in October 2026.
+  Held securities are matched to CIKs through SEC's `company_tickers.json`
+  (`sec_company_ticker`), which covers 98% of held value. What it misses is
+  mostly ETFs, which have no insiders. `sp500` reads CIKs from a CSV.
+- **One line per party.** The index lists a Form 4 under its issuer and under
+  each reporting owner, so a line matches on the issuer's CIK whoever filed it.
+  A tracked company that is a 10% owner of another brings in that company's
+  Form 4s too, and the loader decides.
+- **Fixed width.** Form types (`SC 13D`) and names (`667, L.P.`) contain spaces.
+  The form type and name are cut at the header's column offsets. CIK, date and
+  path never contain spaces, so they are the last three tokens. Only the
+  header's first line is usable: its second is wrapped.
+- **A missing index is a 403, not a 404.** `daily-index/` is served from S3,
+  which answers a missing key with `403 AccessDenied`. The EDGAR client
+  recognises that body as not-found (`EdgarNotFound`) rather than a block. The
+  crawl never asks for a missing file in the first place: each quarter's
+  `index.json` listing says which days have one. A weekday not listed is a
+  holiday if a later day is listed. If none is, it is not published yet (indexes
+  appear at about 10pm New York time), and the walk stops there.
+- **A watermark.** `crawl_watermark` holds the last day read in full. It
+  advances only to the day after itself, and only after that day's queue rows
+  are committed in the same transaction. A failed day stops the walk, and a day
+  crawled out of order does not move it. `--catch-up` starts the day after it.
 
 ## Parsing
 
@@ -326,7 +360,8 @@ become one by accident.
 
 Celery, with Redis as the broker. Beat schedule in `app/jobs/schedule.py`:
 
-- **Daily** — walk yesterday's daily index for Form 4s.
+- **Daily** — `crawl-form4 --catch-up`: every day since the watermark. Late
+  evening New York time, or the next morning, so the day's index exists.
 - **Daily during filing season** — poll tracked filers' submissions JSON for new
   13Fs. Outside the ~three weeks after each due date this finds nothing, so it
   drops to weekly.

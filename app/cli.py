@@ -1,7 +1,7 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
-fetch-quotes.
+fetch-quotes, crawl-form4.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -38,6 +38,8 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli resolve-cusip 037833100 --ticker AAPL --note "OpenFIGI miss"
     uv run python -m app.cli ticker-alias 30303M102 --ticker FB --to 2022-06-09
     uv run python -m app.cli fetch-quotes --ticker NVDA
+    uv run python -m app.cli crawl-form4 --from 2026-07-01
+    uv run python -m app.cli crawl-form4 --catch-up
 
 Every run is recorded
 ---------------------
@@ -103,7 +105,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
-from typing import Annotated, Final, TextIO
+from typing import Annotated, Final, NoReturn, TextIO
 
 import httpx
 import structlog
@@ -167,6 +169,7 @@ from app.ingestion.discovery import (
     tracked_filer_ids,
 )
 from app.ingestion.edgar.client import EdgarClient, EdgarRateLimited, EdgarServerError
+from app.ingestion.edgar.company_tickers import CompanyTickersMalformedError
 from app.ingestion.edgar.documents import (
     FilingDocuments,
     FilingDocumentsError,
@@ -211,6 +214,19 @@ from app.ingestion.enrichment.tickers import (
     UnknownSecurityError,
     add_ticker_history,
     flag_delistings,
+)
+from app.ingestion.insider_discovery import (
+    Crawl,
+    DayKind,
+    NoWatermarkError,
+    Universe,
+    UniverseError,
+    catch_up_days,
+    crawl_form4,
+    days_between,
+    held_universe,
+    new_york_today,
+    sp500_universe,
 )
 from app.ingestion.investors import (
     DEFAULT_INVESTORS_PATH,
@@ -1128,6 +1144,191 @@ def _echo_discovery(results: list[FilerDiscovery], *, since: date | None) -> Non
     for result in results:
         for failure in result.failures:
             _line("error", f"{result.filer.slug} CIK {failure.cik}: {failure.error}")
+
+
+# --- crawl-form4 -------------------------------------------------------------
+
+
+@app.command("crawl-form4")
+def crawl_form4_command(
+    day: Annotated[
+        datetime | None,
+        typer.Option("--date", formats=["%Y-%m-%d"], help="Crawl this one day."),
+    ] = None,
+    first: Annotated[
+        datetime | None,
+        typer.Option("--from", formats=["%Y-%m-%d"], help="Crawl from this day."),
+    ] = None,
+    last: Annotated[
+        datetime | None,
+        typer.Option(
+            "--to",
+            formats=["%Y-%m-%d"],
+            help="Crawl to this day, with --from.",
+            show_default="today",
+        ),
+    ] = None,
+    catch_up: Annotated[
+        bool,
+        typer.Option(
+            "--catch-up",
+            help="Crawl from the day after the watermark to today. What a run with no "
+            "days given does.",
+        ),
+    ] = False,
+    universe: Annotated[
+        str | None,
+        typer.Option(
+            "--universe",
+            metavar="held|sp500",
+            help="Whose Form 4s to queue.",
+            show_default="FORM4_UNIVERSE",
+        ),
+    ] = None,
+) -> None:
+    """Queue the Form 4s and 4/As EDGAR's daily index lists for the universe's issuers.
+
+    Reads each day's form index, keeps the lines whose CIK is a universe
+    issuer, and queues the filings not already loaded in pending_filing.
+    Weekends and holidays have no index and are skipped. The walk stops,
+    without failing, at a day EDGAR has not published yet (today, before about
+    10pm New York time).
+
+    The watermark is the last day read in full, and moves only to the day
+    after itself, so --catch-up never skips a day. A first run with --from or
+    --date sets it.
+
+    Exits 1 if a day failed: the days before it are kept, and the next run
+    starts there.
+    """
+    if universe is not None and universe not in ("held", "sp500"):
+        _usage("--universe is held or sp500")
+    chosen = sum((day is not None, first is not None, catch_up))
+    if chosen > 1:
+        _usage("--date, --from and --catch-up are three different ways to choose days: use one")
+    if last is not None and first is None:
+        _usage("--to needs --from")
+    today = new_york_today()
+    days: list[date] | None
+    if day is not None:
+        days = [day.date()]
+    elif first is not None:
+        days = days_between(first.date(), today if last is None else last.date())
+        if not days:
+            _usage("--from is after --to")
+    else:
+        days = None  # --catch-up, read from the watermark inside the run
+    if days and days[-1] > today:
+        _usage(f"{days[-1]} is after today in New York ({today})")
+
+    try:
+        failed = asyncio.run(_crawl_form4(days, universe=universe, today=today))
+    except (
+        UniverseError,
+        NoWatermarkError,
+        EdgarRateLimited,
+        EdgarServerError,
+        CompanyTickersMalformedError,
+        httpx.HTTPError,
+    ) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+    if failed:
+        raise typer.Exit(code=1)
+
+
+def _usage(message: str) -> NoReturn:
+    typer.secho(f"error: {message}", fg=typer.colors.RED, err=True)
+    raise typer.Exit(code=2)
+
+
+async def _crawl_form4(days: list[date] | None, *, universe: str | None, today: date) -> bool:
+    """Choose the days, build the universe, crawl. Returns whether a day failed.
+
+    The days before the universe, so that a --catch-up with no watermark fails
+    without a request to SEC.
+    """
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    kind = universe or settings.form4_universe
+
+    async with track_run(
+        settings,
+        "crawl-form4",
+        days=None if days is None else f"{days[0]}..{days[-1]}",
+        catch_up=days is None,
+        universe=kind,
+    ) as run:
+        engine = create_engine(settings)
+        sessions = create_session_factory(engine)
+        try:
+            if days is None:
+                async with sessions() as session:
+                    days = await catch_up_days(session, today)
+            if not days:
+                typer.echo("crawl-form4  nothing to crawl: the watermark is today")
+                return False
+            async with EdgarClient(settings) as edgar:
+                if kind == "held":
+                    chosen = await held_universe(
+                        sessions, edgar, min_weight_pct=settings.form4_min_weight_pct
+                    )
+                else:
+                    chosen = sp500_universe(settings.form4_sp500_path)
+                crawl = await crawl_form4(sessions, edgar, chosen.ciks, days, today=today)
+        finally:
+            await engine.dispose()
+
+        run.items_seen = sum(len(crawled.matched) for crawled in crawl.days)
+        run.items_written = sum(crawled.new for crawled in crawl.days)
+        if crawl.failed and crawl.stopped is not None:
+            run.errors.append(f"{crawl.stopped.day}: {crawl.stopped.error}")
+        run.metrics |= {
+            "universe_issuers": len(chosen.ciks),
+            "days_read": sum(1 for crawled in crawl.days if crawled.kind in _READ_DAYS),
+            "watermark_before": _iso(crawl.watermark_before, blank=""),
+            "watermark_after": _iso(crawl.watermark_after, blank=""),
+            "stopped": None if crawl.stopped is None else crawl.stopped.kind.value,
+        }
+
+    _echo_crawl(chosen, crawl)
+    return crawl.failed
+
+
+#: The kinds of day that count as read, and move the watermark.
+_READ_DAYS: Final = frozenset({DayKind.INDEXED, DayKind.WEEKEND, DayKind.NO_INDEX})
+
+
+def _echo_crawl(universe: Universe, crawl: Crawl) -> None:
+    typer.echo(f"crawl-form4  {universe.kind} universe: {universe.description}")
+    for crawled in crawl.days:
+        if crawled.kind is DayKind.WEEKEND:
+            continue
+        if crawled.kind is DayKind.INDEXED:
+            detail = (
+                f"{crawled.listed:>6,} Form 4s  {len(crawled.matched):>5,} matched  "
+                f"{crawled.new:>5,} new"
+            )
+        elif crawled.kind is DayKind.FAILED:
+            detail = f"FAILED  {crawled.error}"
+        elif crawled.kind is DayKind.UNPUBLISHED:
+            detail = "not published yet: stopped here"
+        else:
+            detail = "no index (holiday)"
+        typer.echo(f"  {crawled.day}  {detail}")
+
+    read = [crawled for crawled in crawl.days if crawled.kind in _READ_DAYS]
+    matched = sum(len(crawled.matched) for crawled in read)
+    new = sum(crawled.new for crawled in read)
+    typer.echo(
+        f"  {_count(len(read), 'day')} read: {_count(matched, 'filing')} matched, "
+        f"{new:,} new in pending_filing"
+    )
+    before = "none" if crawl.watermark_before is None else str(crawl.watermark_before)
+    if crawl.watermark_after == crawl.watermark_before:
+        typer.echo(f"  watermark {before}, unchanged")
+    else:
+        typer.echo(f"  watermark {before} -> {crawl.watermark_after}")
 
 
 # --- backfill ----------------------------------------------------------------

@@ -45,8 +45,19 @@ connections), 502/503/504
                                      and preferring SEC's own ``Retry-After``
                                      when it sent one.
 -----------------------------------  -------------------------------------------
-400, 404, every other 4xx            Not retried. Raised on the first attempt.
+404, and S3's 403 for a missing key  Not retried. :class:`EdgarNotFound`.
+(:class:`EdgarNotFound`)
+-----------------------------------  -------------------------------------------
+400, every other 4xx                 Not retried. Raised on the first attempt.
 ===================================  ===========================================
+
+Not every 403 is a block. Parts of the archive, ``daily-index/`` among them,
+are served from S3, and S3 answers a key that does not exist with a 403 and an
+XML ``AccessDenied`` body when the caller may not list the bucket. A daily
+index for a holiday, or for today before it is published, is one of those.
+Read as a block, each would park the run for a minute or more and then stop
+it, so that one body is recognised (:func:`_is_missing_key`) and raised as the
+404 it means.
 
 The jitter is not decoration. Twenty concurrent fetches that fail together would,
 under a deterministic backoff, sleep for the same interval and wake in the same
@@ -155,6 +166,15 @@ class EdgarRateLimited(Exception):  # noqa: N818
         self.retry_after = retry_after
 
 
+class EdgarNotFound(httpx.HTTPStatusError):
+    """There is no document at that URL: a 404, or S3's 403 for a missing key.
+
+    An ``httpx.HTTPStatusError`` still, so code that catches that and reads the
+    status keeps working. :attr:`response` is the response as sent, so a
+    missing S3 key says 403 there.
+    """
+
+
 class EdgarServerError(Exception):
     """EDGAR returned a status that means "try again", not "you are wrong".
 
@@ -195,6 +215,17 @@ def _suggested_wait(response: httpx.Response) -> float:
             return max(0.0, (deadline - datetime.now(UTC)).total_seconds())
 
     return _BLOCKED_SECONDS if response.status_code == 403 else _THROTTLED_SECONDS
+
+
+def _is_missing_key(response: httpx.Response) -> bool:
+    """Whether a 403 is S3 saying "no such key" rather than SEC blocking us.
+
+    S3's error is an XML document with a ``Code`` of ``AccessDenied``. SEC's
+    block is an HTML page about automated tools and request rates. Matched on
+    the body because nothing else tells them apart: both are 403s from the
+    same host.
+    """
+    return response.status_code == 403 and b"<Code>AccessDenied</Code>" in response.content
 
 
 def _elapsed_ms(started: float) -> float:
@@ -376,27 +407,32 @@ class EdgarClient:
 
     # --- requests ------------------------------------------------------------
 
-    async def get_bytes(self, url: str) -> bytes:
+    async def get_bytes(self, url: str, *, fresh: bool = False) -> bytes:
         """Fetch ``url`` and return its body verbatim.
 
         Bytes and not text: filing documents are archived exactly as EDGAR
         served them, and decoding on the way in would mean the copy we keep is
         not the copy we were given.
-        """
-        return await self._body(url)
 
-    async def get_json(self, url: str) -> Any:
+        :param fresh: Bypass the development cache, reading and writing. For a
+            document whose answer changes, such as a directory listing.
+        """
+        return await self._body(url, fresh=fresh)
+
+    async def get_json(self, url: str, *, fresh: bool = False) -> Any:
         """Fetch ``url`` and parse it as JSON.
 
         Untyped by design — the shape of a submissions or index document is
         EDGAR's business, and validating it belongs to the parser that knows
         which document this is, not to the transport.
-        """
-        return json.loads(await self._body(url))
 
-    async def _body(self, url: str) -> bytes:
+        :param fresh: As for :meth:`get_bytes`.
+        """
+        return json.loads(await self._body(url, fresh=fresh))
+
+    async def _body(self, url: str, *, fresh: bool = False) -> bytes:
         """The body at ``url``, from the disk cache when there is one."""
-        if self._cache_dir is None:
+        if self._cache_dir is None or fresh:
             return (await self._get(url)).content
 
         path = _cache_path(self._cache_dir, url)
@@ -445,6 +481,12 @@ class EdgarClient:
             bytes=len(response.content),
         )
 
+        if response.status_code == 404 or _is_missing_key(response):
+            raise EdgarNotFound(
+                f"EDGAR has no document at {url} ({response.status_code})",
+                request=response.request,
+                response=response,
+            )
         if response.status_code in _LIMITED_STATUSES:
             raise EdgarRateLimited(
                 url=url,
@@ -453,10 +495,10 @@ class EdgarClient:
             )
         if response.status_code in _RETRYABLE_SERVER_STATUSES:
             raise EdgarServerError(url=url, status_code=response.status_code)
-        # Everything else 4xx/5xx: a 404 for a document that is not there, a 400
-        # for a URL we built wrong. Both are ours to fix, neither improves with
-        # another attempt, so they leave here as an ordinary HTTPStatusError that
-        # the retry policy declines to match.
+        # Everything else 4xx/5xx: a 400 for a URL we built wrong, a 500. Ours
+        # to fix or theirs, neither improves with another attempt, so they leave
+        # here as an ordinary HTTPStatusError that the retry policy declines to
+        # match.
         response.raise_for_status()
         return response
 

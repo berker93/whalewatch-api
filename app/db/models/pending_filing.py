@@ -63,7 +63,9 @@ class PendingFiling(Base):
     """
 
     cik: Mapped[str] = mapped_column(CHAR(10))
-    """The CIK whose submissions index listed the filing, zero-padded.
+    """The CIK whose submissions index listed the filing, zero-padded. For a
+    Form 4, the CIK of the daily index line that matched the universe, usually
+    the issuer's.
 
     Which is the CIK whose archive directory holds it — the thing
     ``ingest-filing`` cannot work out from the accession number, and reads from
@@ -71,14 +73,17 @@ class PendingFiling(Base):
     """
 
     form_type: Mapped[str] = mapped_column(Text)
-    """``13F-HR`` or ``13F-HR/A``, as EDGAR's index spells it."""
+    """``13F-HR`` or ``13F-HR/A`` from ``discover-filings``, ``4`` or ``4/A``
+    from ``crawl-form4``, as EDGAR's indexes spell them. One queue for both,
+    each drained by its own loader: ``backfill`` takes the 13Fs."""
 
     filing_date: Mapped[date]
     """EDGAR's ``filingDate``. For ordering and for a person reading the queue;
     never an input to the units cutover, which needs the acceptance instant."""
 
     report_date: Mapped[date | None]
-    """EDGAR's ``reportDate``, the period the filing describes."""
+    """EDGAR's ``reportDate``, the period the filing describes. Null for a
+    Form 4, which describes days, and whose index line does not say which."""
 
     discovered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

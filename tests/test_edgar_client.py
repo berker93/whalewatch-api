@@ -42,6 +42,7 @@ from app.ingestion.edgar.client import (
     _MAX_ATTEMPTS,
     _RATE_LIMIT_ATTEMPTS,
     EdgarClient,
+    EdgarNotFound,
     EdgarRateLimited,
     EdgarServerError,
     _rate_limit_wait,
@@ -256,6 +257,60 @@ async def test_404_is_an_ordinary_http_error_not_a_rate_limit(settings: Settings
     async with _client(settings, transport=_transport(status=404)) as edgar:
         with pytest.raises(httpx.HTTPStatusError):
             await edgar.get_bytes("https://data.sec.gov/missing")
+
+
+#: What S3 answers, with a 403, for a key that does not exist: a daily index
+#: for a holiday, as sec.gov served it on 2026-10-14.
+_S3_MISSING_KEY = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>AccessDenied</Code>'
+    b"<Message>Access Denied</Message><RequestId>YJNB2XBMAZ5E5SJF</RequestId></Error>"
+)
+
+
+@respx.mock
+async def test_s3s_403_for_a_missing_key_is_not_found_not_a_block() -> None:
+    """Read as a block, a holiday's daily index would park the crawl for a
+    minute and then stop it. One request, and the 404 it means."""
+    url = "https://www.sec.gov/Archives/edgar/daily-index/2024/QTR4/form.20241225.idx"
+    route = respx.get(url).mock(
+        return_value=httpx.Response(
+            403, content=_S3_MISSING_KEY, headers={"content-type": "application/xml"}
+        )
+    )
+
+    async with _respx_client(make_settings()) as edgar:
+        with pytest.raises(EdgarNotFound) as caught:
+            await edgar.get_bytes(url)
+
+    assert route.call_count == 1
+    assert caught.value.response.status_code == 403
+
+
+@respx.mock
+async def test_a_403_with_any_other_body_is_still_a_block() -> None:
+    route = respx.get(_URL).mock(
+        return_value=httpx.Response(403, text="<html>Request Rate Threshold Exceeded</html>")
+    )
+
+    async with _respx_client(make_settings()) as edgar:
+        with pytest.raises(EdgarRateLimited):
+            await edgar.get_bytes(_URL)
+
+    assert route.call_count == _RATE_LIMIT_ATTEMPTS
+
+
+@respx.mock
+async def test_a_404_is_not_found_and_still_an_http_status_error() -> None:
+    """The subclass is what lets older callers, which catch HTTPStatusError and
+    read the status, keep working."""
+    respx.get(_URL).mock(return_value=httpx.Response(404))
+
+    async with _respx_client(make_settings()) as edgar:
+        with pytest.raises(EdgarNotFound) as caught:
+            await edgar.get_bytes(_URL)
+
+    assert isinstance(caught.value, httpx.HTTPStatusError)
+    assert caught.value.response.status_code == 404
 
 
 # --- retrying ---------------------------------------------------------------
@@ -582,6 +637,27 @@ async def test_a_failed_request_is_not_cached(tmp_path: Path) -> None:
             await edgar.get_json(_URL)
         assert await edgar.get_json(_URL) == {"cik": "0000320193"}
         assert await edgar.get_bytes(_URL) == _BODY
+
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_a_fresh_fetch_neither_reads_nor_writes_the_cache(tmp_path: Path) -> None:
+    """For a directory listing, which a cache that never expires would freeze
+    at the day it was first read."""
+    route = respx.get(_URL).mock(
+        side_effect=[
+            httpx.Response(200, content=b'{"n": 1}'),
+            httpx.Response(200, content=b'{"n": 2}'),
+            httpx.Response(200, content=b'{"n": 3}'),
+        ]
+    )
+
+    async with EdgarClient(make_settings(edgar_cache_dir=tmp_path)) as edgar:
+        assert await edgar.get_json(_URL) == {"n": 1}
+        assert await edgar.get_json(_URL, fresh=True) == {"n": 2}
+        # The cached copy is still the first, and is still served.
+        assert await edgar.get_json(_URL) == {"n": 1}
 
     assert route.call_count == 2
 

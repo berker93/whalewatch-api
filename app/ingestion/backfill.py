@@ -189,6 +189,9 @@ async def plan_backfill(
             )
             .outerjoin(FilerCik, FilerCik.cik == PendingFiling.cik)
             .outerjoin(Filer, Filer.id == FilerCik.filer_id)
+            # The queue is shared with Form 4s, which crawl-form4 queues and
+            # the insider loader drains.
+            .where(PendingFiling.form_type.startswith("13F"))
         )
     }
     filed = {

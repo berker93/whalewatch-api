@@ -1034,6 +1034,57 @@ close dated today is used only after 16:30 New York time, since before then it
 is the price so far. A re-run replaces the closes for the same trading day.
 Drops every response the API has cached when it writes anything.
 
+### `crawl-form4 [--date DATE | --from DATE [--to DATE] | --catch-up] [--universe held|sp500]`
+
+Finds Form 4s. For each day it reads EDGAR's daily form index, keeps the `4` and
+`4/A` lines whose CIK is an issuer in the universe, and queues the filings not
+already loaded in `pending_filing`
+([app/ingestion/insider_discovery.py](app/ingestion/insider_discovery.py)).
+`backfill` leaves these rows alone. The insider loader drains them.
+
+```
+crawl-form4  held universe: 743 issuers at least 1% of a portfolio in the four quarters to 2026-06-30
+  2026-10-08     323 Form 4s     87 matched     87 new
+  2026-10-09     292 Form 4s     69 matched     69 new
+  2026-10-12  no index (holiday)
+  2026-10-13     522 Form 4s    124 matched    124 new
+  2026-10-14  not published yet: stopped here
+  6 days read: 280 filings matched, 280 new in pending_filing
+  watermark none -> 2026-10-13
+```
+
+| Flag | |
+| --- | --- |
+| `--date` | One day |
+| `--from`, `--to` | A range. `--to` defaults to today |
+| `--catch-up` | The day after the watermark to today. What a run with no days given does |
+| `--universe` | Overrides `FORM4_UNIVERSE` |
+
+**The universe.** `held`, the default, means issuers that were at least
+`FORM4_MIN_WEIGHT_PCT` (default 1) percent of a tracked portfolio in the last
+four quarters. Each run refreshes SEC's ticker-to-CIK map
+(`company_tickers.json`, into `sec_company_ticker`) and joins held securities
+to it by ticker. `0` means everything held, which is about 4,800 issuers and
+most of EDGAR's Form 4s. `sp500` is the CIKs in `FORM4_SP500_PATH`, by default
+the snapshot in [data/universe/sp500.csv](data/universe/sp500.csv). An empty
+universe is an error, not an empty crawl: an empty crawl would still move the
+watermark.
+
+**Which days count as read.** Each quarter's directory listing says which days
+have an index, so a missing file is never requested. A missing index comes
+back as S3's 403, which looks like an EDGAR block. A weekday with no index is a
+holiday if a later day has one. If no later day has one, it is not published
+yet: EDGAR publishes a day's index at about 10pm New York time. The walk stops
+there and the next run asks again.
+
+**The watermark** (`crawl_watermark`) is the last day read in full. It moves
+only to the day after itself. A day that fails stops the walk with exit 1,
+keeping the days before it. A day crawled out of order (`--date` past the
+watermark) queues its filings without moving the watermark, so `--catch-up`
+never skips a day. The first run with `--from` or `--date` sets it, and
+`--catch-up` without one exits 1. Re-crawling a day is safe: the queue never
+holds a filing twice.
+
 ### `runs [--job NAME] [--limit N]`
 
 Lists the most recent job runs, newest first, from `ingestion_run`. Every verb
@@ -1515,6 +1566,8 @@ Write these down once so you are not re-deriving them from a 13F XML at midnight
 | --- | --- | --- |
 | `data.sec.gov/submissions/CIK##########.json` | none | every filing a known CIK has made — how we find 13Fs |
 | EDGAR daily index | none | everything filed on one day — how we find Form 4s, whose filers we cannot know in advance |
+| `www.sec.gov/files/company_tickers.json` | none | ticker → CIK for listed companies, which bounds the Form 4 crawl to issuers tracked investors hold |
+| [datasets/s-and-p-500-companies](https://github.com/datasets/s-and-p-500-companies) | none (public domain) | the S&P 500 constituents snapshot in `data/universe/sp500.csv`, for `FORM4_UNIVERSE=sp500` |
 | EDGAR archives | none | the documents themselves |
 | OpenFIGI | optional free API key (`OPENFIGI_API_KEY`, 10× the quota) | CUSIP → ticker, because 13F reports neither ticker nor name we can trust |
 | Yahoo, through yfinance | none; **development only**, not licensed for redistribution | latest closes (`fetch-quotes`), and only when `QUOTE_PROVIDER=yfinance`. Production runs `null` and has no market data |

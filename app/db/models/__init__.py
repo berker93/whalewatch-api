@@ -7,6 +7,7 @@ from the list below is a table autogenerate will never see.
 """
 
 from app.db.models.base import NAMING_CONVENTION, Base
+from app.db.models.crawl_watermark import CrawlWatermark
 from app.db.models.enums import AmendmentKind
 from app.db.models.figi_response_log import OUTCOME_CHECK, FIGIOutcome, FigiResponseLog
 from app.db.models.filer import (
@@ -55,6 +56,7 @@ from app.db.models.position_change import (
 )
 from app.db.models.position_snapshot import WEIGHT_PCT, PositionSnapshot
 from app.db.models.sec_13f_security import STATUS_CHECK, ListStatus, Sec13FSecurity
+from app.db.models.sec_company_ticker import SecCompanyTicker
 from app.db.models.security import RESOLUTION_SOURCE_CHECK, ResolutionSource, Security
 from app.db.models.security_alias import SecurityAlias
 from app.db.models.security_quote import QUOTE_SOURCE_CHECK, QuoteSource, SecurityQuote
@@ -98,6 +100,7 @@ __all__ = [
     "AmendmentKind",
     "Base",
     "ChangeAction",
+    "CrawlWatermark",
     "FIGIOutcome",
     "FigiResponseLog",
     "Filer",
@@ -125,6 +128,7 @@ __all__ = [
     "ReviewStatus",
     "RunStatus",
     "Sec13FSecurity",
+    "SecCompanyTicker",
     "Security",
     "SecurityAlias",
     "SecurityQuote",
