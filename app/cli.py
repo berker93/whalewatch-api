@@ -55,8 +55,9 @@ or ``backfill`` when they load something) then runs ``refresh-views`` as a
 second run, which names the first in its ``after_run_id``.
 
 Every verb that changes what the API serves — those, ``refresh-views``,
-``seed-investors``, ``resolve-cusips``, ``resolve-cusip``, ``ticker-alias`` and
-``fetch-quotes`` when it writes a close — then drops every response the API has
+``seed-investors``, ``resolve-cusips``, ``resolve-cusip``, ``ticker-alias``,
+``fetch-quotes`` when it writes a close, and ``ingest-form4`` when it loads
+something — then drops every response the API has
 cached (:func:`_invalidate_cache`), and records how many in its run's ``metrics``.
 
 Exit codes
@@ -1776,8 +1777,9 @@ def ingest_form4_command(
 async def _ingest_form4(*, concurrency: int, limit: int | None, force: bool) -> int:
     """Plan, load, summarise. Returns the exit code.
 
-    Nothing is published: no snapshot or view reads these tables, and the
-    API serves none of them yet, so there is nothing to refresh or drop.
+    No snapshot or view reads these tables, so there is nothing to refresh.
+    The insider feed reads them live, so a run that loaded anything drops the
+    API's cache.
     """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
@@ -1829,6 +1831,8 @@ async def _ingest_form4(*, concurrency: int, limit: int | None, force: bool) -> 
                 Counter(result.amendment.value for result in results if result.amendment)
             ),
         }
+        if loaded:
+            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
 
     _echo_form4_summary(plan, ran, loaded, elapsed=time.monotonic() - started)
     if ran.rate_limited is not None or ran.count(Outcome.FAILED):

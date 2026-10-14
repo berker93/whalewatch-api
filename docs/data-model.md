@@ -778,7 +778,9 @@ insider_transaction
   footnotes          jsonb                   -- {"F1": "...", ...}: the ones this line cites
   pk (id, transaction_date)
   unique (filing_id, line_number, transaction_date)
-  index (transaction_date DESC) WHERE transaction_code IN ('P','S')
+  index (transaction_date DESC, id DESC) WHERE transaction_code IN ('P','S')
+  index (security_id, transaction_date DESC, id DESC)
+  index (issuer_cik) WHERE security_id IS NULL
 ```
 
 **Roles live on `reporting_owner`, not on `insider`.** They are a relationship
@@ -830,7 +832,12 @@ information; `M` is an option exercise, `F` is shares withheld for tax, `A` is a
 grant, `G` is a gift. Collapsing them into "bought"/"sold" at ingest time is
 lossy and is how a vesting event becomes a headline. No check on it: the set is
 the SEC's, not ours. The partial index is on the two that carry information,
-which is the feed's default.
+which is the feed's default, in the order the feed pages (0031).
+
+The other two indexes (0031) are a stock's lines. The insider feed's
+`?ticker=` and `/v1/stocks/{ticker}/insiders` read the lines linked to the
+security, newest first, and the issuer's lines linked to none, which are few
+and found by the issuer CIK SEC lists the stock's ticker under.
 
 `price_per_share` is null, never zero, when the filing gives none, and the check
 refuses a zero. A $0 purchase averages into "insiders bought at $0" the first

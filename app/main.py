@@ -30,7 +30,17 @@ from app.api.middleware import (
     request_id_on_server_error,
 )
 from app.api.rate_limit import RateLimitMiddleware, SlidingWindowLimiter
-from app.api.routers import filings, health, investors, market, meta, portfolio, search, stocks
+from app.api.routers import (
+    filings,
+    health,
+    insiders,
+    investors,
+    market,
+    meta,
+    portfolio,
+    search,
+    stocks,
+)
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.redis import create_redis
@@ -145,7 +155,7 @@ def create_app(settings: Settings) -> FastAPI:
     # The probes are not rate limited; everything else documents its 429.
     app.include_router(health.router)
     app.include_router(filings.router, responses=RATE_LIMITED)
-    for router in (investors, portfolio, stocks, market, search, meta):
+    for router in (investors, portfolio, stocks, insiders, market, search, meta):
         app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)
 
     return app

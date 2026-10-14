@@ -15,6 +15,8 @@ By what the answer is about (:class:`Lifetime`):
 - The **current period**, or no period asked for, which means the latest
   published one and moves on when the next is published: five minutes.
 - **Search**: a minute. **Metadata**: five minutes.
+- **Insider trades**: five minutes. A Form 4 is filed any business day, and
+  the feed is about whichever were loaded last.
 
 The lifetime goes out as ``Cache-Control``, counted down from when the answer
 was built, so a browser that keeps it does not add its own lifetime on top of
@@ -44,8 +46,8 @@ Invalidation
 ------------
 :func:`invalidate` deletes by prefix. The CLI calls it whenever it publishes:
 after a ``recompute`` commits, after ``refresh-views``, after an
-``ingest-filing`` or ``backfill`` that loaded something, and after
-``seed-investors`` writes. Everything, not just the periods touched: the
+``ingest-filing``, ``backfill`` or ``ingest-form4`` that loaded something,
+and after ``seed-investors`` writes. Everything, not just the periods touched: the
 materialised views are refreshed whole, and nearly every response reads one.
 
 A cache, not a dependency
@@ -92,6 +94,7 @@ class Lifetime(StrEnum):
     CURRENT_PERIOD = "current_period"
     SEARCH = "search"
     METADATA = "metadata"
+    INSIDERS = "insiders"
 
 
 #: Seconds each is kept, in Redis and by a client.
@@ -100,6 +103,7 @@ TTL: Final = {
     Lifetime.CURRENT_PERIOD: 5 * 60,
     Lifetime.SEARCH: 60,
     Lifetime.METADATA: 5 * 60,
+    Lifetime.INSIDERS: 5 * 60,
 }
 
 #: How long past its ``max-age`` a client may serve a closed period's answer

@@ -1270,6 +1270,513 @@
         }
       }
     },
+    "/v1/insiders/transactions": {
+      "get": {
+        "tags": [
+          "insiders"
+        ],
+        "summary": "Insiders' Form 4 trades, open-market purchases and sales by default",
+        "description": "Form 4 lines, newest trade first, one row per line as filed. Only\nopen-market purchases and sales unless `code` says otherwise: grants,\nexercises and tax withholding are most lines and carry no view.",
+        "operationId": "listInsiderTransactions",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its issuer's lines no security could be linked to are included.",
+              "title": "Ticker"
+            },
+            "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its issuer's lines no security could be linked to are included."
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "P,S"
+                ]
+              ],
+              "title": "Code"
+            },
+            "description": "Transaction codes, comma-separated or repeated: `P` open-market purchase, `S` open-market sale, `A` grant, `M` option exercise, `F` tax withholding, `G` gift, `C` conversion, and the SEC's others. `all` for every code. **Defaults to `P,S`**, which `meta.codes` and `meta.codes_default` state."
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "director"
+                ]
+              ],
+              "title": "Role"
+            },
+            "description": "Only insiders who checked any of these on the filing: `director`, `officer`, `ten_percent_owner`, `other`. Comma-separated or repeated."
+          },
+          {
+            "name": "min_value",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0.0
+                },
+                {
+                  "type": "string",
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only lines worth at least this many dollars. A line with no value (a grant, a gift, a price given only as a range) is left out.",
+              "title": "Min Value"
+            },
+            "description": "Only lines worth at least this many dollars. A line with no value (a grant, a gift, a price given only as a range) is left out."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first trade day to include, `2026-06-01`.",
+              "title": "From"
+            },
+            "description": "The first trade day to include, `2026-06-01`."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last trade day to include, `2026-06-30`.",
+              "title": "To"
+            },
+            "description": "The last trade day to include, `2026-06-30`."
+          },
+          {
+            "name": "exclude_10b5_1",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Leave out trades made under a Rule 10b5-1 plan, which was set up months before and says nothing about what the insider thinks now.",
+              "default": false,
+              "title": "Exclude 10B5 1"
+            },
+            "description": "Leave out trades made under a Rule 10b5-1 plan, which was set up months before and says nothing about what the insider thinks now."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/InsiderSort",
+              "description": "`date`, the trade day (the default), or `value`, in dollars.",
+              "default": "date"
+            },
+            "description": "`date`, the trade day (the default), or `value`, in dollars."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Newest or largest first by default.",
+              "default": "desc"
+            },
+            "description": "Newest or largest first by default."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsiderTransactionEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stocks/{ticker}/insiders": {
+      "get": {
+        "tags": [
+          "insiders"
+        ],
+        "summary": "One stock's insider trades, open-market purchases and sales by default",
+        "description": "The stock's Form 4 lines, newest trade first, with its issuer's lines\nthat no one security could be linked to. Filtered as\n`/v1/insiders/transactions` is, open-market purchases and sales by default.",
+        "operationId": "getStockInsiders",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter.",
+              "examples": [
+                "AAPL",
+                "037833100"
+              ],
+              "title": "Ticker"
+            },
+            "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter."
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "P,S"
+                ]
+              ],
+              "title": "Code"
+            },
+            "description": "Transaction codes, comma-separated or repeated: `P` open-market purchase, `S` open-market sale, `A` grant, `M` option exercise, `F` tax withholding, `G` gift, `C` conversion, and the SEC's others. `all` for every code. **Defaults to `P,S`**, which `meta.codes` and `meta.codes_default` state."
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "director"
+                ]
+              ],
+              "title": "Role"
+            },
+            "description": "Only insiders who checked any of these on the filing: `director`, `officer`, `ten_percent_owner`, `other`. Comma-separated or repeated."
+          },
+          {
+            "name": "min_value",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0.0
+                },
+                {
+                  "type": "string",
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only lines worth at least this many dollars. A line with no value (a grant, a gift, a price given only as a range) is left out.",
+              "title": "Min Value"
+            },
+            "description": "Only lines worth at least this many dollars. A line with no value (a grant, a gift, a price given only as a range) is left out."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first trade day to include, `2026-06-01`.",
+              "title": "From"
+            },
+            "description": "The first trade day to include, `2026-06-01`."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last trade day to include, `2026-06-30`.",
+              "title": "To"
+            },
+            "description": "The last trade day to include, `2026-06-30`."
+          },
+          {
+            "name": "exclude_10b5_1",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Leave out trades made under a Rule 10b5-1 plan, which was set up months before and says nothing about what the insider thinks now.",
+              "default": false,
+              "title": "Exclude 10B5 1"
+            },
+            "description": "Leave out trades made under a Rule 10b5-1 plan, which was set up months before and says nothing about what the insider thinks now."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/InsiderSort",
+              "description": "`date`, the trade day (the default), or `value`, in dollars.",
+              "default": "date"
+            },
+            "description": "`date`, the trade day (the default), or `value`, in dollars."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Newest or largest first by default.",
+              "default": "desc"
+            },
+            "description": "Newest or largest first by default."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsiderTransactionEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/market/top-holdings": {
       "get": {
         "tags": [
@@ -3932,6 +4439,565 @@
         "title": "ImpliedPricePointEnvelope",
         "description": "One stock's implied quarter-end prices, a quarter a row."
       },
+      "InsiderFeedMeta": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the data belongs to. Null only for a collection that is not about a period, such as a list of filers.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "quarters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarters",
+            "description": "For figures over more than one quarter, such as a year's flows, every quarter they cover, oldest first, ending with `period`. Null for one quarter.",
+            "examples": [
+              [
+                "2025Q3",
+                "2025Q4",
+                "2026Q1",
+                "2026Q2"
+              ]
+            ]
+          },
+          "latest_filing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing At",
+            "description": "When the most recently filed of this period's published filings reached EDGAR. Null when nothing for the period has been published.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `period` is."
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats",
+            "description": "Why the rows may be wrong although every rule for reading the filings was followed: an amendment left out because its cover page does not say whether it restates or adds to the period, additions counting with no original loaded, two originals filed for one period, or an amendment number missing from those loaded. One sentence each, for a person to read. Empty when nothing is known to be wrong, and on endpoints that do not check.",
+            "examples": [
+              [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is left out: if it restates or adds to the period, the period is wrong"
+              ]
+            ]
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At",
+            "description": "For a response read from the materialised aggregates, when they were last refreshed: the rows are as of then, and a filing published since is not in them yet. Null for a response read live, and when the refresh is unrecorded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At",
+            "description": "When this response was built.",
+            "examples": [
+              "2026-10-03T09:41:27Z"
+            ]
+          },
+          "codes": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TransactionCode"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codes",
+            "description": "The codes the rows are limited to, with what each means. Null when every code is included (`?code=all`).",
+            "examples": [
+              [
+                {
+                  "code": "P",
+                  "label": "Open-market or private purchase"
+                },
+                {
+                  "code": "S",
+                  "label": "Open-market or private sale"
+                }
+              ]
+            ]
+          },
+          "codes_default": {
+            "type": "boolean",
+            "title": "Codes Default",
+            "description": "True when no `?code=` was given and `codes` is the default: open-market purchases and sales only. Grants, option exercises, tax withholding and gifts are left out, and a reader who is not told so will think the data incomplete.",
+            "default": false,
+            "examples": [
+              true
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at"
+        ],
+        "title": "InsiderFeedMeta",
+        "description": "``meta``, with the transaction codes the rows were filtered to."
+      },
+      "InsiderSort": {
+        "type": "string",
+        "enum": [
+          "date",
+          "value"
+        ],
+        "title": "InsiderSort",
+        "description": "What the feed is ordered by."
+      },
+      "InsiderTransaction": {
+        "properties": {
+          "accession_no": {
+            "type": "string",
+            "title": "Accession No",
+            "description": "The Form 4 (or 4/A) the line is on. With `line_number`, what identifies the row: stable however often the filing is loaded, and replaced when a 4/A amends it.",
+            "examples": [
+              "0001197647-26-000042"
+            ]
+          },
+          "line_number": {
+            "type": "integer",
+            "title": "Line Number",
+            "description": "Where the line is in its filing, from 1: the non-derivative table, then the derivative table.",
+            "examples": [
+              1
+            ]
+          },
+          "transaction_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Transaction Date",
+            "description": "The day of the trade, which is not the day it was filed.",
+            "examples": [
+              "2026-06-20"
+            ]
+          },
+          "filed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Filed At",
+            "description": "When the filing reached EDGAR. Up to two business days after `transaction_date`, and for a late filer much more.",
+            "examples": [
+              "2026-06-23T21:05:00Z"
+            ]
+          },
+          "issuer_cik": {
+            "type": "string",
+            "title": "Issuer Cik",
+            "description": "The company's CIK, ten digits: the issuer the insider is an insider of.",
+            "examples": [
+              "0001045810"
+            ]
+          },
+          "issuer_name": {
+            "type": "string",
+            "title": "Issuer Name",
+            "description": "The issuer's name as the filing gives it.",
+            "examples": [
+              "NVIDIA CORP"
+            ]
+          },
+          "issuer_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Ticker",
+            "description": "The issuer's trading symbol as the filing gives it, unchecked: filers write `NONE`, nothing, or both of two classes.",
+            "examples": [
+              "NVDA"
+            ]
+          },
+          "cusip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cusip",
+            "description": "The security the line was linked to, by the issuer's CIK and the symbol filed. Null when that could not say which one: an issuer with no listed security, or two classes and a symbol that names neither or both.",
+            "examples": [
+              "67066G104"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "The linked security's ticker on `transaction_date`. Null when the line is not linked to a security, or no ticker is known for it.",
+            "examples": [
+              "NVDA"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "NVDA"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
+            ]
+          },
+          "insider_cik": {
+            "type": "string",
+            "title": "Insider Cik",
+            "description": "The insider's CIK, ten digits. People have CIKs too, and are told apart by them.",
+            "examples": [
+              "0001197647"
+            ]
+          },
+          "insider_name": {
+            "type": "string",
+            "title": "Insider Name",
+            "description": "The insider's name as their latest filing spells it, surname first as EDGAR writes people.",
+            "examples": [
+              "HUANG JEN HSUN"
+            ]
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "type": "array",
+            "title": "Roles",
+            "description": "What the insider was to the issuer on this filing, as they checked it: any of `director`, `officer`, `ten_percent_owner`, `other`. Several at once is common. A joint filing's lines are the first owner's named.",
+            "examples": [
+              [
+                "director",
+                "officer"
+              ]
+            ]
+          },
+          "officer_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Officer Title",
+            "description": "Free text as filed: `CEO`, `EVP & CFO`. Null when none was given.",
+            "examples": [
+              "President and CEO"
+            ]
+          },
+          "other_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other Role",
+            "description": "What `other` means, as filed, when it is checked.",
+            "examples": [
+              null
+            ]
+          },
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "description": "The transaction code, as filed. `P` and `S` are trades on the open market; most other codes are compensation or mechanics.",
+            "examples": [
+              "S"
+            ]
+          },
+          "code_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code Label",
+            "description": "What `code` means. Null for a code the SEC does not define.",
+            "examples": [
+              "Open-market or private sale"
+            ]
+          },
+          "acquired_disposed": {
+            "type": "string",
+            "title": "Acquired Disposed",
+            "description": "`A` if the insider acquired the shares, `D` if they disposed of them.",
+            "examples": [
+              "D"
+            ]
+          },
+          "is_derivative": {
+            "type": "boolean",
+            "title": "Is Derivative",
+            "description": "A line of the derivative table: options, RSUs, warrants. Its `shares` and `price_per_share` are the derivative's, not the underlying's.",
+            "examples": [
+              false
+            ]
+          },
+          "security_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Security Title",
+            "description": "What changed hands, as filed.",
+            "examples": [
+              "Common Stock"
+            ]
+          },
+          "shares": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares",
+            "description": "How many, unsigned: `acquired_disposed` gives the direction.",
+            "examples": [
+              "500.0000"
+            ]
+          },
+          "price_per_share": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Per Share",
+            "description": "Dollars a share. Null, never zero, when the filing gives none: a grant, a gift, a price given only as a range in a footnote.",
+            "examples": [
+              "141.20000000"
+            ]
+          },
+          "value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Usd",
+            "description": "`shares` times `price_per_share`, to the cent. Null when either is.",
+            "examples": [
+              "70600.00"
+            ]
+          },
+          "shares_owned_after": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares Owned After",
+            "description": "The insider's holding of this security after the trade.",
+            "examples": [
+              "75000000.0000"
+            ]
+          },
+          "is_10b5_1": {
+            "type": "boolean",
+            "title": "Is 10B5 1",
+            "description": "Made under a Rule 10b5-1 plan, set up months before: the form's checkbox since April 2023, a footnote before it. Says nothing about what the insider thinks now.",
+            "examples": [
+              true
+            ]
+          },
+          "footnotes": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Footnotes",
+            "description": "The footnotes the line cites, by the filing's own ids. Where a weighted average's price range, a plan, or a trust is explained. Null when it cites none.",
+            "examples": [
+              {
+                "F1": "The price reported is a weighted average price."
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "accession_no",
+          "line_number",
+          "transaction_date",
+          "filed_at",
+          "issuer_cik",
+          "issuer_name",
+          "insider_cik",
+          "insider_name",
+          "roles",
+          "code",
+          "acquired_disposed",
+          "is_derivative",
+          "is_10b5_1"
+        ],
+        "title": "InsiderTransaction",
+        "description": "One line of one Form 4: what one insider did, on one day, in one security."
+      },
+      "InsiderTransactionEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/InsiderTransaction"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/InsiderFeedMeta",
+            "description": "What the rows describe, including the codes they were filtered to."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "InsiderTransactionEnvelope"
+      },
       "InvestorDetail": {
         "properties": {
           "slug": {
@@ -5697,6 +6763,17 @@
         "title": "ReadinessResponse",
         "description": "``checks`` maps dependency name to ``\"ok\"`` or ``\"error: <reason>\"``."
       },
+      "Role": {
+        "type": "string",
+        "enum": [
+          "director",
+          "officer",
+          "ten_percent_owner",
+          "other"
+        ],
+        "title": "Role",
+        "description": "What a reporting owner checked on the filing: what they were to the issuer."
+      },
       "SearchResults": {
         "properties": {
           "query": {
@@ -6915,6 +7992,39 @@
         ],
         "title": "TopHolding",
         "description": "The largest position, by dollars, in the filer's latest period.\n\nNamed as well as tickered. No CUSIP is resolved to a ticker until\nenrichment runs, and a ticker is null for good for some, so a ticker\nalone would leave this unreadable on most rows."
+      },
+      "TransactionCode": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "description": "One letter, as filed.",
+            "examples": [
+              "P"
+            ]
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label",
+            "description": "What the code means, for a person. Null for a code the SEC does not define.",
+            "examples": [
+              "Open-market or private purchase"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "TransactionCode",
+        "description": "A transaction code, and what it means."
       },
       "ValidationDetail": {
         "properties": {

@@ -206,14 +206,29 @@ class InsiderTransaction(Base):
         ),
         # --- indexes ----------------------------------------------------------
         #
-        # The feed: open-market trades, newest first. Partial, because P and S
-        # are a minority of Form 4 lines (grants, exercises and tax
-        # withholding are most of them) and the only ones the feed shows by
-        # default.
+        # The feed: open-market trades, newest first, in the order it pages
+        # (0031). Partial, because P and S are a minority of Form 4 lines
+        # (grants, exercises and tax withholding are most of them) and the
+        # only ones the feed shows by default.
         Index(
             "ix_insider_transaction_transaction_date_open_market",
             desc("transaction_date"),
+            desc("id"),
             postgresql_where=text(OPEN_MARKET_PREDICATE),
+        ),
+        # One stock's trades, newest first: the stock page and ?ticker=.
+        Index(
+            "ix_insider_transaction_security_id_transaction_date",
+            "security_id",
+            desc("transaction_date"),
+            desc("id"),
+        ),
+        # The lines no security could be linked to, by issuer, which a stock's
+        # trades include. Partial: they are few.
+        Index(
+            "ix_insider_transaction_issuer_cik_unlinked",
+            "issuer_cik",
+            postgresql_where=text("security_id IS NULL"),
         ),
         # --- invariants -------------------------------------------------------
         CheckConstraint("line_number > 0", name="line_number_is_positive"),

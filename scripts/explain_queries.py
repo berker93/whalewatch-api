@@ -8,12 +8,12 @@ and how to capture them again after the data or an index changes::
     make explain a="--filer renaissance --period 2025-06-30"
 
 ``GET /filings/{accession_no}``, the ``/v1/investors``, ``/v1/stocks``,
-``/v1/market``, ``/v1/flows`` and ``/v1/search`` endpoints are built, and the queries of all
-but the first are read from the app. The rest are the queries the endpoints sketched in
-docs/product-spec.md ("API surface") will issue: their ``WHERE`` and ``ORDER
-BY`` are what the indexes are designed against, and the select lists are a
-guess. When an endpoint is built, its query
-belongs in the app and this list should read it from there.
+``/v1/market``, ``/v1/flows``, ``/v1/search`` and ``/v1/insiders`` endpoints
+are built, and the queries of all but the first are read from the app. The
+rest are the queries the endpoints sketched in docs/product-spec.md ("API
+surface") will issue: their ``WHERE`` and ``ORDER BY`` are what the indexes are
+designed against, and the select lists are a guess. When an endpoint is built,
+its query belongs in the app and this list should read it from there.
 
 Three more are not an endpoint's: the top holding of every filer's latest
 period, written the three ways :mod:`app.db.queries.top_holding` compares.
@@ -43,7 +43,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Final
 
 from sqlalchemy import Select, bindparam, select, text
@@ -52,6 +52,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.api.pagination import MAX_LIMIT, PageParams
+from app.api.routers.insiders import Filters, InsiderSort, transactions_query
 from app.api.routers.investors import LATEST, detail_query, list_query
 from app.api.routers.market import (
     DEFAULT_TOP,
@@ -429,6 +430,34 @@ QUERIES: Final = (
         "search_investors_fuzzy",
         "GET /v1/search?q=square",
         investor_fuzzy_query("square", SEARCH_LIMIT),
+    ),
+    # The first page, at the default page size: open-market trades, newest
+    # first, which the partial index answers in order.
+    Query.from_app(
+        "insider_feed", "GET /v1/insiders/transactions", transactions_query(PageParams())[0]
+    ),
+    # The date-ranged feed, the last 30 days of every code: what SEC-6's
+    # partitioning by transaction_date is to prune.
+    Query.from_app(
+        "insider_feed_dated",
+        "GET /v1/insiders/transactions?code=all&from=&to=",
+        transactions_query(
+            PageParams(),
+            Filters(codes=None, start=date.today() - timedelta(days=30), end=date.today()),
+        )[0],
+    ),
+    # Largest first: no index has the order, so every open-market line is sorted.
+    Query.from_app(
+        "insider_feed_value",
+        "GET /v1/insiders/transactions?sort=value",
+        transactions_query(PageParams(), sort=InsiderSort.VALUE)[0],
+    ),
+    Query.from_app(
+        "stock_insiders",
+        "GET /v1/stocks/{ticker}/insiders",
+        transactions_query(
+            PageParams(), security_id=bindparam("security_id"), listing="stock-insiders"
+        )[0],
     ),
     Query.from_app("meta_periods", "GET /v1/meta/periods", periods_query()),
     Query.from_app(

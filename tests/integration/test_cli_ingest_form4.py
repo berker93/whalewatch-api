@@ -30,6 +30,7 @@ from app.db.models import Filing, IngestionRun, InsiderTransaction, PendingFilin
 from app.ingestion.edgar.client import EdgarClient
 from app.ingestion.edgar.form4_documents import header_url
 from tests.conftest import make_settings
+from tests.fake_redis import FakeRedis
 
 FIXTURES: Final = Path(__file__).parents[1] / "fixtures" / "form4"
 
@@ -111,6 +112,15 @@ def _edgar(*, broken: str | None = None) -> list[respx.Route]:
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def redis(monkeypatch: pytest.MonkeyPatch) -> FakeRedis:
+    """The API's cache, which a run that loads something drops: the insider
+    feed reads these tables live."""
+    fake = FakeRedis()
+    monkeypatch.setattr("app.cli.create_redis", lambda settings: fake)
+    return fake
 
 
 @pytest.fixture(autouse=True)
@@ -205,7 +215,8 @@ def _run(engine: AsyncEngine) -> tuple[Any, ...]:
             IngestionRun.error,
         )
         .where(IngestionRun.job_name == "ingest-form4")
-        .order_by(IngestionRun.id.desc())
+        # The id is a random UUID: the latest run is the one started last.
+        .order_by(IngestionRun.started_at.desc())
         .limit(1),
     )
     return row
@@ -216,9 +227,10 @@ def _run(engine: AsyncEngine) -> tuple[Any, ...]:
 
 @respx.mock
 def test_the_queue_is_loaded_and_marked_done(
-    runner: CliRunner, migrated_engine: AsyncEngine, settings: Settings
+    runner: CliRunner, migrated_engine: AsyncEngine, settings: Settings, redis: FakeRedis
 ) -> None:
     _edgar()
+    asyncio.run(redis.set("ww:v1:insiders.list_insider_transactions:x", "{}"))
 
     result = runner.invoke(app, ["ingest-form4", "--concurrency", "1"])
 
@@ -267,6 +279,8 @@ def test_the_queue_is_loaded_and_marked_done(
     assert metrics["lines_superseded"] == 1
     assert metrics["security_links"] == {"unlisted": 3}
     assert metrics["amendments"] == {"linked": 1}
+    assert metrics["cache_invalidated"] == 1
+    assert asyncio.run(redis.get("ww:v1:insiders.list_insider_transactions:x")) is None
 
 
 @respx.mock
@@ -284,6 +298,8 @@ def test_a_second_run_asks_edgar_nothing_and_changes_nothing(
     assert sum(route.call_count for route in routes) == calls
     assert _lines(migrated_engine) == lines
     assert "3 Form 4s, 3 already loaded" in result.output
+    # Nothing loaded, so the cache is left alone.
+    assert "cache_invalidated" not in _run(migrated_engine)[3]
 
 
 @respx.mock

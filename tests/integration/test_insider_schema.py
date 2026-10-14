@@ -392,9 +392,10 @@ async def test_deleting_a_filing_takes_its_owners_and_transactions(
 
 
 async def test_the_open_market_index_serves_the_feed(db_session: AsyncSession) -> None:
-    """Partial on P and S, newest first: the shape of the default feed. With
-    sequential scans off, so that an empty table still shows which index the
-    planner can use rather than which is cheapest on no rows."""
+    """Partial on P and S, newest first and then by id (0031): the shape and
+    the order of the default feed. With sequential scans off, so that an empty
+    table still shows which index the planner can use rather than which is
+    cheapest on no rows."""
     definition = (
         await db_session.execute(
             text("""
@@ -418,6 +419,6 @@ async def test_the_open_market_index_serves_the_feed(db_session: AsyncSession) -
         .all()
     )
 
-    assert "(transaction_date DESC)" in definition
+    assert "(transaction_date DESC, id DESC)" in definition
     assert "WHERE (transaction_code = ANY (ARRAY['P'::bpchar, 'S'::bpchar]))" in definition
     assert "ix_insider_transaction_transaction_date_open_market" in plan
