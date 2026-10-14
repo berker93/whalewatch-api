@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.api.schemas.envelope import Envelope
+from app.api.schemas.estimate import Estimates
 from app.api.schemas.types import CURRENT_TICKER, DELISTED_BY, TICKER_THEN, Money, Percent, Quantity
 from app.db.models.position_change import ChangeAction
 
@@ -38,15 +39,7 @@ class _Security(BaseModel):
     )
 
 
-class PortfolioPosition(_Security):
-    """One security in the portfolio, and what changed in it since the filer's previous period.
-
-    Common stock, unless ``put_call`` says otherwise. Option lines are rows
-    only under ``?include_options=true``, and carry no weight and no change:
-    their value is the notional of the underlying, so it is not a share of the
-    portfolio, and the changes are only tracked for stock.
-    """
-
+class _Position(_Security):
     put_call: Literal["Put", "Call"] | None = Field(
         default=None,
         description="Null for common stock: the only kind of row by default.",
@@ -114,9 +107,7 @@ class PortfolioPosition(_Security):
     )
 
 
-class Activity(_Security):
-    """One thing a filer did to one position, in one period."""
-
+class _Change(_Security):
     period: date = Field(
         description="The quarter end the change is as of.", examples=["2026-06-30"]
     )
@@ -169,6 +160,27 @@ class Activity(_Security):
         description="`weight_pct` less the weight at `prev_period`, in points.",
         examples=["-0.512300"],
     )
+
+
+# The estimates are a base listed first, and the row's own fields a base after
+# it, so that they come last: Pydantic orders the bases' fields by reversed MRO,
+# and a class's own after them all.
+class PortfolioPosition(Estimates, _Position):
+    """One security in the portfolio, and what changed in it since the filer's previous period.
+
+    Common stock, unless ``put_call`` says otherwise. Option lines are rows
+    only under ``?include_options=true``, and carry no weight, no change and no
+    estimate: their value is the notional of the underlying, so it is not a
+    share of the portfolio, and the changes are only tracked for stock.
+    """
+
+
+class Activity(Estimates, _Change):
+    """One thing a filer did to one position, in one period.
+
+    The estimates are at ``period``: for an exit, the price the stock had when
+    it was gone from the portfolio, and what it has done since.
+    """
 
 
 class HistoryPoint(BaseModel):

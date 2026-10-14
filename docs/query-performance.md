@@ -1111,9 +1111,9 @@ is about 10 ms and a hit 1.5 ms.
 ## Built since: estimated return
 
 `estimated_return` (SEC-7, [estimated-return.md](estimated-return.md)) is a
-`LATERAL` that SEC-8 will join onto the portfolio and the activity. `make
-explain` measures it on the largest page of each, as
-`investor_portfolio_returns` and `investor_activity_returns`. The dev database
+`LATERAL` joined onto the page of the portfolio, the activity and a stock's
+owners (SEC-8). `make explain` measures it on the largest page of the first
+two, as `investor_portfolio_returns` and `investor_activity_returns`. The dev database
 has 4 quotes and no splits written, so the table below was measured in a
 transaction that was rolled back afterwards. That transaction first ran
 detection (43 splits) and wrote a quote for each of the 10,781 listed
@@ -1131,6 +1131,27 @@ That is about 10 µs a row. Each row runs one nested loop of primary-key probes:
 twice. Each of these reads a few buffers. Storing the return would cost more
 than computing it, because every daily quote and every `recompute` would have to
 rewrite it.
+
+## Built since: the SEC-8 endpoints
+
+The return as served, joined after the page is chosen, and the two new stock
+endpoints, each a slice of a primary key that leads with the security. On the
+dev database as it is (4 quotes, no splits written), for Two Sigma's 2021Q3
+and NVDA, median of 20 runs:
+
+| Query | Rows | Client median |
+| --- | --- | --- |
+| `investor_portfolio_returns`, 200 rows | 200 | 4.61 ms |
+| `investor_activity_returns`, 200 rows | 200 | 5.03 ms |
+| `stock_owners`, the default page | 18 | 0.38 ms |
+| `stock_implied_prices`, every quarter | 21 | 0.12 ms |
+| `stock_splits` | 0 | 0.10 ms |
+
+With splits and a quote for every listed security, the table above it is the
+one to go by: about 10 µs a row. A stock's owners all have the same
+estimate, joined per row all the same, which is one query rather than two for
+a few hundred microseconds at most. `/v1/meta/data-sources` reads one row of
+`security_quote` and is not measured.
 
 ## Experiments
 

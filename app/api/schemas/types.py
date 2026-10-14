@@ -52,6 +52,16 @@ Quantity = Annotated[Decimal, *_DECIMAL_STRING]
 #: :data:`~app.db.models.position_snapshot.WEIGHT_PCT`).
 Percent = Annotated[Decimal, *_DECIMAL_STRING]
 
+#: A price per share, in dollars, to eight places (see
+#: :data:`~app.db.models.implied_price.PRICE`). Not ``Money``, which is whole
+#: dollars of a position: a price can be a fraction of a cent.
+Price = Annotated[Decimal, *_DECIMAL_STRING]
+
+#: A split ratio as a decimal, new shares per old: ``"10.0000000000"`` for a
+#: 10-for-1, ``"0.1000000000"`` for a 1-for-10 (see
+#: :data:`~app.db.models.security_split.SPLIT_RATIO`).
+Ratio = Annotated[Decimal, *_DECIMAL_STRING]
+
 
 def _period(value: object) -> date:
     if isinstance(value, date):  # a default, never a query string

@@ -15,15 +15,20 @@ from pydantic import BaseModel, Field
 
 from app.api.schemas.envelope import Coverage, Envelope
 from app.api.schemas.error import Problem, ProblemError
+from app.api.schemas.estimate import Estimates
 from app.api.schemas.types import (
     CURRENT_TICKER,
     DELISTED_BY,
     TICKER_THEN,
     Money,
     Percent,
+    Price,
     Quantity,
+    Ratio,
 )
+from app.db.models.implied_price import PriceConfidence
 from app.db.models.position_change import ChangeAction
+from app.db.models.security_split import SplitConfidence
 
 
 class StockRef(BaseModel):
@@ -108,9 +113,7 @@ class StockDetail(StockRef):
     )
 
 
-class StockOwner(BaseModel):
-    """One filer's position in the stock in one period."""
-
+class _Owner(BaseModel):
     slug: str = Field(
         description="The investor's stable identifier: `/v1/investors/{slug}`.",
         examples=["berkshire-hathaway"],
@@ -160,6 +163,16 @@ class StockOwner(BaseModel):
         ),
         examples=["trim"],
     )
+
+
+# Estimates first so that they come last, as on PortfolioPosition.
+class StockOwner(Estimates, _Owner):
+    """One filer's position in the stock in one period.
+
+    The price estimate and the returns are the stock's, so the same on every
+    row. ``is_split`` and ``split_ratio`` are the filer's: whether its change
+    is across a split depends on which period it compares with.
+    """
 
 
 class HolderPoint(BaseModel):
@@ -235,6 +248,105 @@ class OwnershipPoint(BaseModel):
     )
 
 
+class ImpliedPricePoint(BaseModel):
+    """The stock's price at one quarter end, as its holders' 13Fs imply it."""
+
+    period: date = Field(description="The quarter end.", examples=["2026-03-31"])
+    price: Price | None = Field(
+        default=None,
+        description=(
+            "Dollars per share, in that quarter's shares: the median of value over "
+            "shares across every holder's 13F. Null when every holder reported it at "
+            "$0, and in a quarter nobody held it, which is a row of nulls so a chart "
+            "shows the gap."
+        ),
+        examples=["184.12000000"],
+    )
+    split_adjusted_price: Price | None = Field(
+        default=None,
+        description=(
+            "`price` in today's shares: divided by every split detected after the "
+            "quarter (`/splits`), so the series is one line across them. The same as "
+            "`price` when there is none since."
+        ),
+        examples=["18.41200000"],
+    )
+    confidence: PriceConfidence | None = Field(
+        default=None,
+        description=(
+            "How far the filings agree on the price, within 2%: `high` when three or "
+            "more do and they are a majority, `medium` when two do and they are a "
+            "majority, `low` otherwise. Null exactly when `price` is."
+        ),
+        examples=["high"],
+    )
+    observation_count: int | None = Field(
+        default=None,
+        description=(
+            "Filings it is estimated from, one per holder, those at $0 included. "
+            "Null in a quarter nobody held it."
+        ),
+        examples=[43],
+    )
+    unpriced_count: int | None = Field(
+        default=None,
+        description=(
+            "Of `observation_count`, the filings that valued it at $0, left out of the median."
+        ),
+        examples=[0],
+    )
+    agreeing_count: int | None = Field(
+        default=None,
+        description="Of the priced filings, those within 2% of the median.",
+        examples=[41],
+    )
+
+
+class StockSplit(BaseModel):
+    """A split of the stock, as its holders' share counts show it."""
+
+    period: date = Field(
+        description=(
+            "The first quarter end after the split: it happened in the quarter that "
+            "ends here, and the quarter before is from before it. The filings cannot "
+            "date it closer."
+        ),
+        examples=["2024-06-30"],
+    )
+    numerator: int = Field(description="New shares per `denominator` old.", examples=[10])
+    denominator: int = Field(description="Old shares per `numerator` new.", examples=[1])
+    ratio: Ratio = Field(
+        description=(
+            "`numerator` over `denominator`: above 1 for a split, below 1 for a reverse split."
+        ),
+        examples=["10.0000000000"],
+    )
+    confidence: SplitConfidence = Field(
+        description=(
+            "Every split has at least two holders' share counts moving by the ratio and "
+            "the implied price moving the other way. `high`: three or more holders "
+            "agree and one of them is exact to the share. `medium`: three or more, or "
+            "one exact. `low`: two, neither exact, only ever at 4-for-1 or more "
+            "or 1-for-4 or less, which ordinary trading does not imitate."
+        ),
+        examples=["high"],
+    )
+    holders: int = Field(
+        description="Holders with shares in both quarters, whose share counts could be compared.",
+        examples=[22],
+    )
+    holders_agreeing: int = Field(
+        description=(
+            "Of `holders`, those whose share count moved by the ratio, give or take trading."
+        ),
+        examples=[19],
+    )
+    holders_exact: int = Field(
+        description="Of `holders_agreeing`, those exact to the share: holders that did not trade.",
+        examples=[6],
+    )
+
+
 class StockSuggestion(StockRef):
     """A stock the caller may have meant."""
 
@@ -272,3 +384,11 @@ class StockOwnerEnvelope(Envelope[StockOwner]):
 
 class OwnershipPointEnvelope(Envelope[OwnershipPoint]):
     """One stock's tracked ownership, a quarter a row."""
+
+
+class ImpliedPricePointEnvelope(Envelope[ImpliedPricePoint]):
+    """One stock's implied quarter-end prices, a quarter a row."""
+
+
+class StockSplitEnvelope(Envelope[StockSplit]):
+    """One stock's detected splits, oldest first."""

@@ -2,8 +2,8 @@
 
 How WhaleWatch estimates what a stock has done since a manager reported holding
 it, and what the estimate leaves out. The code is
-[`app/db/queries/returns.py`](../app/db/queries/returns.py). SEC-8 puts it on
-the API.
+[`app/db/queries/returns.py`](../app/db/queries/returns.py). It is on the API
+since SEC-8: see [On the API](#on-the-api).
 
 ## What it is, and what it is not
 
@@ -103,7 +103,8 @@ Every field is null rather than zero when an input is missing:
 - **BRK.A has no implied price**, because its periods are held back by the
   implied-price ceiling. It has no return either.
 - **Stale quotes.** The latest quote is used however old it is. `quote_date`
-  goes out with the figure, and the client should show it.
+  goes out with the figure as `estimated_return_as_of`, and the client should
+show it.
 
 ## How it is computed
 
@@ -121,3 +122,31 @@ On a 200-row page it adds about 2 ms (see
 [query-performance.md](query-performance.md#built-since-estimated-return)).
 Cache invalidation is already handled. `fetch-quotes` flushes the cache when it
 writes a close, and `recompute` and `detect-splits` flush it when they publish.
+
+## On the API
+
+Every row that is one security in one period carries the same seven fields,
+all optional and nullable, after the row's own: a portfolio position
+(`/v1/investors/{slug}/portfolio`), a stock's owner (`/v1/stocks/{ticker}/owners`)
+and an activity row (`/v1/investors/{slug}/activity`).
+
+| Field | From |
+|---|---|
+| `estimated_return_pct` | `estimated_return_pct`, a decimal string to two places |
+| `estimated_return_as_of` | `quote_date`, when there is a return to it |
+| `return_to_last_quarter_pct` | `return_to_last_quarter_pct` |
+| `last_quarter_period` | `last_quarter_period` as a label (`2026Q2`), when there is a return to it |
+| `price_estimate` | `{price, period, confidence, observation_count, basis}`: the basis as `implied_price` holds it, in the period's shares, with `basis` always `implied_from_filings`. Null when there is no price |
+| `is_split`, `split_ratio` | the row's `position_change`: whether the change is across a split |
+
+`price_estimate.price` is the price as filed, not `basis_price`: a client
+showing "estimated from 43 filings" shows the number those filings say.
+Option lines carry none of the seven, since an option's price is not the
+stock's. An activity row's estimate is at its own period, an exit's included.
+
+Two endpoints serve the series behind it, for a chart:
+`/v1/stocks/{ticker}/implied-prices`, a quarter a row with the price in
+today's shares beside it (`split_adjusted_price`), and
+`/v1/stocks/{ticker}/splits`, for annotating it. `/v1/meta/data-sources`
+says what is SEC-derived, what is from a vendor and what is absent, and
+reports `latest_close` as absent until a quote is loaded.

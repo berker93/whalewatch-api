@@ -6,9 +6,13 @@
 ``GET /v1/meta/freshness``
     When each materialised view was last refreshed, and when each job last
     succeeded.
+``GET /v1/meta/data-sources``
+    What is derived from SEC filings, what is from a vendor, and what is not
+    here at all: what lets a client say "estimated from 43 filings" and mean
+    it.
 
-Both change only when a job runs, and both are read on every page load, so
-both are kept in Redis for five minutes (:mod:`app.api.cache`), and dropped
+All three change only when a job runs, and are read on every page load, so
+all three are kept in Redis for five minutes (:mod:`app.api.cache`), and dropped
 from it when a job publishes. An answer can be that much older than the data
 it describes; ``meta.generated_at`` says when it was built.
 
@@ -33,6 +37,9 @@ from app.api.deps import SessionDep
 from app.api.meta import refreshed_at, unscoped_meta
 from app.api.schemas.envelope import Envelope
 from app.api.schemas.meta import (
+    DataSource,
+    DataSourceEnvelope,
+    DataSourceKind,
     Freshness,
     FreshnessEnvelope,
     FreshnessKind,
@@ -40,7 +47,7 @@ from app.api.schemas.meta import (
     PeriodCoverageEnvelope,
 )
 from app.core.periods import filing_deadline, quarter_label
-from app.db.models import Filer, Filing, MatviewRefresh
+from app.db.models import Filer, Filing, MatviewRefresh, SecurityQuote
 from app.db.queries.effective import EFFECTIVE_FILING
 from app.db.queries.runs import job_names, last_successes
 from app.derived.views import FILER_SUMMARY, MATERIALISED_VIEWS
@@ -193,3 +200,154 @@ async def read_freshness(session: SessionDep) -> Envelope[Freshness]:
     recorded, or a job that has never succeeded, is listed with nulls. Cached
     for five minutes."""
     return await build_freshness(session)
+
+
+# --- data sources ---------------------------------------------------------------
+
+_SEC: Final = "SEC EDGAR"
+
+#: Every source but the quotes, whose kind depends on what is loaded.
+_FIXED_SOURCES: Final = (
+    DataSource(
+        key="13f_filings",
+        kind=DataSourceKind.SEC_DERIVED,
+        provider=_SEC,
+        description=(
+            "Every tracked investor's Form 13F-HR, as filed and amended: the positions it "
+            "held at each quarter end, with their shares and values."
+        ),
+        fields=[
+            "shares",
+            "value_usd",
+            "weight_pct",
+            "GET /v1/investors/{slug}/portfolio",
+            "GET /v1/stocks/{ticker}/owners",
+            "GET /v1/filings/{accession_no}",
+        ],
+    ),
+    DataSource(
+        key="position_changes",
+        kind=DataSourceKind.SEC_DERIVED,
+        provider=_SEC,
+        description=(
+            "Each investor's 13F against its previous one: what it opened, added to, "
+            "trimmed, held and exited, judged on shares. A trade's dollars are at the "
+            "quarter-end price, since a 13F has no other."
+        ),
+        fields=[
+            "action",
+            "shares_delta",
+            "shares_delta_pct",
+            "weight_delta",
+            "traded_value_usd",
+            "GET /v1/investors/{slug}/activity",
+        ],
+    ),
+    DataSource(
+        key="implied_price",
+        kind=DataSourceKind.SEC_DERIVED,
+        provider=_SEC,
+        description=(
+            "Each stock's quarter-end price per share, implied by its holders' 13Fs: the "
+            "median of value over shares across every tracked holder's filing, with how "
+            "many filings it is from and how far they agree. No market data is involved."
+        ),
+        fields=[
+            "price_estimate",
+            "return_to_last_quarter_pct",
+            "GET /v1/stocks/{ticker}/implied-prices",
+        ],
+    ),
+    DataSource(
+        key="splits",
+        kind=DataSourceKind.SEC_DERIVED,
+        provider=_SEC,
+        description=(
+            "Stock splits, detected where the holders' share counts moved by a common "
+            "ratio and the implied price moved the other way, and the changes across "
+            "them compared in the new shares. No corporate-action feed is involved, so "
+            "only splits the tracked investors held through are found."
+        ),
+        fields=["is_split", "split_ratio", "GET /v1/stocks/{ticker}/splits"],
+    ),
+    DataSource(
+        key="13f_list",
+        kind=DataSourceKind.SEC_DERIVED,
+        provider="SEC Official List of Section 13(f) Securities",
+        description=(
+            "The SEC's quarterly list of the securities a 13F reports: an issuer's name "
+            "where OpenFIGI has none, and the quarter a security left the list."
+        ),
+        fields=["issuer_name", "delisted_by"],
+    ),
+    DataSource(
+        key="tickers",
+        kind=DataSourceKind.VENDOR,
+        provider="OpenFIGI",
+        description=(
+            "A 13F names securities by CUSIP. OpenFIGI's free mapping API resolves each "
+            "to its US-listed ticker and name, and tracks renames. Some CUSIPs never "
+            "resolve, and are served by name and CUSIP alone."
+        ),
+        fields=["ticker", "current_ticker", "issuer_name"],
+    ),
+    DataSource(
+        key="sector",
+        kind=DataSourceKind.ABSENT,
+        description="No source of sectors is loaded: neither a 13F nor OpenFIGI carries one.",
+        fields=["sector"],
+    ),
+    DataSource(
+        key="insider_transactions",
+        kind=DataSourceKind.ABSENT,
+        description="Form 4 insider transactions are not loaded yet.",
+        fields=[],
+    ),
+)
+
+_QUOTE_FIELDS: Final = ["estimated_return_pct", "estimated_return_as_of"]
+
+
+async def build_data_sources(session: AsyncSession) -> Envelope[DataSource]:
+    # One row is enough: whether there are any, and from whom. Production has
+    # none, and runs with QUOTE_PROVIDER=null, which writes none.
+    source = await session.scalar(select(SecurityQuote.source).limit(1))
+    quotes = (
+        DataSource(
+            key="latest_close",
+            kind=DataSourceKind.ABSENT,
+            description=(
+                "No market data is loaded: each stock's latest close is not here, so "
+                "every estimated return to it is null. The return to the latest "
+                "quarter's implied price is the SEC-derived alternative."
+            ),
+            fields=_QUOTE_FIELDS,
+        )
+        if source is None
+        else DataSource(
+            key="latest_close",
+            kind=DataSourceKind.VENDOR,
+            provider=source,
+            description=(
+                "Each listed stock's latest close, which the estimated return since "
+                "filing is to: market data, from a vendor, under its terms."
+            ),
+            fields=_QUOTE_FIELDS,
+        )
+    )
+    return Envelope(data=[*_FIXED_SOURCES, quotes], meta=unscoped_meta())
+
+
+@router.get(
+    "/meta/data-sources",
+    operation_id="getDataSources",
+    response_model=DataSourceEnvelope,
+    summary="What is derived from SEC filings, what is from a vendor, and what is absent",
+)
+@cached(Lifetime.METADATA)
+async def read_data_sources(session: SessionDep) -> Envelope[DataSource]:
+    """Every kind of data the API serves or would, with where it comes from and
+    the fields it fills. The SEC-derived ones first. ``latest_close`` says
+    whether any market data is loaded: absent in production. Cached for five
+    minutes."""
+    return await build_data_sources(session)

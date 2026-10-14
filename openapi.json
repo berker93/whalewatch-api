@@ -1112,6 +1112,164 @@
         }
       }
     },
+    "/v1/stocks/{ticker}/implied-prices": {
+      "get": {
+        "tags": [
+          "stocks"
+        ],
+        "summary": "One stock's quarter-end prices, as its holders' 13Fs imply them",
+        "description": "Every quarter from the first any investor's published portfolio held the\nstock to the last, oldest first, with how many filings each price is from\nand how far they agree. Not market data: each price is the median of value\nover shares across the holders' 13Fs. Empty for a stock nobody has held.\nNot paginated.",
+        "operationId": "getStockImpliedPrices",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter.",
+              "examples": [
+                "AAPL",
+                "037833100"
+              ],
+              "title": "Ticker"
+            },
+            "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImpliedPricePointEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stocks/{ticker}/splits": {
+      "get": {
+        "tags": [
+          "stocks"
+        ],
+        "summary": "One stock's splits, as its holders' share counts show them",
+        "description": "Every split detected, oldest first, each dated the first quarter end\nafter it: for marking on a chart of the implied prices or the ownership.\nDetected from the filings, not read from a corporate-action feed: a split\nthe tracked investors did not hold through is not here. Empty for most\nstocks. Not paginated.",
+        "operationId": "getStockSplits",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter.",
+              "examples": [
+                "AAPL",
+                "037833100"
+              ],
+              "title": "Ticker"
+            },
+            "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockSplitEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/market/top-holdings": {
       "get": {
         "tags": [
@@ -2067,6 +2225,46 @@
           }
         }
       }
+    },
+    "/v1/meta/data-sources": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "What is derived from SEC filings, what is from a vendor, and what is absent",
+        "description": "Every kind of data the API serves or would, with where it comes from and\nthe fields it fills. The SEC-derived ones first. ``latest_close`` says\nwhether any market data is loaded: absent in production. Cached for five\nminutes.",
+        "operationId": "getDataSources",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataSourceEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2250,6 +2448,111 @@
             "examples": [
               "-0.512300"
             ]
+          },
+          "estimated_return_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Return Pct",
+            "description": "Since filing, not since purchase: the stock's latest close against `price_estimate.price`, split-adjusted, in percent. Null when there is no close, which is always in production (`GET /v1/meta/data-sources`), and when there is no price estimate.",
+            "examples": [
+              "22.40"
+            ]
+          },
+          "estimated_return_as_of": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Return As Of",
+            "description": "The trading day of the close `estimated_return_pct` is to. Null when it is.",
+            "examples": [
+              "2026-10-13"
+            ]
+          },
+          "return_to_last_quarter_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return To Last Quarter Pct",
+            "description": "Since filing, from the filings alone: the stock's latest implied price after this period against `price_estimate.price`, split-adjusted, in percent. Null when this period is the stock's latest, and when there is no price estimate.",
+            "examples": [
+              "8.15"
+            ]
+          },
+          "last_quarter_period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Quarter Period",
+            "description": "The quarter `return_to_last_quarter_pct` is to. Null when it is null for want of a later price.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "price_estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no holder's filing priced the stock in the period: every one reported it at $0, or it is an option line."
+          },
+          "is_split": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Split",
+            "description": "Whether the stock split between the filer's previous period and this one. The change is then against the previous shares times `split_ratio`, so a holder who held through a 10-for-1 is a `hold`, not an `add` of 900%. Null on option lines.",
+            "examples": [
+              false
+            ]
+          },
+          "split_ratio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split Ratio",
+            "description": "New shares per old across the split: `10` for a 10-for-1, `0.1` for a 1-for-10, and the product of several. Null exactly when `is_split` is not true.",
+            "examples": [
+              null
+            ]
           }
         },
         "type": "object",
@@ -2264,7 +2567,7 @@
           "traded_value_usd"
         ],
         "title": "Activity",
-        "description": "One thing a filer did to one position, in one period."
+        "description": "One thing a filer did to one position, in one period.\n\nThe estimates are at ``period``: for an exit, the price the stock had when\nit was gone from the portfolio, and what it has done since."
       },
       "ActivityEnvelope": {
         "properties": {
@@ -2347,6 +2650,115 @@
         ],
         "title": "Coverage",
         "description": "How much of the tracked universe a period's numbers are made of.\n\n13Fs are due 45 days after the quarter end and arrive across those 45 days,\nso a period's aggregates are partial for weeks. The ratio is what tells a\nclient whether \"most owned\" means most owned, or most owned by the funds\nthat happen to have filed so far."
+      },
+      "DataSource": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "description": "What it is, as a stable identifier to branch on.",
+            "examples": [
+              "implied_price"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DataSourceKind",
+            "description": "`sec_derived`: read from, or computed from nothing but, filings on SEC EDGAR, which are public. `vendor`: from a third party, under its terms. `absent`: not loaded here, so the `fields` it would fill are null.",
+            "examples": [
+              "sec_derived"
+            ]
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider",
+            "description": "Who it is from. Null when it is absent.",
+            "examples": [
+              "SEC EDGAR"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "What it is and how it is made, in a sentence or two, for a person.",
+            "examples": [
+              "Each stock's quarter-end price per share: the median of value over shares across every tracked holder's 13F for the quarter."
+            ]
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fields",
+            "description": "The response fields and endpoints it fills, as `field` or `GET /v1/...`.",
+            "examples": [
+              [
+                "price_estimate",
+                "GET /v1/stocks/{ticker}/implied-prices"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "kind",
+          "description",
+          "fields"
+        ],
+        "title": "DataSource",
+        "description": "One kind of data the API serves or could, and where it comes from."
+      },
+      "DataSourceEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/DataSource"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "DataSourceEnvelope",
+        "description": "Where each kind of data comes from."
+      },
+      "DataSourceKind": {
+        "type": "string",
+        "enum": [
+          "sec_derived",
+          "vendor",
+          "absent"
+        ],
+        "title": "DataSourceKind",
+        "description": "Where a kind of data comes from, which is what decides whether it may be published."
       },
       "Direction": {
         "type": "string",
@@ -3375,6 +3787,150 @@
         ],
         "title": "HoldingRead",
         "description": "One reported position, as the filing wrote it plus what we resolved it to.\n\n``cusip`` is the filing's own nine characters and ``issuer_name``/``ticker``\nare our interpretation of them, which is exactly the pair you want side by\nside when a position is attributed to the wrong company: a null ticker is an\nunresolved security, a wrong one is a bad resolution, and the CUSIP tells\nyou which of the two you are looking at."
+      },
+      "ImpliedPricePoint": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "format": "date",
+            "title": "Period",
+            "description": "The quarter end.",
+            "examples": [
+              "2026-03-31"
+            ]
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price",
+            "description": "Dollars per share, in that quarter's shares: the median of value over shares across every holder's 13F. Null when every holder reported it at $0, and in a quarter nobody held it, which is a row of nulls so a chart shows the gap.",
+            "examples": [
+              "184.12000000"
+            ]
+          },
+          "split_adjusted_price": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split Adjusted Price",
+            "description": "`price` in today's shares: divided by every split detected after the quarter (`/splits`), so the series is one line across them. The same as `price` when there is none since.",
+            "examples": [
+              "18.41200000"
+            ]
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceConfidence"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How far the filings agree on the price, within 2%: `high` when three or more do and they are a majority, `medium` when two do and they are a majority, `low` otherwise. Null exactly when `price` is.",
+            "examples": [
+              "high"
+            ]
+          },
+          "observation_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Count",
+            "description": "Filings it is estimated from, one per holder, those at $0 included. Null in a quarter nobody held it.",
+            "examples": [
+              43
+            ]
+          },
+          "unpriced_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unpriced Count",
+            "description": "Of `observation_count`, the filings that valued it at $0, left out of the median.",
+            "examples": [
+              0
+            ]
+          },
+          "agreeing_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agreeing Count",
+            "description": "Of the priced filings, those within 2% of the median.",
+            "examples": [
+              41
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "period"
+        ],
+        "title": "ImpliedPricePoint",
+        "description": "The stock's price at one quarter end, as its holders' 13Fs imply it."
+      },
+      "ImpliedPricePointEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ImpliedPricePoint"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "ImpliedPricePointEnvelope",
+        "description": "One stock's implied quarter-end prices, a quarter a row."
       },
       "InvestorDetail": {
         "properties": {
@@ -4814,6 +5370,111 @@
             "examples": [
               "2021-09-30"
             ]
+          },
+          "estimated_return_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Return Pct",
+            "description": "Since filing, not since purchase: the stock's latest close against `price_estimate.price`, split-adjusted, in percent. Null when there is no close, which is always in production (`GET /v1/meta/data-sources`), and when there is no price estimate.",
+            "examples": [
+              "22.40"
+            ]
+          },
+          "estimated_return_as_of": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Return As Of",
+            "description": "The trading day of the close `estimated_return_pct` is to. Null when it is.",
+            "examples": [
+              "2026-10-13"
+            ]
+          },
+          "return_to_last_quarter_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return To Last Quarter Pct",
+            "description": "Since filing, from the filings alone: the stock's latest implied price after this period against `price_estimate.price`, split-adjusted, in percent. Null when this period is the stock's latest, and when there is no price estimate.",
+            "examples": [
+              "8.15"
+            ]
+          },
+          "last_quarter_period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Quarter Period",
+            "description": "The quarter `return_to_last_quarter_pct` is to. Null when it is null for want of a later price.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "price_estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no holder's filing priced the stock in the period: every one reported it at $0, or it is an option line."
+          },
+          "is_split": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Split",
+            "description": "Whether the stock split between the filer's previous period and this one. The change is then against the previous shares times `split_ratio`, so a holder who held through a 10-for-1 is a `hold`, not an `add` of 900%. Null on option lines.",
+            "examples": [
+              false
+            ]
+          },
+          "split_ratio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split Ratio",
+            "description": "New shares per old across the split: `10` for a 10-for-1, `0.1` for a 1-for-10, and the product of several. Null exactly when `is_split` is not true.",
+            "examples": [
+              null
+            ]
           }
         },
         "type": "object",
@@ -4823,7 +5484,7 @@
           "value_usd"
         ],
         "title": "PortfolioPosition",
-        "description": "One security in the portfolio, and what changed in it since the filer's previous period.\n\nCommon stock, unless ``put_call`` says otherwise. Option lines are rows\nonly under ``?include_options=true``, and carry no weight and no change:\ntheir value is the notional of the underlying, so it is not a share of the\nportfolio, and the changes are only tracked for stock."
+        "description": "One security in the portfolio, and what changed in it since the filer's previous period.\n\nCommon stock, unless ``put_call`` says otherwise. Option lines are rows\nonly under ``?include_options=true``, and carry no weight, no change and no\nestimate: their value is the notional of the underlying, so it is not a\nshare of the portfolio, and the changes are only tracked for stock."
       },
       "PortfolioPositionEnvelope": {
         "properties": {
@@ -4869,6 +5530,71 @@
         ],
         "title": "PortfolioSort",
         "description": "What a portfolio is ordered by."
+      },
+      "PriceConfidence": {
+        "type": "string",
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "title": "PriceConfidence",
+        "description": "How far the observations behind an implied price agree with it.\n\nText with a ``CHECK``, by the rule in :mod:`app.db.models.enums`. Judged on\nthe priced observations, those worth more than nothing, and on how many of\nthem are within :data:`~app.derived.implied_price.AGREEMENT_PCT` of the\nprice.\n\n``high``\n    Three or more agree, and they are a majority.\n``medium``\n    Two agree, and they are a majority: two holders, or two of three.\n``low``\n    One holder, or no majority agreeing. The price is still the median,\n    and still the best guess there is, but one filer reporting in\n    thousands, or a stale share count across a split, could be all of it."
+      },
+      "PriceEstimate": {
+        "properties": {
+          "price": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Price",
+            "description": "Dollars per share at the period end, in that period's shares: the median of value over shares across every holder's 13F. Not adjusted for a later split.",
+            "examples": [
+              "184.12000000"
+            ]
+          },
+          "period": {
+            "type": "string",
+            "title": "Period",
+            "description": "The quarter it is the price at.",
+            "examples": [
+              "2026Q1"
+            ]
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/PriceConfidence",
+            "description": "How far the filings agree on it, within 2% of the median: `high` when three or more do and they are a majority, `medium` when two do and they are a majority, `low` otherwise. A `low` price is still the best guess there is, but one filer's mistake could be all of it.",
+            "examples": [
+              "high"
+            ]
+          },
+          "observation_count": {
+            "type": "integer",
+            "title": "Observation Count",
+            "description": "Filings it is estimated from: every tracked holder of the stock in the period, one each, those that valued it at $0 included.",
+            "examples": [
+              43
+            ]
+          },
+          "basis": {
+            "type": "string",
+            "const": "implied_from_filings",
+            "title": "Basis",
+            "description": "Where the price is from. Always `implied_from_filings`: no market data vendor is involved. `GET /v1/meta/data-sources` says what each source is.",
+            "examples": [
+              "implied_from_filings"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "price",
+          "period",
+          "confidence",
+          "observation_count",
+          "basis"
+        ],
+        "title": "PriceEstimate",
+        "description": "The stock's price at the row's period end, as its holders' filings imply it."
       },
       "Problem": {
         "properties": {
@@ -5015,6 +5741,16 @@
         ],
         "title": "SortOrder",
         "description": "Ascending or descending."
+      },
+      "SplitConfidence": {
+        "type": "string",
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "title": "SplitConfidence",
+        "description": "How much evidence a detected split has, beyond what detecting it requires.\n\nText with a ``CHECK``, by the rule in :mod:`app.db.models.enums`. Every\ndetected split has at least two holders agreeing on the ratio and the\nprice corroborating it. The two things that make it surer are more holders\nagreeing, and a holder whose shares are the previous count times the ratio\nto the share, which is a holder that did not trade.\n\n``high``\n    Three or more holders agree, and one of them is exact to the share.\n``medium``\n    Three or more agree, or one is exact.\n``low``\n    Two agree, and neither is exact. Only ever a ratio of 4-for-1 or more,\n    or 1-for-4 or less, which ordinary trading does not imitate."
       },
       "StockDetail": {
         "properties": {
@@ -5739,6 +6475,111 @@
             "examples": [
               "trim"
             ]
+          },
+          "estimated_return_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Return Pct",
+            "description": "Since filing, not since purchase: the stock's latest close against `price_estimate.price`, split-adjusted, in percent. Null when there is no close, which is always in production (`GET /v1/meta/data-sources`), and when there is no price estimate.",
+            "examples": [
+              "22.40"
+            ]
+          },
+          "estimated_return_as_of": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Return As Of",
+            "description": "The trading day of the close `estimated_return_pct` is to. Null when it is.",
+            "examples": [
+              "2026-10-13"
+            ]
+          },
+          "return_to_last_quarter_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return To Last Quarter Pct",
+            "description": "Since filing, from the filings alone: the stock's latest implied price after this period against `price_estimate.price`, split-adjusted, in percent. Null when this period is the stock's latest, and when there is no price estimate.",
+            "examples": [
+              "8.15"
+            ]
+          },
+          "last_quarter_period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Quarter Period",
+            "description": "The quarter `return_to_last_quarter_pct` is to. Null when it is null for want of a later price.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "price_estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when no holder's filing priced the stock in the period: every one reported it at $0, or it is an option line."
+          },
+          "is_split": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Split",
+            "description": "Whether the stock split between the filer's previous period and this one. The change is then against the previous shares times `split_ratio`, so a holder who held through a 10-for-1 is a `hold`, not an `add` of 900%. Null on option lines.",
+            "examples": [
+              false
+            ]
+          },
+          "split_ratio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split Ratio",
+            "description": "New shares per old across the split: `10` for a 10-for-1, `0.1` for a 1-for-10, and the product of several. Null exactly when `is_split` is not true.",
+            "examples": [
+              null
+            ]
           }
         },
         "type": "object",
@@ -5749,7 +6590,7 @@
           "value_usd"
         ],
         "title": "StockOwner",
-        "description": "One filer's position in the stock in one period."
+        "description": "One filer's position in the stock in one period.\n\nThe price estimate and the returns are the stock's, so the same on every\nrow. ``is_split`` and ``split_ratio`` are the filer's: whether its change\nis across a split depends on which period it compares with."
       },
       "StockOwnerEnvelope": {
         "properties": {
@@ -5784,6 +6625,122 @@
         ],
         "title": "StockOwnerEnvelope",
         "description": "Every tracked investor holding one stock in one period."
+      },
+      "StockSplit": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "format": "date",
+            "title": "Period",
+            "description": "The first quarter end after the split: it happened in the quarter that ends here, and the quarter before is from before it. The filings cannot date it closer.",
+            "examples": [
+              "2024-06-30"
+            ]
+          },
+          "numerator": {
+            "type": "integer",
+            "title": "Numerator",
+            "description": "New shares per `denominator` old.",
+            "examples": [
+              10
+            ]
+          },
+          "denominator": {
+            "type": "integer",
+            "title": "Denominator",
+            "description": "Old shares per `numerator` new.",
+            "examples": [
+              1
+            ]
+          },
+          "ratio": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Ratio",
+            "description": "`numerator` over `denominator`: above 1 for a split, below 1 for a reverse split.",
+            "examples": [
+              "10.0000000000"
+            ]
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/SplitConfidence",
+            "description": "Every split has at least two holders' share counts moving by the ratio and the implied price moving the other way. `high`: three or more holders agree and one of them is exact to the share. `medium`: three or more, or one exact. `low`: two, neither exact, only ever at 4-for-1 or more or 1-for-4 or less, which ordinary trading does not imitate.",
+            "examples": [
+              "high"
+            ]
+          },
+          "holders": {
+            "type": "integer",
+            "title": "Holders",
+            "description": "Holders with shares in both quarters, whose share counts could be compared.",
+            "examples": [
+              22
+            ]
+          },
+          "holders_agreeing": {
+            "type": "integer",
+            "title": "Holders Agreeing",
+            "description": "Of `holders`, those whose share count moved by the ratio, give or take trading.",
+            "examples": [
+              19
+            ]
+          },
+          "holders_exact": {
+            "type": "integer",
+            "title": "Holders Exact",
+            "description": "Of `holders_agreeing`, those exact to the share: holders that did not trade.",
+            "examples": [
+              6
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "period",
+          "numerator",
+          "denominator",
+          "ratio",
+          "confidence",
+          "holders",
+          "holders_agreeing",
+          "holders_exact"
+        ],
+        "title": "StockSplit",
+        "description": "A split of the stock, as its holders' share counts show it."
+      },
+      "StockSplitEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/StockSplit"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "StockSplitEnvelope",
+        "description": "One stock's detected splits, oldest first."
       },
       "StockSuggestion": {
         "properties": {

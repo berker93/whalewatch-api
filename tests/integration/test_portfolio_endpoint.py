@@ -190,6 +190,20 @@ async def test_a_position_carries_its_change_and_its_first_period(
             "weight_delta": "13.333333",
             "action": "add",
             "first_period": "2024-03-31",
+            # No quote, and Q2 is the latest: no return of either kind.
+            "estimated_return_pct": None,
+            "estimated_return_as_of": None,
+            "return_to_last_quarter_pct": None,
+            "last_quarter_period": None,
+            "price_estimate": {
+                "price": "10.00000000",
+                "period": "2024Q2",
+                "confidence": "low",
+                "observation_count": 1,
+                "basis": "implied_from_filings",
+            },
+            "is_split": False,
+            "split_ratio": None,
         },
         {
             "cusip": CHARLIE,
@@ -207,6 +221,19 @@ async def test_a_position_carries_its_change_and_its_first_period(
             "weight_delta": "20.000000",
             "action": "new",
             "first_period": "2024-06-30",
+            "estimated_return_pct": None,
+            "estimated_return_as_of": None,
+            "return_to_last_quarter_pct": None,
+            "last_quarter_period": None,
+            "price_estimate": {
+                "price": "10.00000000",
+                "period": "2024Q2",
+                "confidence": "low",
+                "observation_count": 1,
+                "basis": "implied_from_filings",
+            },
+            "is_split": False,
+            "split_ratio": None,
         },
     ]
     assert body["meta"]["period"] == "2024Q2"
@@ -662,6 +689,14 @@ async def test_activity_is_newest_period_first_then_largest_trade(
         "traded_value_usd": "500.00",
         "weight_pct": "0.000000",
         "weight_delta": "-33.333333",
+        # Nobody held BRAVO at Q2, so no filing prices it.
+        "estimated_return_pct": None,
+        "estimated_return_as_of": None,
+        "return_to_last_quarter_pct": None,
+        "last_quarter_period": None,
+        "price_estimate": None,
+        "is_split": False,
+        "split_ratio": None,
     }
 
 

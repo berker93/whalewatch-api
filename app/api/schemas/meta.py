@@ -123,3 +123,47 @@ class PeriodCoverageEnvelope(Envelope[PeriodCoverage]):
 
 class FreshnessEnvelope(Envelope[Freshness]):
     """When each view was refreshed and each job last succeeded."""
+
+
+class DataSourceKind(StrEnum):
+    """Where a kind of data comes from, which is what decides whether it may be published."""
+
+    SEC_DERIVED = "sec_derived"
+    VENDOR = "vendor"
+    ABSENT = "absent"
+
+
+class DataSource(BaseModel):
+    """One kind of data the API serves or could, and where it comes from."""
+
+    key: str = Field(
+        description="What it is, as a stable identifier to branch on.", examples=["implied_price"]
+    )
+    kind: DataSourceKind = Field(
+        description=(
+            "`sec_derived`: read from, or computed from nothing but, filings on SEC "
+            "EDGAR, which are public. `vendor`: from a third party, under its terms. "
+            "`absent`: not loaded here, so the `fields` it would fill are null."
+        ),
+        examples=["sec_derived"],
+    )
+    provider: str | None = Field(
+        default=None,
+        description="Who it is from. Null when it is absent.",
+        examples=["SEC EDGAR"],
+    )
+    description: str = Field(
+        description="What it is and how it is made, in a sentence or two, for a person.",
+        examples=[
+            "Each stock's quarter-end price per share: the median of value over shares "
+            "across every tracked holder's 13F for the quarter."
+        ],
+    )
+    fields: list[str] = Field(
+        description=("The response fields and endpoints it fills, as `field` or `GET /v1/...`."),
+        examples=[["price_estimate", "GET /v1/stocks/{ticker}/implied-prices"]],
+    )
+
+
+class DataSourceEnvelope(Envelope[DataSource]):
+    """Where each kind of data comes from."""

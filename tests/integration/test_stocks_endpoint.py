@@ -465,6 +465,20 @@ async def test_owners_are_the_latest_periods_holders_largest_first_with_their_ch
         "shares_delta_pct": "50.000000",
         "weight_delta": "2.840909",
         "action": "add",
+        # The stock's, the same on every row: four holders at $10.
+        "estimated_return_pct": None,
+        "estimated_return_as_of": None,
+        "return_to_last_quarter_pct": None,
+        "last_quarter_period": None,
+        "price_estimate": {
+            "price": "10.00000000",
+            "period": "2024Q2",
+            "confidence": "high",
+            "observation_count": 4,
+            "basis": "implied_from_filings",
+        },
+        "is_split": False,
+        "split_ratio": None,
     }
     assert body["data"][1]["shares_delta_pct"] is None
     assert body["meta"]["period"] == "2024Q2"

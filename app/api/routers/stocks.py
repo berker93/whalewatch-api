@@ -13,6 +13,13 @@
     Per quarter, the shares and filers holding it, and the five largest
     holders as named series with everyone else as ``other``. Live, so the five
     and the total they are subtracted from are always the same rebuild.
+``GET /v1/stocks/{ticker}/implied-prices``
+    Per quarter, the price its holders' 13Fs imply, from ``implied_price``,
+    with how many filings and how far they agree, and the price in today's
+    shares beside it.
+``GET /v1/stocks/{ticker}/splits``
+    The splits ``security_split`` has detected, for annotating a chart of
+    either of the above.
 
 Finding the stock
 -----------------
@@ -44,6 +51,7 @@ that is the cost of a legible chart.
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
+from fractions import Fraction
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, HTTPException, Path, Query, status
@@ -62,6 +70,7 @@ from sqlalchemy import (
     literal_column,
     null,
     select,
+    true,
     union,
     union_all,
 )
@@ -70,6 +79,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
 from app.api.errors import INVALID, INVALID_CURSOR, ApiError, not_found
+from app.api.estimates import estimate_columns, estimates
 from app.api.meta import period_meta, unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
 from app.api.routers.investors import _escape_like
@@ -77,6 +87,8 @@ from app.api.schemas.envelope import Coverage, Envelope
 from app.api.schemas.error import ErrorCode, Problem
 from app.api.schemas.stock import (
     HolderPoint,
+    ImpliedPricePoint,
+    ImpliedPricePointEnvelope,
     OtherHolders,
     OwnershipPoint,
     OwnershipPointEnvelope,
@@ -85,13 +97,19 @@ from app.api.schemas.stock import (
     StockNotFoundDetail,
     StockOwner,
     StockOwnerEnvelope,
+    StockSplit,
+    StockSplitEnvelope,
     StockSuggestion,
 )
 from app.api.schemas.types import Period
 from app.core.periods import quarter_label, quarters_between
 from app.core.tickers import normalise_ticker
 from app.db.models import Filer, PositionChange, PositionSnapshot, Security, SecurityAlias
+from app.db.models.implied_price import ImpliedPrice
+from app.db.models.security_split import SecuritySplit
+from app.db.queries.returns import estimated_return
 from app.db.queries.tickers import valid_on
+from app.derived.implied_price import PRICE_PLACES
 from app.derived.views import CONSENSUS_HOLDINGS, FILER_SUMMARY, QUARTER_FLOWS
 
 router = APIRouter(tags=["stocks"])
@@ -115,6 +133,8 @@ _DISPLAY_NAME: Final = func.coalesce(Filer.display_name, Filer.name)
 # "0.0000" shares and "0.00" dollars, like every other figure.
 _NO_SHARES: Final = Decimal("0.0000")
 _NO_DOLLARS: Final = Decimal("0.00")
+#: What a split-adjusted price is rounded to: ``implied_price.price``'s scale.
+_PRICE_QUANTUM: Final = Decimal(1).scaleb(-PRICE_PLACES)
 
 
 def _key(ticker: str) -> str:
@@ -376,11 +396,18 @@ async def _owners_period(session: AsyncSession, period: date | None) -> date:
 
 
 def owners_query(security_id: SecurityId, period: PeriodEnd, page: PageParams) -> Select[Any]:
-    """One page of the stock's holders in ``period``, named, in :data:`OWNERS_KEYSET` order."""
+    """One page of the stock's holders in ``period``, named and with the
+    estimates (:mod:`app.api.estimates`), in :data:`OWNERS_KEYSET` order.
+
+    The price and the returns are the stock's, so the same on every row, and
+    joined per row all the same: a few hundred microseconds a page, and one
+    query rather than two.
+    """
     snapshot, change = PositionSnapshot, PositionChange
     rows = (
         select(
             snapshot.filer_id,
+            snapshot.security_id,
             snapshot.shares,
             snapshot.value_usd,
             snapshot.weight_pct,
@@ -388,6 +415,8 @@ def owners_query(security_id: SecurityId, period: PeriodEnd, page: PageParams) -
             change.shares_delta,
             change.shares_delta_pct,
             change.weight_delta,
+            change.is_split,
+            change.split_ratio,
         )
         .select_from(snapshot)
         # Outer, for the portfolio's reason: a missing change row should cost
@@ -403,10 +432,17 @@ def owners_query(security_id: SecurityId, period: PeriodEnd, page: PageParams) -
         .where(snapshot.security_id == security_id, snapshot.period_of_report == period)
     )
     page_rows = page_statement(rows, OWNERS_KEYSET, page).cte("page")
+    returns = estimated_return(page_rows.c.security_id, period)
     return (
-        select(page_rows, Filer.slug, _DISPLAY_NAME.label("display_name"))
+        select(
+            page_rows,
+            Filer.slug,
+            _DISPLAY_NAME.label("display_name"),
+            *estimate_columns(returns),
+        )
         .select_from(page_rows)
         .join(Filer, Filer.id == page_rows.c.filer_id)
+        .outerjoin(returns, true())
         .order_by(*OWNERS_KEYSET.order_by(on=page_rows))
     )
 
@@ -588,6 +624,91 @@ def ownership_points(totals: list[Row[Any]], series: list[Row[Any]]) -> list[Own
     return points
 
 
+# --- implied prices and splits --------------------------------------------------
+
+
+def implied_prices_query(security_id: SecurityId) -> Select[Any]:
+    """Every ``implied_price`` row of the stock, oldest first: its primary key's
+    slice for the security."""
+    price = ImpliedPrice
+    return (
+        select(
+            price.period_of_report,
+            price.price,
+            price.confidence,
+            price.observation_count,
+            price.unpriced_count,
+            price.agreeing_count,
+        )
+        .where(price.security_id == security_id)
+        .order_by(price.period_of_report)
+    )
+
+
+def splits_query(security_id: SecurityId) -> Select[Any]:
+    """Every detected split of the stock, oldest first."""
+    split = SecuritySplit
+    return (
+        select(
+            split.period_of_report,
+            split.numerator,
+            split.denominator,
+            split.ratio,
+            split.confidence,
+            split.holders,
+            split.holders_agreeing,
+            split.holders_exact,
+        )
+        .where(split.security_id == security_id)
+        .order_by(split.period_of_report)
+    )
+
+
+def implied_price_points(prices: list[Row[Any]], splits: list[Row[Any]]) -> list[ImpliedPricePoint]:
+    """One point per quarter from the first priced to the last, a quarter with
+    no row a point of nulls, with each price in today's shares beside it.
+
+    Adjusted here rather than in SQL: a stock has a handful of splits at most,
+    and a ``Fraction`` of their numerators and denominators is exact where a
+    product in ``numeric`` is rounded at each step.
+
+    :param prices: :func:`implied_prices_query`'s rows.
+    :param splits: :func:`splits_query`'s rows.
+    """
+    if not prices:
+        return []
+    by_period = {row.period_of_report: row for row in prices}
+    points = []
+    for quarter in quarters_between(min(by_period), max(by_period)):
+        row = by_period.get(quarter)
+        if row is None:
+            points.append(ImpliedPricePoint(period=quarter))
+            continue
+        since = Fraction(1)
+        for split in splits:
+            if split.period_of_report > quarter:
+                since *= Fraction(split.numerator, split.denominator)
+        adjusted = (
+            None
+            if row.price is None
+            else (row.price * since.denominator / since.numerator).quantize(_PRICE_QUANTUM)
+        )
+        points.append(
+            ImpliedPricePoint(
+                period=quarter,
+                price=row.price,
+                # Never rounded to nothing: implied_price stores no price under
+                # half a millionth of a cent, but a 1-for-50 could make one.
+                split_adjusted_price=adjusted if adjusted else None,
+                confidence=row.confidence,
+                observation_count=row.observation_count,
+                unpriced_count=row.unpriced_count,
+                agreeing_count=row.agreeing_count,
+            )
+        )
+    return points
+
+
 # --- the routes -----------------------------------------------------------------
 
 TickerParam = Annotated[
@@ -697,6 +818,7 @@ async def read_owners(
                 shares_delta_pct=row.shares_delta_pct,
                 weight_delta=row.weight_delta,
                 action=row.action,
+                **estimates(row, period),
             )
             for row in rows
         ],
@@ -724,6 +846,63 @@ async def read_ownership_history(
     held = [row.period_of_report for row in totals if row.holder_count]
     series = list(await session.execute(top_holders_query(security.id, max(held)))) if held else []
     return Envelope(data=ownership_points(totals, series), meta=unscoped_meta(), page=None)
+
+
+@router.get(
+    "/stocks/{ticker}/implied-prices",
+    operation_id="getStockImpliedPrices",
+    response_model=ImpliedPricePointEnvelope,
+    summary="One stock's quarter-end prices, as its holders' 13Fs imply them",
+    responses={**_NOT_FOUND, **INVALID},
+)
+@cached(Lifetime.CURRENT_PERIOD)
+async def read_implied_prices(
+    ticker: TickerParam, session: SessionDep
+) -> Envelope[ImpliedPricePoint]:
+    """Every quarter from the first any investor's published portfolio held the
+    stock to the last, oldest first, with how many filings each price is from
+    and how far they agree. Not market data: each price is the median of value
+    over shares across the holders' 13Fs. Empty for a stock nobody has held.
+    Not paginated."""
+    security = await _resolve(session, ticker)
+    prices = list(await session.execute(implied_prices_query(security.id)))
+    splits = list(await session.execute(splits_query(security.id))) if prices else []
+    return Envelope(data=implied_price_points(prices, splits), meta=unscoped_meta(), page=None)
+
+
+@router.get(
+    "/stocks/{ticker}/splits",
+    operation_id="getStockSplits",
+    response_model=StockSplitEnvelope,
+    summary="One stock's splits, as its holders' share counts show them",
+    responses={**_NOT_FOUND, **INVALID},
+)
+@cached(Lifetime.CURRENT_PERIOD)
+async def read_splits(ticker: TickerParam, session: SessionDep) -> Envelope[StockSplit]:
+    """Every split detected, oldest first, each dated the first quarter end
+    after it: for marking on a chart of the implied prices or the ownership.
+    Detected from the filings, not read from a corporate-action feed: a split
+    the tracked investors did not hold through is not here. Empty for most
+    stocks. Not paginated."""
+    security = await _resolve(session, ticker)
+    rows = await session.execute(splits_query(security.id))
+    return Envelope(
+        data=[
+            StockSplit(
+                period=row.period_of_report,
+                numerator=row.numerator,
+                denominator=row.denominator,
+                ratio=row.ratio,
+                confidence=row.confidence,
+                holders=row.holders,
+                holders_agreeing=row.holders_agreeing,
+                holders_exact=row.holders_exact,
+            )
+            for row in rows
+        ],
+        meta=unscoped_meta(),
+        page=None,
+    )
 
 
 def _or[T](value: T | None, default: T) -> T:

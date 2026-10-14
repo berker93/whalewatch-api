@@ -34,6 +34,12 @@ but a period's ``first_period`` then depends on every earlier period, and a
 scoped ``recompute`` of one ``(filer, period)`` would have to rewrite every
 later period of the filer. At 6.5 ms for the largest filer that is not a
 trade worth making yet.
+
+Estimates
+---------
+The portfolio's and the activity's rows carry the price estimate and the
+returns since filing (:mod:`app.api.estimates`), joined onto the page once it
+is chosen, so only the rows served pay for them.
 """
 
 from datetime import date
@@ -46,6 +52,7 @@ from pydantic import PlainValidator, WithJsonSchema
 from sqlalchemy import (
     ARRAY,
     BindParameter,
+    Boolean,
     Numeric,
     Row,
     Select,
@@ -60,6 +67,7 @@ from sqlalchemy import (
     literal,
     null,
     select,
+    true,
     union_all,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,6 +75,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
 from app.api.errors import INVALID, INVALID_CURSOR, invalid, not_found
+from app.api.estimates import estimate_columns, estimates
 from app.api.meta import period_meta, unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
 from app.api.routers.investors import SlugParam
@@ -85,8 +94,10 @@ from app.db.models import Filer, Holding, Security
 from app.db.models.holding import QUANTITY
 from app.db.models.position_change import CHANGE_PCT, ChangeAction, PositionChange
 from app.db.models.position_snapshot import WEIGHT_PCT, PositionSnapshot
+from app.db.models.security_split import SPLIT_RATIO
 from app.db.queries.amendments import period_concerns
 from app.db.queries.effective import EFFECTIVE_FILING
+from app.db.queries.returns import estimated_return
 from app.db.queries.tickers import ticker_labels
 from app.derived.views import FILER_SUMMARY, traded_usd
 
@@ -213,6 +224,8 @@ def _positions(filer_id: FilerId, period: PeriodEnd, *, include_options: bool) -
             change.shares_delta,
             change.shares_delta_pct,
             change.weight_delta,
+            change.is_split,
+            change.split_ratio,
         )
         .select_from(snapshot)
         # Outer, though every snapshot row has a change row (reconcile checks
@@ -240,6 +253,8 @@ def _positions(filer_id: FilerId, period: PeriodEnd, *, include_options: bool) -
                 null().cast(QUANTITY),
                 null().cast(CHANGE_PCT),
                 null().cast(WEIGHT_PCT),
+                null().cast(Boolean),
+                null().cast(SPLIT_RATIO),
             )
             .select_from(effective)
             .join(Holding, Holding.filing_id == effective.c.filing_id)
@@ -306,7 +321,8 @@ def portfolio_query(
     order: SortOrder = SortOrder.DESC,
     include_options: bool = False,
 ) -> tuple[Select[Any], Keyset]:
-    """One page of the portfolio, named and with ``first_period``, and its keyset."""
+    """One page of the portfolio, named, with ``first_period`` and the
+    estimates (:mod:`app.api.estimates`), and its keyset."""
     positions = _positions(filer_id, period, include_options=include_options)
     keyset = _portfolio_keyset(positions, sort, order)
     page_rows = page_statement(select(positions), keyset, page).cte("page")
@@ -319,6 +335,7 @@ def portfolio_query(
         .group_by(snapshot.security_id)
         .cte("first_held")
     )
+    returns = estimated_return(page_rows.c.security_id, period)
 
     statement = (
         select(
@@ -327,6 +344,7 @@ def portfolio_query(
             *ticker_labels(period),
             Security.name.label("issuer_name"),
             first_held.c.first_period,
+            *estimate_columns(returns),
         )
         .select_from(page_rows)
         .join(Security, Security.id == page_rows.c.security_id)
@@ -337,6 +355,8 @@ def portfolio_query(
                 page_rows.c.put_call.is_(None),
             ),
         )
+        # Stock only: an option's price is not the stock's, nor its return.
+        .outerjoin(returns, page_rows.c.put_call.is_(None))
         .order_by(*keyset.order_by(on=page_rows))
     )
     return statement, keyset
@@ -376,7 +396,8 @@ def activity_query(
     end: date | None = None,
     actions: frozenset[ChangeAction] = DEFAULT_ACTIONS,
 ) -> Select[Any]:
-    """One page of the filer's changes, named, in :data:`ACTIVITY_KEYSET` order."""
+    """One page of the filer's changes, named and with the estimates at each
+    row's period (:mod:`app.api.estimates`), in :data:`ACTIVITY_KEYSET` order."""
     change = PositionChange
     keys = {key.name: key.expression for key in ACTIVITY_KEYSET.keys}
     rows = select(
@@ -391,6 +412,8 @@ def activity_query(
         keys["traded_value_usd"].label("traded_value_usd"),
         change.weight_pct,
         change.weight_delta,
+        change.is_split,
+        change.split_ratio,
     ).where(
         change.filer_id == filer_id,
         # One array parameter rather than IN's one per action: the same
@@ -406,15 +429,18 @@ def activity_query(
         rows = rows.where(change.period_of_report <= end)
 
     page_rows = page_statement(rows, ACTIVITY_KEYSET, page).cte("page")
+    returns = estimated_return(page_rows.c.security_id, page_rows.c.period_of_report)
     return (
         select(
             page_rows,
             Security.cusip,
             *ticker_labels(page_rows.c.period_of_report),
             Security.name.label("issuer_name"),
+            *estimate_columns(returns),
         )
         .select_from(page_rows)
         .join(Security, Security.id == page_rows.c.security_id)
+        .outerjoin(returns, true())
         .order_by(*ACTIVITY_KEYSET.order_by(on=page_rows))
     )
 
@@ -548,7 +574,7 @@ async def read_portfolio(
     meta = await period_meta(session, period, filer_id=filer_id)
     meta.caveats = list(await period_concerns(session, slug=slug, period=period))
 
-    return Envelope(data=[_position(row) for row in rows], meta=meta, page=page_info)
+    return Envelope(data=[_position(row, period) for row in rows], meta=meta, page=page_info)
 
 
 @router.get(
@@ -597,6 +623,7 @@ async def read_activity(
                 traded_value_usd=row.traded_value_usd,
                 weight_pct=row.weight_pct,
                 weight_delta=row.weight_delta,
+                **estimates(row, row.period_of_report),
             )
             for row in rows
         ],
@@ -642,7 +669,7 @@ async def read_history(slug: SlugParam, session: SessionDep) -> Envelope[History
     return Envelope(data=data, meta=unscoped_meta(), page=None)
 
 
-def _position(row: Row[Any]) -> PortfolioPosition:
+def _position(row: Row[Any], period: date) -> PortfolioPosition:
     return PortfolioPosition(
         cusip=row.cusip,
         ticker=row.ticker,
@@ -658,4 +685,5 @@ def _position(row: Row[Any]) -> PortfolioPosition:
         weight_delta=row.weight_delta,
         action=row.action,
         first_period=row.first_period,
+        **estimates(row, period),
     )
