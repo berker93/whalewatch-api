@@ -1,0 +1,60 @@
+{
+  "fixtures": [
+    {
+      "slug": "purchase-mastercraft-ceo",
+      "accession_no": "0001193125-26-393047",
+      "issuer_cik": "0001638290",
+      "url": "https://www.sec.gov/Archives/edgar/data/1638290/000119312526393047/ownership.xml",
+      "note": "Code P: the CEO, who is also a director, buys 2,500 shares on the open market in two lines. Both role boxes checked on one owner."
+    },
+    {
+      "slug": "sale-everpure-director",
+      "accession_no": "0001593803-26-000006",
+      "issuer_cik": "0001474432",
+      "url": "https://www.sec.gov/Archives/edgar/data/1474432/000159380326000006/wk-form4_1791925261.xml",
+      "note": "Code S: a director sells, no plan, no footnotes on the trade. Also a nonDerivativeHolding line (shares held by a trust), which is not a transaction and takes no line number."
+    },
+    {
+      "slug": "award-state-street-director",
+      "accession_no": "0000093751-26-000589",
+      "issuer_cik": "0000093751",
+      "url": "https://www.sec.gov/Archives/edgar/data/93751/000009375126000589/wk-form4_1791921967.xml",
+      "note": "Code A: a director's stock award, filed with a price of 0. The price must come out null, not zero."
+    },
+    {
+      "slug": "exercise-intuitive-rsu",
+      "accession_no": "0001274559-26-000005",
+      "issuer_cik": "0001035267",
+      "url": "https://www.sec.gov/Archives/edgar/data/1035267/000127455926000005/edgardoc.xml",
+      "note": "Code M: RSUs vest (derivative M, disposed) into common stock (non-derivative M, acquired), and code F withholds shares for tax. The shape most Form 4 lines have, and none of it is a signal."
+    },
+    {
+      "slug": "plan-sale-liquidia",
+      "accession_no": "0001104659-26-115641",
+      "issuer_cik": "0001819576",
+      "url": "https://www.sec.gov/Archives/edgar/data/1819576/000110465926115641/tm2627530-2_4seq1.xml",
+      "note": "A 10b5-1 plan sale: checkbox ticked and the sale's own footnote names the plan. The PSU exercise beside it cites no plan footnote and must not be flagged."
+    },
+    {
+      "slug": "plan-checkbox-only-robinhood",
+      "accession_no": "0001783879-26-000149",
+      "issuer_cik": "0002085091",
+      "url": "https://www.sec.gov/Archives/edgar/data/1783879/000178387926000149/wk-form4_1791580113.xml",
+      "note": "A 10b5-1 checkbox with no footnote naming the plan, so both sales are flagged. Weighted-average prices with ranges ('at prices from $26.25 to $26.80')."
+    },
+    {
+      "slug": "joint-filing-kinetik",
+      "accession_no": "0000905148-26-004450",
+      "issuer_cik": "0001692787",
+      "url": "https://www.sec.gov/Archives/edgar/data/1692787/000090514826004450/form4.xml",
+      "note": "Five reporting owners on one filing: a GP, its manager, a holding company and two people, all 10% owners, reporting four sales once for all of them."
+    },
+    {
+      "slug": "amendment-nvidia",
+      "accession_no": "0002152188-26-000007",
+      "issuer_cik": "0001045810",
+      "url": "https://www.sec.gov/Archives/edgar/data/1045810/000215218826000007/wk-form4a_1791925767.xml",
+      "note": "A 4/A correcting the share count of an RSU award: dateOfOriginalSubmission and a remark saying what changed."
+    }
+  ]
+}

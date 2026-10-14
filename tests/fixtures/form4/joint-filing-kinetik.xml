@@ -1,0 +1,320 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+
+    <schemaVersion>X0609</schemaVersion>
+
+    <documentType>4</documentType>
+
+    <periodOfReport>2026-10-08</periodOfReport>
+
+    <issuer>
+        <issuerCik>0001692787</issuerCik>
+        <issuerName>Kinetik Holdings Inc.</issuerName>
+        <issuerTradingSymbol>KNTK</issuerTradingSymbol>
+        <issuerForeignTradingSymbol></issuerForeignTradingSymbol>
+    </issuer>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001904934</rptOwnerCik>
+            <rptOwnerName>ISQ Global Fund II GP LLC</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>600 BRICKELL AVENUE</rptOwnerStreet1>
+            <rptOwnerStreet2>PENTHOUSE</rptOwnerStreet2>
+            <rptOwnerCity>MIAMI</rptOwnerCity>
+            <rptOwnerState>FL</rptOwnerState>
+            <rptOwnerZipCode>33131-3067</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>false</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001904404</rptOwnerCik>
+            <rptOwnerName>I Squared Capital, LLC</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>600 BRICKELL AVENUE</rptOwnerStreet1>
+            <rptOwnerStreet2>PENTHOUSE</rptOwnerStreet2>
+            <rptOwnerCity>MIAMI</rptOwnerCity>
+            <rptOwnerState>FL</rptOwnerState>
+            <rptOwnerZipCode>33131-3067</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>false</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0001904413</rptOwnerCik>
+            <rptOwnerName>ISQ Holdings, LLC</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>600 BRICKELL AVENUE</rptOwnerStreet1>
+            <rptOwnerStreet2>PENTHOUSE</rptOwnerStreet2>
+            <rptOwnerCity>MIAMI</rptOwnerCity>
+            <rptOwnerState>FL</rptOwnerState>
+            <rptOwnerZipCode>33131-3067</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>false</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0002020905</rptOwnerCik>
+            <rptOwnerName>Wahba Sadek</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>600 BRICKELL AVENUE</rptOwnerStreet1>
+            <rptOwnerStreet2>PENTHOUSE</rptOwnerStreet2>
+            <rptOwnerCity>MIAMI</rptOwnerCity>
+            <rptOwnerState>FL</rptOwnerState>
+            <rptOwnerZipCode>33131-3067</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>false</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0002020876</rptOwnerCik>
+            <rptOwnerName>Bhandari Gautam</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerAddress>
+            <rptOwnerNonUSAddressFlag>false</rptOwnerNonUSAddressFlag>
+            <rptOwnerStreet1>600 BRICKELL AVENUE</rptOwnerStreet1>
+            <rptOwnerStreet2>PENTHOUSE</rptOwnerStreet2>
+            <rptOwnerCity>MIAMI</rptOwnerCity>
+            <rptOwnerState>FL</rptOwnerState>
+            <rptOwnerZipCode>33131-3067</rptOwnerZipCode>
+            <rptOwnerStateDescription></rptOwnerStateDescription>
+        </reportingOwnerAddress>
+        <reportingOwnerRelationship>
+            <isDirector>false</isDirector>
+            <isOfficer>false</isOfficer>
+            <isTenPercentOwner>true</isTenPercentOwner>
+            <isOther>false</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+
+    <aff10b5One>false</aff10b5One>
+
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Class A Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-10-08</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>S</transactionCode>
+                <equitySwapInvolved>false</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>119203</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>54.2944</value>
+                    <footnoteId id="F1"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>96817</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>See Explanation of Responses</value>
+                    <footnoteId id="F2"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Class A Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-10-09</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>S</transactionCode>
+                <equitySwapInvolved>false</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>35300</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>53.9305</value>
+                    <footnoteId id="F3"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>61517</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>See Explanation of Responses</value>
+                    <footnoteId id="F2"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Class A Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-10-09</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>S</transactionCode>
+                <equitySwapInvolved>false</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>23139</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>54.6376</value>
+                    <footnoteId id="F4"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>38378</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>See Explanation of Responses</value>
+                    <footnoteId id="F2"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+        <nonDerivativeTransaction>
+            <securityTitle>
+                <value>Class A Common Stock</value>
+            </securityTitle>
+            <transactionDate>
+                <value>2026-10-12</value>
+            </transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>S</transactionCode>
+                <equitySwapInvolved>false</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares>
+                    <value>38377</value>
+                </transactionShares>
+                <transactionPricePerShare>
+                    <value>54.1851</value>
+                    <footnoteId id="F5"/>
+                </transactionPricePerShare>
+                <transactionAcquiredDisposedCode>
+                    <value>D</value>
+                </transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction>
+                    <value>1</value>
+                </sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature>
+                <directOrIndirectOwnership>
+                    <value>I</value>
+                </directOrIndirectOwnership>
+                <natureOfOwnership>
+                    <value>See Explanation of Responses</value>
+                    <footnoteId id="F2"/>
+                </natureOfOwnership>
+            </ownershipNature>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+
+    <footnotes>
+        <footnote id="F1">The price reported in Column 4 is a weighted average price. These shares were sold in multiple transactions at prices ranging from $53.66 to $54.58, inclusive. The Reporting Persons undertake to provide to the Issuer, any security holder of the Issuer, or the staff of the Securities and Exchange Commission, upon request, full information regarding the number of shares sold at each separate price within the range set forth in this footnote.</footnote>
+        <footnote id="F2">The securities are directly held by Buzzard Midstream LLC. ISQ Global Fund II GP, LLC (&quot;Fund II GP&quot;) is the general partner of the members of the indirect owners of Buzzard Midstream LLC and, in such capacity, exercises voting and investment power over the securities directly held by Buzzard Midstream LLC. I Squared Capital, LLC (&quot;I Squared Capital&quot;) is the sole member of Fund II GP. ISQ Holdings, LLC (&quot;ISQ Holdings&quot;) is the managing member of I Squared Capital. Each of Sadek Wahba and Gautam Bhandari is a member of ISQ Holdings and disclaims beneficial ownership over the securities reported herein except to the extent of his pecuniary interest therein.</footnote>
+        <footnote id="F3">The price reported in Column 4 is a weighted average price. These shares were sold in multiple transactions at prices ranging from $53.50 to $54.495, inclusive. The Reporting Persons undertake to provide to the Issuer, any security holder of the Issuer, or the staff of the Securities and Exchange Commission, upon request, full information regarding the number of shares sold at each separate price within the range set forth in this footnote.</footnote>
+        <footnote id="F4">The price reported in Column 4 is a weighted average price. These shares were sold in multiple transactions at prices ranging from $54.50 to $54.8477, inclusive. The Reporting Persons undertake to provide to the Issuer, any security holder of the Issuer, or the staff of the Securities and Exchange Commission, upon request, full information regarding the number of shares sold at each separate price within the range set forth in this footnote.</footnote>
+        <footnote id="F5">The price reported in Column 4 is a weighted average price. These shares were sold in multiple transactions at prices ranging from $53.91 to $54.57, inclusive. The Reporting Persons undertake to provide to the Issuer, any security holder of the Issuer, or the staff of the Securities and Exchange Commission, upon request, full information regarding the number of shares sold at each separate price within the range set forth in this footnote.</footnote>
+    </footnotes>
+
+    <ownerSignature>
+        <signatureName>ISQ Global Fund II GP, LLC, By: /s/ Gautam Bhandari, Director</signatureName>
+        <signatureDate>2026-10-13</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>I Squared Capital, LLC, By: ISQ Holdings, LLC, its managing member, By: /s/ Gautam Bhandari, Manager</signatureName>
+        <signatureDate>2026-10-13</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>ISQ Holdings, LLC, By: /s/ Gautam Bhandari, Manager</signatureName>
+        <signatureDate>2026-10-13</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>/s/ Sadek Wahba</signatureName>
+        <signatureDate>2026-10-13</signatureDate>
+    </ownerSignature>
+
+    <ownerSignature>
+        <signatureName>/s/ Gautam Bhandari</signatureName>
+        <signatureDate>2026-10-13</signatureDate>
+    </ownerSignature>
+</ownershipDocument>

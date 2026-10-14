@@ -823,10 +823,13 @@ time anything computes a mean. `value_usd` is generated from it, so it is null
 for every grant and gift and cannot disagree with the shares beside it. Eight
 decimal places, like `implied_price`, for weighted-average prices.
 
-`is_10b5_1` comes from the filing's own checkbox, or before April 2023 from a
-footnote. A sale under a pre-arranged plan was decided months before the date on
-the form, which is the whole reason the flag is on the row rather than left to
-the reader.
+`is_10b5_1` comes from a footnote the line cites, or from the form's checkbox
+(since April 2023) when no line cites a plan footnote. The checkbox is one per
+form, so it can't say which line it means when the footnotes don't. Before
+April 2023 there is only the footnote. A sale under a pre-arranged plan was
+decided months before the date on the form, which is the whole reason the flag
+is on the row rather than left to the reader. See the
+[parser](../app/ingestion/parsers/form4.py) for the rule.
 
 `security_id` links the issuer to a `security` where the loader can tell which
 one, from `issuer_cik`, `issuer_ticker` and `security_title`, and is null

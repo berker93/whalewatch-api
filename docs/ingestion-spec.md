@@ -145,6 +145,39 @@ CIK and ticker — the one place in this pipeline a ticker arrives for free.
 (`G`). Null it; do not zero it. A zero price averages into "insiders bought at
 $0" the first time someone computes a mean.
 
+`parse_form4` ([app/ingestion/parsers/form4.py](../app/ingestion/parsers/form4.py))
+is pure and returns the issuer, every reporting owner in document order, and
+every transaction line, numbered the way `insider_transaction.line_number` is.
+What it decides:
+
+- **Prices.** `0` and an absent price both become null, and so does a zero
+  strike on an RSU. A weighted-average price keeps the range its footnote gives
+  ("at prices ranging from $53.66 to $54.58") as `price_low`/`price_high`. A
+  price given only as a range (no value, or a value like `10.00-11.00`) has a
+  null price and the range.
+- **10b5-1.** `aff10b5One` (on the form since April 2023) is one checkbox per
+  form, not per line. A line is flagged when a footnote it cites names Rule
+  10b5-1 in a sentence that doesn't negate it. If no line cites such a footnote
+  and the box is ticked, every line is flagged, since nothing says which one
+  the box means. In the 280 Form 4s queued for 2026-10-08 to 2026-10-13, 247
+  plan sales were footnoted and 6 had only the checkbox. The exercises filed
+  beside footnoted sales are the reason the checkbox alone doesn't flag every
+  line.
+- **Footnotes.** Each line carries the footnotes it cites anywhere inside it,
+  with their text. The document's full set is kept too.
+- **Holdings lines are skipped.** `nonDerivativeHolding` and
+  `derivativeHolding` report a balance and no trade, and take no line number.
+- **A bad line fails the filing.** A missing date, code or A/D flag raises
+  `FilingParseError` and names the line. A 13F has a checksum that accounts for
+  a dropped row; a Form 4 has nothing, so a dropped line would be a trade that
+  silently never happened.
+- **Forms 3 and 5 are refused.** They share the `ownershipDocument` schema.
+
+The document's filename is not fixed. It depends on the filing agent
+(`form4.xml`, `wk-form4_*.xml`, `edgardoc.xml`, `ownership.xml`...), so the
+loader has to find it in the filing's `index.json`. Every filing in that week
+had exactly one `.xml` file.
+
 ## The two traps
 
 ### The 45-day 13F lag
