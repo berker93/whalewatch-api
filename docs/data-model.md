@@ -237,6 +237,7 @@ quarter           text         GENERATED STORED   -- '2024Q1', from period_of_re
 filed_at          timestamptz  not null
 value_multiplier  smallint     not null           -- 1 or 1000; see below
 amends_id         bigint       fk -> filing       -- self-ref, set on /A forms
+date_of_original_submission date                  -- a 4/A's: how it finds what it amends
 amendment_no      smallint                        -- cover page's amendmentNo; null on an original
 amendment_kind    amendment_kind                  -- enum; null when not an amendment
 report_type       text                            -- 13F cover page: HOLDINGS | NOTICE | COMBINATION
@@ -741,7 +742,7 @@ an insider did on a day.
 insider
   id      bigint pk
   cik     char(10)  unique, not null      -- rptOwnerCik; the key, never the name
-  name    text      not null              -- as the latest filing spelled it
+  name    text      not null              -- as the latest-filed filing spelled it
 
 reporting_owner                           -- one insider on one Form 4
   filing_id             bigint  fk -> filing, on delete cascade
@@ -753,6 +754,7 @@ reporting_owner                           -- one insider on one Form 4
   officer_title         text
   other_text            text
   pk (filing_id, insider_id)
+  index (insider_id)
 
 insider_transaction
   id                 bigserial
@@ -799,8 +801,21 @@ two tranches on one day) with every value equal. `line_number`, the position in
 the document counting the non-derivative table then the derivative table, is
 what tells them apart; a re-ingest of the same filing repeats it, so
 `ON CONFLICT DO NOTHING` drops the copy. A `4/A` is a new `filing_id`: it
-supersedes the original by deleting the original's rows, which cascade from the
-filing.
+supersedes the original by deleting the original's lines, and keeps the
+original's `filing` and `reporting_owner` rows. It names the original only by
+the day it was filed, kept in `filing.date_of_original_submission` (0030), and
+the loader links it as `amends_id` to the issuer's Form 4 filed that day that
+shares an owner with it, whichever of the two loads first. In a chain of
+amendments, only the latest filed keeps its lines.
+
+**Derivative lines keep their own `shares` and `price_per_share`**: the count
+of options or RSUs, and what was paid for each, usually nothing. So
+`value_usd` is what a line cost, on every line.
+
+**`security_id` is linked per filing** from `issuer_cik` through
+`sec_company_ticker`, to the security each of the issuer's tickers names on the
+earliest trade's day. The filing's symbol chooses between classes. None, or
+more than one, leaves it null.
 
 **`transaction_date` is in both keys for partitioning.** It adds nothing to
 either today, since a line has one date. Postgres requires the partition key in
@@ -893,7 +908,7 @@ SEC's `company_tickers.json` (`0029_form4_crawl`): about 10,000 listed
 companies, a row per ticker with its company's CIK. It is the only place the
 schema joins a security to a CIK. `crawl-form4` refreshes it on each `held` run,
 and joins `security.ticker` to it with the share-class dot turned into SEC's
-dash, to bound the crawl to held issuers. The insider loader can use it to link
+dash, to bound the crawl to held issuers. The insider loader uses it to link
 an issuer CIK back to a security. A ticker missing from a later file is kept
 with its old `seen_at`, because SEC lists only today's companies. A ticker given
 to a new company moves to the new CIK. Not foreign-keyed to `security`, for

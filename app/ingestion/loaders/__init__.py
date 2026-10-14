@@ -8,6 +8,22 @@ was designed to be.
 """
 
 from app.ingestion.loaders.filing import LoadResult, load_filing
+from app.ingestion.loaders.insider import (
+    AmendmentLink,
+    Form4LoadResult,
+    SecurityLink,
+    load_form4,
+)
 from app.ingestion.loaders.thirteen_f_list import AdditionsCheck, check_additions, load_13f_list
 
-__all__ = ["AdditionsCheck", "LoadResult", "check_additions", "load_13f_list", "load_filing"]
+__all__ = [
+    "AdditionsCheck",
+    "AmendmentLink",
+    "Form4LoadResult",
+    "LoadResult",
+    "SecurityLink",
+    "check_additions",
+    "load_13f_list",
+    "load_filing",
+    "load_form4",
+]

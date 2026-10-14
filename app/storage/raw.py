@@ -28,6 +28,10 @@ own filename. Built only by :func:`thirteen_f_key`, so the layout has one home.
 Every document of one filing shares a prefix (:func:`thirteen_f_prefix`), which
 is what :meth:`RawStore.list` is for.
 
+``raw/form4/{cik}/{accession_no}/{filename}`` — a Form 4 or 4/A, laid out as a
+13F is, under the CIK whose archive directory it was fetched from. Built only
+by :func:`form4_key`; :func:`form4_prefix` names one filing's.
+
 ``raw/13f-list/{quarter}/{filename}`` — the SEC's Official List of Section 13(f)
 Securities for one quarter (``2026Q1``), under the SEC's own filename. Built only
 by :func:`thirteen_f_list_key`; :func:`thirteen_f_list_prefix` names a quarter's.
@@ -130,10 +134,7 @@ def thirteen_f_prefix(cik: int | str, accession_no: str) -> str:
 
     :raises ValueError: If either is not the shape it should be.
     """
-    digits = str(cik).strip()
-    if not digits.isdigit() or len(digits) > 10:
-        raise ValueError(f"{cik!r} is not a CIK: expected up to ten digits")
-    return f"raw/13f/{int(digits):010d}/{normalise_accession(accession_no)}/"
+    return _filing_prefix("13f", cik, accession_no)
 
 
 def thirteen_f_key(cik: int | str, accession_no: str, filename: str) -> str:
@@ -145,10 +146,37 @@ def thirteen_f_key(cik: int | str, accession_no: str, filename: str) -> str:
 
     :raises ValueError: If ``filename`` would not be a single path segment.
     """
+    return _filing_key(thirteen_f_prefix(cik, accession_no), filename)
+
+
+def form4_prefix(cik: int | str, accession_no: str) -> str:
+    """``raw/form4/0001045810/0002152188-26-000007/`` — one Form 4's documents.
+
+    :raises ValueError: As :func:`thirteen_f_prefix`.
+    """
+    return _filing_prefix("form4", cik, accession_no)
+
+
+def form4_key(cik: int | str, accession_no: str, filename: str) -> str:
+    """``raw/form4/{cik}/{accession_no}/{filename}``, EDGAR's filename unaltered.
+
+    :raises ValueError: As :func:`thirteen_f_key`.
+    """
+    return _filing_key(form4_prefix(cik, accession_no), filename)
+
+
+def _filing_prefix(family: str, cik: int | str, accession_no: str) -> str:
+    digits = str(cik).strip()
+    if not digits.isdigit() or len(digits) > 10:
+        raise ValueError(f"{cik!r} is not a CIK: expected up to ten digits")
+    return f"raw/{family}/{int(digits):010d}/{normalise_accession(accession_no)}/"
+
+
+def _filing_key(prefix: str, filename: str) -> str:
     if "/" in filename:
         # validate_key would accept it as two segments; a filename is one.
         raise ValueError(f"{filename!r} is not a raw store key segment")
-    return validate_key(thirteen_f_prefix(cik, accession_no) + filename)
+    return validate_key(prefix + filename)
 
 
 def thirteen_f_list_prefix(period: date) -> str:

@@ -174,9 +174,28 @@ What it decides:
 - **Forms 3 and 5 are refused.** They share the `ownershipDocument` schema.
 
 The document's filename is not fixed. It depends on the filing agent
-(`form4.xml`, `wk-form4_*.xml`, `edgardoc.xml`, `ownership.xml`...), so the
-loader has to find it in the filing's `index.json`. Every filing in that week
-had exactly one `.xml` file.
+(`form4.xml`, `wk-form4_*.xml`, `edgardoc.xml`, `ownership.xml`...), so
+`ingest-form4` finds it in the filing's `index.json` and confirms its root is
+`ownershipDocument`. Every filing in that week had exactly one `.xml` file.
+The acceptance time comes from the filing's SGML header
+(`{accession}.hdr.sgml`, `<ACCEPTANCE-DATETIME>`, New York time), which agrees
+with EDGAR's index page. The submissions JSON's `acceptanceDateTime` for the
+same NVIDIA 4/A is eight hours later, not four.
+
+The loader ([app/ingestion/loaders/insider.py](../app/ingestion/loaders/insider.py)):
+
+- **Lines are attributed to the first owner**, and every owner gets a
+  `reporting_owner` row. `insider` is upserted on CIK, keeping the name the
+  latest-filed filing used.
+- **Derivative lines keep their own shares and price**: how many options or
+  RSUs, and what was paid for each. Not the underlying shares and the strike,
+  which would value an exercise at money nobody paid.
+- **A 4/A supersedes its original**, found by issuer, filing day and a shared
+  owner. Its lines are deleted, whichever loads first.
+- **`security_id`** is linked from the issuer CIK via `sec_company_ticker`.
+  On the dev week, 272 of 280 filings linked, and every linked line's ticker
+  matched the filing's own symbol. The other 8 were Lennar, whose symbol
+  is `LEN, LEN.B`.
 
 ## The two traps
 
@@ -394,7 +413,8 @@ become one by accident.
 Celery, with Redis as the broker. Beat schedule in `app/jobs/schedule.py`:
 
 - **Daily** — `crawl-form4 --catch-up`: every day since the watermark. Late
-  evening New York time, or the next morning, so the day's index exists.
+  evening New York time, or the next morning, so the day's index exists. Then
+  `ingest-form4` to load what it queued.
 - **Daily during filing season** — poll tracked filers' submissions JSON for new
   13Fs. Outside the ~three weeks after each due date this finds nothing, so it
   drops to weekly.

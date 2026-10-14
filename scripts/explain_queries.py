@@ -85,7 +85,6 @@ from app.api.routers.stocks import (
 )
 from app.api.routers.stocks import (
     implied_prices_query,
-    lookup_query,
     owners_query,
     splits_query,
     suggestions_query,
@@ -93,6 +92,7 @@ from app.api.routers.stocks import (
     totals_query,
 )
 from app.core.config import get_settings
+from app.db.queries.tickers import lookup_query
 from app.db.queries.top_holding import top_holdings, top_holdings_ranked
 from app.db.session import create_engine
 from app.derived.views import QUARTER_FLOWS, YEAR_FLOWS

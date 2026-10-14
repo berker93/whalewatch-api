@@ -1040,7 +1040,7 @@ Finds Form 4s. For each day it reads EDGAR's daily form index, keeps the `4` and
 `4/A` lines whose CIK is an issuer in the universe, and queues the filings not
 already loaded in `pending_filing`
 ([app/ingestion/insider_discovery.py](app/ingestion/insider_discovery.py)).
-`backfill` leaves these rows alone. The insider loader drains them.
+`backfill` leaves these rows alone. `ingest-form4` drains them.
 
 ```
 crawl-form4  held universe: 743 issuers at least 1% of a portfolio in the four quarters to 2026-06-30
@@ -1084,6 +1084,53 @@ watermark) queues its filings without moving the watermark, so `--catch-up`
 never skips a day. The first run with `--from` or `--date` sets it, and
 `--catch-up` without one exits 1. Re-crawling a day is safe: the queue never
 holds a filing twice.
+
+### `ingest-form4 [--limit N] [--concurrency N] [--force]`
+
+Loads the Form 4s and 4/As `crawl-form4` queued, oldest filing date first
+([app/ingestion/loaders/insider.py](app/ingestion/loaders/insider.py)). For each
+one it fetches the directory listing, the XML (whatever the agent named it) and
+the filing's SGML header (for the acceptance time), archives all three under
+`raw/form4/`, parses, and writes the `filing`, an `insider` per reporting
+owner (upserted on CIK), their `reporting_owner` rows and the transaction
+lines. The queue row is marked `done` in the same transaction.
+
+```
+ingest-form4  280 Form 4s, 280 to ingest · 5 at a time
+[1/280] 0000789570-26-000094 4    MGM Resorts International · Molino Ayesha Khanna · 3 lines · MGM
+[45/280] 0001193125-26-418151 4    LENNAR CORP /NEW/ · Banse Amy · 1 line · LEN, LEN.B · security ambiguous
+[280/280] 0002152188-26-000007 4/A  NVIDIA CORP · Parker Nicholas P. · 1 line · NVDA · amends: original not loaded
+ingest-form4  done: loaded 280 · skipped 0 · failed 0 · elapsed 1m46s
+  lines       698 written
+  securities  272 linked, 8 ambiguous
+  4/As        5 original not loaded
+```
+
+| Flag | |
+| --- | --- |
+| `--limit` | Work on at most N filings |
+| `--concurrency` | Filings in flight at once (default 5) |
+| `--force` | Also reload Form 4s already loaded, from the raw store, replacing their owners and lines. No EDGAR requests |
+
+**Idempotent.** A loaded filing is skipped without a request. Lines conflict on
+`(filing_id, line_number, transaction_date)` and `ON CONFLICT DO NOTHING` drops
+them, so a redelivered load writes nothing and the rows keep their ids.
+
+**A 4/A replaces the Form 4 it amends.** It names it only by the day it was
+filed (`dateOfOriginalSubmission`), so the original is the issuer's Form 4 filed
+that day that shares a reporting owner with the 4/A. It becomes the 4/A's
+`amends_id` and loses its lines. The two can load in either order: an original
+loaded after its amendment is superseded at once. Several candidates with the
+same owners leave the 4/A unlinked rather than guessed.
+
+**The security** comes from the issuer's CIK, through SEC's ticker map, to the
+security each of its tickers names on the day of the earliest trade. An issuer
+with several classes is narrowed by the filing's own symbol. When that leaves
+none or more than one, `security_id` is null and the lines load anyway.
+
+A filing that fails is recorded on its queue row and the run carries on. Exits
+1 if any failed, 130 if interrupted. Nothing is published, so no views are
+refreshed and no cache is dropped.
 
 ### `runs [--job NAME] [--limit N]`
 

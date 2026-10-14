@@ -1,11 +1,14 @@
 """Tickers as of a date, and tickers two securities claim at once.
 
 A ticker is a label at the API's edge. Inside, everything joins on
-``security_id``. These are the two places a ticker is read with a date:
+``security_id``. These are the places a ticker is read with a date:
 
 * :func:`ticker_labels`, the columns every response that names a security in a
   period selects: the ticker *then*, the ticker *now*, and whether it is still
   listed. Berkshire's 2021Q4 portfolio shows ``FB`` with ``META`` beside it.
+* :func:`lookup_query`, the other way round: the security a ticker names on a
+  date. ``/v1/stocks/{ticker}`` reads its path with it, and the insider loader
+  the tickers SEC lists for a Form 4's issuer.
 * :func:`ticker_collisions`, the one query here that compares tickers across
   securities, because a collision is precisely two securities answering to
   the same label at the same time.
@@ -17,9 +20,25 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import ColumnElement, Date, and_, func, literal, or_, select, text
+from sqlalchemy import (
+    BindParameter,
+    ColumnElement,
+    Date,
+    Integer,
+    Select,
+    and_,
+    cast,
+    func,
+    literal,
+    literal_column,
+    or_,
+    select,
+    text,
+    union_all,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.position_snapshot import PositionSnapshot
 from app.db.models.security import Security
 from app.db.models.security_alias import SecurityAlias
 
@@ -63,6 +82,75 @@ def ticker_labels(on: Any, *, prefix: str = "") -> list[ColumnElement[Any]]:
         Security.ticker.label(f"{prefix}current_ticker"),
         Security.delisted_by.label(f"{prefix}delisted_by"),
     ]
+
+
+def _last_held(security_id: Any) -> Any:
+    """The newest period ``security_id`` is in ``position_snapshot``: one
+    entry of the (security_id, period_of_report) index, read backwards."""
+    snapshot = PositionSnapshot
+    return (
+        select(func.max(snapshot.period_of_report))
+        .where(snapshot.security_id == security_id)
+        .scalar_subquery()
+    )
+
+
+def lookup_query(
+    key: str | BindParameter[str], *, cusip: bool, on: date | BindParameter[date] | None = None
+) -> Select[Any]:
+    """The security ``key`` names on ``on``, as one row, or none.
+
+    Matched against, in order: a ticker it traded under on ``on``
+    (``security_alias``); its current ticker; a ticker it traded under at any
+    other time, the most recent first; and, with ``cusip``, its CUSIP. Within
+    a tier, the security held most recently wins, then the newer row. See
+    :mod:`app.api.routers.stocks` for why.
+
+    :param key: As stored (:func:`~app.core.tickers.normalise_ticker`).
+    :param cusip: Whether to try ``key`` as a CUSIP too. Only a nine-character
+        key can be one, and comparing a longer one with ``char(9)`` would
+        either fail or, cast, compare its first nine characters.
+    :param on: The date being viewed. Today when ``None``.
+    """
+    alias = SecurityAlias
+    day: Any = on if on is not None else func.current_date()
+    # How recent a range is: an open one is the most recent of all.
+    recency = func.coalesce(alias.valid_to, literal(date.max, Date))
+    always = literal(date.max, Date)
+    candidates = [
+        select(
+            alias.security_id.label("security_id"),
+            literal_column("0", Integer).label("via"),
+            recency.label("recency"),
+        ).where(func.upper(alias.ticker) == key, valid_on(day, alias)),
+        select(Security.id, literal_column("1", Integer), always).where(
+            func.upper(Security.ticker) == key
+        ),
+        select(alias.security_id, literal_column("2", Integer), recency).where(
+            func.upper(alias.ticker) == key
+        ),
+    ]
+    if cusip:
+        # Cast, or a parameter shared with the text comparisons above is typed
+        # text, cusip is compared as text, and uq_security_cusip is no use.
+        candidates.append(
+            select(Security.id, literal_column("3", Integer), always).where(
+                Security.cusip == cast(key, Security.cusip.type)
+            )
+        )
+    matches = union_all(*candidates).subquery("matches")
+
+    return (
+        select(Security.id, Security.cusip, Security.ticker, Security.name, Security.delisted_by)
+        .join(matches, matches.c.security_id == Security.id)
+        .order_by(
+            matches.c.via,
+            matches.c.recency.desc(),
+            _last_held(Security.id).desc().nulls_last(),
+            Security.id.desc(),
+        )
+        .limit(1)
+    )
 
 
 def _as_date(on: Any) -> Any:

@@ -254,6 +254,16 @@ class Filing(Base):
     and the order matters.
     """
 
+    date_of_original_submission: Mapped[date | None]
+    """A 4/A's ``dateOfOriginalSubmission``: the day the Form 4 it amends was
+    filed. Null on everything else.
+
+    The only pointer a 4/A has to what it amends, since the document names no
+    accession number. The insider loader turns it into :attr:`amends_id` when
+    the original is loaded, whichever of the two arrives first, which is why it
+    is kept after that: an original loaded later finds its amendment by it.
+    """
+
     amendment_no: Mapped[int | None] = mapped_column(SmallInteger)
     """The cover page's ``<amendmentNo>``: which amendment to the period this is.
 

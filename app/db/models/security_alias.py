@@ -7,7 +7,7 @@ can name one security in 2019 and another in 2024. Each row here says "this
 security traded as this ticker over this range", and that is what lets
 
 * ``/v1/stocks/{ticker}`` find the security a ticker meant *in the period
-  being viewed* (:func:`app.api.routers.stocks.lookup_query`), and
+  being viewed* (:func:`app.db.queries.tickers.lookup_query`), and
 * every row that belongs to a period show the ticker as it was then, with the
   current one beside it (:func:`app.db.queries.tickers.ticker_at`).
 

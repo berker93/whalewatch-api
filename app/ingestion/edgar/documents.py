@@ -178,7 +178,7 @@ async def fetch_13f_documents(
     # in it hangs off. Derived rather than rebuilt from the parts, so there is
     # one place that knows how an archive URL is spelled.
     base_url = index_url.rsplit("/", 1)[0]
-    names = _xml_names(listing)
+    names = xml_names(listing)
 
     primary_name = next((name for name in names if name.casefold() == PRIMARY_DOC_NAME), None)
     candidates = _ranked([name for name in names if name != primary_name])
@@ -286,7 +286,7 @@ async def _fetch_information_table(
     )
 
 
-def _xml_names(listing: Any) -> list[str]:
+def xml_names(listing: Any) -> list[str]:
     """The XML filenames in an EDGAR ``index.json``, in the order it listed them.
 
     The document is ``{"directory": {"item": [{"name": ..., "size": ...}, ...]}}``,

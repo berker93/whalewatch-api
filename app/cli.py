@@ -1,7 +1,7 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
-fetch-quotes, crawl-form4.
+fetch-quotes, crawl-form4, ingest-form4.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -40,6 +40,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli fetch-quotes --ticker NVDA
     uv run python -m app.cli crawl-form4 --from 2026-07-01
     uv run python -m app.cli crawl-form4 --catch-up
+    uv run python -m app.cli ingest-form4
 
 Every run is recorded
 ---------------------
@@ -145,7 +146,12 @@ from app.derived.reconcile import INVARIANTS, SAMPLE, Reconciliation, reconcile
 from app.derived.scope import Pair, Scope, filing_pairs, resolve_scope
 from app.derived.security_split import SplitRebuild, Verdict, ratio_label
 from app.derived.views import MATERIALISED_VIEWS, Refreshed, refresh_order, refresh_views
-from app.ingestion.archive import archive_13f_documents, read_13f_documents
+from app.ingestion.archive import (
+    archive_13f_documents,
+    archive_form4_documents,
+    read_13f_documents,
+    read_form4_documents,
+)
 from app.ingestion.backfill import (
     BackfillPlan,
     BackfillRun,
@@ -175,6 +181,7 @@ from app.ingestion.edgar.documents import (
     FilingDocumentsError,
     fetch_13f_documents,
 )
+from app.ingestion.edgar.form4_documents import fetch_form4_documents
 from app.ingestion.edgar.submissions import (
     Submission,
     SubmissionMalformedError,
@@ -228,6 +235,7 @@ from app.ingestion.insider_discovery import (
     new_york_today,
     sp500_universe,
 )
+from app.ingestion.insider_ingest import plan_form4
 from app.ingestion.investors import (
     DEFAULT_INVESTORS_PATH,
     InvestorEntry,
@@ -239,13 +247,18 @@ from app.ingestion.investors import (
 )
 from app.ingestion.loaders import (
     AdditionsCheck,
+    AmendmentLink,
+    Form4LoadResult,
     LoadResult,
+    SecurityLink,
     check_additions,
     load_13f_list,
     load_filing,
+    load_form4,
 )
 from app.ingestion.normalisation import NormalisedFiling, NoteKind, normalise_filing
 from app.ingestion.parsers.errors import FilingParseError
+from app.ingestion.parsers.form4 import Form4Document, parse_form4
 from app.ingestion.parsers.thirteen_f import (
     InformationTable,
     PrimaryDoc,
@@ -1696,6 +1709,287 @@ def _duration(seconds: float) -> str:
         return f"{minutes}m{whole_seconds:02d}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h{minutes:02d}m"
+
+
+# --- ingest-form4 ------------------------------------------------------------
+
+
+@app.command("ingest-form4")
+def ingest_form4_command(
+    concurrency: Annotated[
+        int,
+        typer.Option(
+            "--concurrency",
+            metavar="N",
+            min=1,
+            max=_MAX_CONCURRENCY,
+            help="Filings in flight at once. All of them share one EDGAR rate limit.",
+        ),
+    ] = 5,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            metavar="N",
+            min=1,
+            help="Work on at most N filings. Skipped ones do not count.",
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Also reload Form 4s already loaded, from their archived documents, "
+                "replacing their owners and lines. Makes no EDGAR request for them."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Load every queued Form 4 and 4/A: insiders, owners and transaction lines.
+
+    Works through the Form 4s crawl-form4 queued in pending_filing, oldest
+    first. Each is fetched (its directory listing, its XML and its header),
+    archived, parsed and loaded, and its queue row marked done in the same
+    transaction. A filing already loaded is skipped without an EDGAR request.
+
+    A 4/A replaces the Form 4 it amends: the original's lines are deleted,
+    whichever of the two loads first.
+
+    A filing that fails is reported and recorded on its queue row, and the run
+    carries on. Exits 1 if any filing failed or EDGAR blocked the run, and 130
+    if Ctrl-C stopped it.
+    """
+    try:
+        code = asyncio.run(_ingest_form4(concurrency=concurrency, limit=limit, force=force))
+    except KeyboardInterrupt:
+        typer.secho(
+            "aborted: the filings in flight were rolled back; re-run to resume",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=_INTERRUPTED) from None
+    if code:
+        raise typer.Exit(code=code)
+
+
+async def _ingest_form4(*, concurrency: int, limit: int | None, force: bool) -> int:
+    """Plan, load, summarise. Returns the exit code.
+
+    Nothing is published: no snapshot or view reads these tables, and the
+    API serves none of them yet, so there is nothing to refresh or drop.
+    """
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    started = time.monotonic()
+    loaded: dict[str, _Form4Loaded] = {}
+
+    async with track_run(
+        settings, "ingest-form4", concurrency=concurrency, limit=limit, force=force
+    ) as run:
+        engine = create_engine(settings)
+        sessions = create_session_factory(engine)
+        ran = BackfillRun(results=(), rate_limited=None)
+        try:
+            async with sessions.begin() as session:
+                plan = await plan_form4(session, force=force, limit=limit)
+            _echo_form4_plan(plan, concurrency=concurrency)
+            run.items_seen = len(plan.work)
+
+            if plan.work:
+                async with open_raw_store(settings) as store, EdgarClient(settings) as edgar:
+                    shared = _Shared(sessions=sessions, store=store, edgar=edgar)
+                    with stop_on_interrupt(notify=_echo_stopping) as stop:
+                        ran = await run_backfill(
+                            plan.work,
+                            process=partial(_ingest_form4_filing, shared, loaded),
+                            on_failure=partial(record_attempt, sessions),
+                            on_result=_form4_progress(len(plan.work), loaded),
+                            concurrency=concurrency,
+                            stop=stop,
+                        )
+        finally:
+            await engine.dispose()
+
+        run.items_written = ran.count(Outcome.OK)
+        run.errors.extend(
+            f"{result.filing.accession_no}: {result.error}"
+            for result in ran.results
+            if result.outcome is Outcome.FAILED
+        )
+        not_started = ran.count(Outcome.NOT_STARTED)
+        if not_started:
+            run.errors.append(f"stopped with {not_started} not started; re-run to resume")
+        results = [entry.result for entry in loaded.values()]
+        run.metrics |= {
+            "lines_written": sum(result.lines_written for result in results),
+            "lines_superseded": sum(result.lines_superseded for result in results),
+            "security_links": dict(Counter(result.security_link.value for result in results)),
+            "amendments": dict(
+                Counter(result.amendment.value for result in results if result.amendment)
+            ),
+        }
+
+    _echo_form4_summary(plan, ran, loaded, elapsed=time.monotonic() - started)
+    if ran.rate_limited is not None or ran.count(Outcome.FAILED):
+        return 1
+    return _INTERRUPTED if not_started else 0
+
+
+@dataclass(frozen=True, slots=True)
+class _Form4Loaded:
+    """What one filing's load did, for its progress line and the summary."""
+
+    document: Form4Document
+    result: Form4LoadResult
+
+
+async def _ingest_form4_filing(
+    shared: _Shared, loaded: dict[str, _Form4Loaded], filing: PlannedFiling
+) -> FilingResult:
+    """One Form 4: fetched and archived, or read back from the archive when
+    it is loaded already (``--force``), then parsed and loaded, replacing what
+    an earlier load wrote in the second case."""
+    accession = filing.accession_no
+    if filing.loaded is None:
+        documents = await fetch_form4_documents(
+            shared.edgar, cik=filing.cik, accession_no=accession
+        )
+        raw_prefix = await archive_form4_documents(
+            shared.store, documents, cik=filing.cik, accession_no=accession
+        )
+    else:
+        if filing.loaded.raw_key is None:
+            raise CommandError(f"{accession} was loaded without its documents archived")
+        raw_prefix = filing.loaded.raw_key
+        documents = await read_form4_documents(
+            shared.store, raw_prefix, directory_url=_directory_url(filing)
+        )
+
+    document = parse_form4(documents.document)
+    async with shared.sessions.begin() as session:
+        result = await load_form4(
+            session,
+            accession_no=accession,
+            filed_at=documents.filed_at,
+            document=document,
+            raw_key=raw_prefix,
+            source_url=documents.document_url,
+            replace=filing.loaded is not None,
+        )
+        await mark_ingested(session, accession)
+    logger.info(
+        "form4.ingested",
+        filing_id=result.filing_id,
+        issuer_cik=document.issuer.cik,
+        lines=result.lines,
+        lines_written=result.lines_written,
+        security_link=result.security_link.value,
+        superseded_by=result.superseded_by,
+    )
+    loaded[accession] = _Form4Loaded(document=document, result=result)
+    return FilingResult(filing=filing, outcome=Outcome.OK, period=None, rows=result.lines)
+
+
+def _echo_form4_plan(plan: BackfillPlan, *, concurrency: int) -> None:
+    total = len(plan.work) + len(plan.skipped) + plan.held_back
+    parts = [_count(total, "Form 4")]
+    if plan.skipped:
+        parts.append(f"{len(plan.skipped)} already loaded")
+    if plan.to_reprocess:
+        parts.append(f"{plan.to_reprocess} to reload from the raw store")
+    if plan.to_ingest:
+        parts.append(f"{plan.to_ingest} to ingest")
+    if plan.held_back:
+        parts.append(f"{plan.held_back} held back by --limit")
+    typer.echo(
+        f"ingest-form4  {', '.join(parts)}" + (f" · {concurrency} at a time" if plan.work else "")
+    )
+    if not total:
+        _line("hint", "nothing is queued or loaded; crawl-form4 finds the work")
+
+
+def _form4_progress(total: int, loaded: dict[str, _Form4Loaded]) -> Callable[[FilingResult], None]:
+    """``[12/280] 0001062993-26-000001 4/A  Elastic N.V. · ABBASI SOHAIB · 3 lines · ESTC``."""
+    finished = 0
+
+    def echo(result: FilingResult) -> None:
+        nonlocal finished
+        finished += 1
+        accession = result.filing.accession_no
+        entry = loaded.get(accession)
+        if entry is None:
+            typer.echo(
+                f"[{finished}/{total}] {accession} · {result.outcome.value} · {result.error}"
+            )
+            return
+        typer.echo(f"[{finished}/{total}] {accession} {_form4_line(entry)}")
+
+    return echo
+
+
+def _form4_line(entry: _Form4Loaded) -> str:
+    document, result = entry.document, entry.result
+    parts = [
+        document.issuer.name,
+        document.owners[0].name
+        + (f" +{len(document.owners) - 1}" if len(document.owners) > 1 else ""),
+        _count(result.lines, "line"),
+        document.issuer.trading_symbol or "no symbol",
+    ]
+    if result.security_link is not SecurityLink.LINKED:
+        parts.append(f"security {result.security_link.value}")
+    if result.amendment is not None:
+        parts.append(f"amends: {result.amendment.value}")
+    if result.lines_superseded:
+        parts.append(f"replaced {_count(result.lines_superseded, 'line')}")
+    if result.superseded_by is not None:
+        parts.append("superseded by a 4/A")
+    return f"{document.document_type:<3}  " + " · ".join(parts)
+
+
+def _echo_form4_summary(
+    plan: BackfillPlan, run: BackfillRun, loaded: dict[str, _Form4Loaded], *, elapsed: float
+) -> None:
+    not_started = run.count(Outcome.NOT_STARTED)
+    counts = [
+        f"loaded {run.count(Outcome.OK)}",
+        f"skipped {len(plan.skipped)}",
+        f"failed {run.count(Outcome.FAILED)}",
+    ]
+    if not_started:
+        counts.append(f"not started {not_started}")
+    counts.append(f"elapsed {_duration(elapsed)}")
+    typer.echo(f"ingest-form4  {'stopped' if not_started else 'done'}: {' · '.join(counts)}")
+
+    results = [entry.result for entry in loaded.values()]
+    if results:
+        written = sum(result.lines_written for result in results)
+        superseded = sum(result.lines_superseded for result in results)
+        _line(
+            "lines",
+            f"{written:,} written" + (f", {superseded:,} replaced by 4/As" if superseded else ""),
+        )
+        links = Counter(result.security_link for result in results)
+        _line(
+            "securities",
+            ", ".join(f"{links[link]} {link.value}" for link in SecurityLink if links[link]),
+        )
+        amendments = Counter(result.amendment for result in results if result.amendment)
+        if amendments:
+            _line(
+                "4/As",
+                ", ".join(
+                    f"{amendments[link]} {link.value}" for link in AmendmentLink if amendments[link]
+                ),
+            )
+    for result in run.results:
+        if result.outcome is Outcome.FAILED:
+            _line("failed", f"{result.filing.accession_no}  {result.error}")
+    if run.rate_limited is not None:
+        _line("error", f"EDGAR blocked the run: {run.rate_limited}. Re-run once it lifts")
+    elif not_started:
+        _line("interrupted", f"{not_started} not started. Re-run to resume")
 
 
 # --- seed-investors ----------------------------------------------------------

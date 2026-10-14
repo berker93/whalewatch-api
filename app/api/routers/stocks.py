@@ -57,13 +57,11 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, HTTPException, Path, Query, status
 from sqlalchemy import (
     BindParameter,
-    Date,
     Float,
     Integer,
     Row,
     Select,
     and_,
-    cast,
     exists,
     func,
     literal,
@@ -108,7 +106,7 @@ from app.db.models import Filer, PositionChange, PositionSnapshot, Security, Sec
 from app.db.models.implied_price import ImpliedPrice
 from app.db.models.security_split import SecuritySplit
 from app.db.queries.returns import estimated_return
-from app.db.queries.tickers import valid_on
+from app.db.queries.tickers import lookup_query
 from app.derived.implied_price import PRICE_PLACES
 from app.derived.views import CONSENSUS_HOLDINGS, FILER_SUMMARY, QUARTER_FLOWS
 
@@ -140,71 +138,6 @@ _PRICE_QUANTUM: Final = Decimal(1).scaleb(-PRICE_PLACES)
 def _key(ticker: str) -> str:
     """What every comparison is against: the path segment, spelled as stored."""
     return normalise_ticker(ticker)
-
-
-def _last_held(security_id: Any) -> Any:
-    """The newest period ``security_id`` is in ``position_snapshot``: one
-    entry of the (security_id, period_of_report) index, read backwards."""
-    snapshot = PositionSnapshot
-    return (
-        select(func.max(snapshot.period_of_report))
-        .where(snapshot.security_id == security_id)
-        .scalar_subquery()
-    )
-
-
-def lookup_query(
-    key: str | BindParameter[str], *, cusip: bool, on: PeriodEnd | None = None
-) -> Select[Any]:
-    """The security ``key`` names on ``on``, as one row, or none.
-
-    See the module docstring for the order of tiers.
-
-    :param key: As stored (:func:`_key`).
-    :param cusip: Whether to try ``key`` as a CUSIP too. Only a nine-character
-        key can be one, and comparing a longer one with ``char(9)`` would
-        either fail or, cast, compare its first nine characters.
-    :param on: The date being viewed. Today when ``None``.
-    """
-    alias = SecurityAlias
-    day: Any = on if on is not None else func.current_date()
-    # How recent a range is: an open one is the most recent of all.
-    recency = func.coalesce(alias.valid_to, literal(date.max, Date))
-    always = literal(date.max, Date)
-    candidates = [
-        select(
-            alias.security_id.label("security_id"),
-            literal_column("0", Integer).label("via"),
-            recency.label("recency"),
-        ).where(func.upper(alias.ticker) == key, valid_on(day, alias)),
-        select(Security.id, literal_column("1", Integer), always).where(
-            func.upper(Security.ticker) == key
-        ),
-        select(alias.security_id, literal_column("2", Integer), recency).where(
-            func.upper(alias.ticker) == key
-        ),
-    ]
-    if cusip:
-        # Cast, or a parameter shared with the text comparisons above is typed
-        # text, cusip is compared as text, and uq_security_cusip is no use.
-        candidates.append(
-            select(Security.id, literal_column("3", Integer), always).where(
-                Security.cusip == cast(key, Security.cusip.type)
-            )
-        )
-    matches = union_all(*candidates).subquery("matches")
-
-    return (
-        select(Security.id, Security.cusip, Security.ticker, Security.name, Security.delisted_by)
-        .join(matches, matches.c.security_id == Security.id)
-        .order_by(
-            matches.c.via,
-            matches.c.recency.desc(),
-            _last_held(Security.id).desc().nulls_last(),
-            Security.id.desc(),
-        )
-        .limit(1)
-    )
 
 
 def suggestions_query(key: str) -> Select[Any]:

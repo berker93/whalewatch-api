@@ -12,7 +12,7 @@ a director of Berkshire and a 10% owner of other companies, and a CFO who joins
 the board becomes a director in March without having been one in January.
 """
 
-from sqlalchemy import CHAR, BigInteger, Boolean, ForeignKey, Text, false
+from sqlalchemy import CHAR, BigInteger, Boolean, ForeignKey, Index, Text, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -34,8 +34,10 @@ class Insider(Base):
     """
 
     name: Mapped[str] = mapped_column(Text)
-    """``rptOwnerName`` as the latest filing loaded spelled it. EDGAR writes
-    people surname first ("BUFFETT WARREN E"), and nothing here reorders it."""
+    """``rptOwnerName`` as the latest-filed filing loaded spelled it, whatever
+    order they were loaded in, so re-loading an old filing does not bring back
+    an old spelling. EDGAR writes people surname first ("BUFFETT WARREN E"),
+    and nothing here reorders it."""
 
 
 class ReportingOwner(Base):
@@ -81,3 +83,9 @@ class ReportingOwner(Base):
 
     other_text: Mapped[str | None] = mapped_column(Text)
     """``otherText``: what "other" means, when :attr:`is_other` is checked."""
+
+    __table_args__ = (
+        # An insider's filings: the loader's latest-spelling rule, and the
+        # RESTRICT check when an insider row is deleted.
+        Index("ix_reporting_owner_insider_id", "insider_id"),
+    )

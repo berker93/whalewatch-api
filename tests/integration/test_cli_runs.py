@@ -74,6 +74,8 @@ TRACKED: Final = {
     "fetch-quotes": ("fetch-quotes", [], "success"),
     # No watermark to catch up from, which it finds before asking EDGAR anything.
     "crawl-form4": ("crawl-form4", ["--catch-up"], "failed"),
+    # Nothing queued, so nothing is fetched.
+    "ingest-form4": ("ingest-form4", [], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.

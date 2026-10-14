@@ -109,19 +109,28 @@ class InsiderTransaction(Base):
     Null otherwise, and that blocks nothing: the row is still loaded, still in
     the feed, and still found by :attr:`issuer_cik`.
 
-    Written by the insider loader (INS-4), from :attr:`issuer_cik`,
-    :attr:`issuer_ticker` and :attr:`security_title`. A CIK alone cannot always
-    say which security: Alphabet is one CIK and two listed classes. On the
-    issuer's security for a derivative line too, which is the underlying."""
+    Written by the insider loader, once per filing, from :attr:`issuer_cik`
+    through SEC's ticker map, with :attr:`issuer_ticker` to choose between an
+    issuer's classes. A CIK alone cannot always say which security: Alphabet
+    is one CIK and two listed classes, and a filing whose symbol names neither
+    is left unlinked. On the issuer's security for a derivative line too,
+    which is the underlying. See :mod:`app.ingestion.loaders.insider`."""
 
     security_title: Mapped[str | None] = mapped_column(Text)
     """``securityTitle`` as filed: "Common Stock", "Class A Common Stock",
     "Stock Option (Right to Buy)"."""
 
     is_derivative: Mapped[bool] = mapped_column(Boolean)
-    """True for a line of the derivative table. :attr:`shares` is then the
-    number of underlying shares, and :attr:`price_per_share` the exercise or
-    conversion price as filed, which is not a market price."""
+    """True for a line of the derivative table: options, RSUs, warrants. Its
+    :attr:`shares` and :attr:`price_per_share` are still the line's own
+    ``transactionShares`` and ``transactionPricePerShare``: how many of the
+    derivative changed hands, and what was paid for each. Not the underlying
+    shares, and not the strike.
+
+    So :attr:`value_usd` is what the trade cost, as on every other line: an
+    option bought on the market has one, and a grant or an exercise, which
+    pays nothing for the derivative itself, has none. Underlying shares times
+    strike would put an exercise in the feed at a value nobody paid."""
 
     transaction_code: Mapped[str] = mapped_column(CHAR(1))
     """``transactionCode``, raw: P, S, A, M, F, G, C and the rest.

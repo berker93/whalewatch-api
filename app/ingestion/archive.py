@@ -13,6 +13,11 @@ had there, including the candidates rejected as not being the portfolio.
 
 :func:`read_13f_documents` is the way back: the same three files, read from the
 store instead of EDGAR, which is what ``backfill --force`` reparses.
+
+A Form 4 is archived the same way under ``raw/form4/`` (:func:`archive_form4_documents`),
+three files again: the ownership document, ``index.json``, and the filing's
+SGML header, which is where its acceptance time comes from.
+:func:`read_form4_documents` reads them back for ``ingest-form4 --force``.
 """
 
 from __future__ import annotations
@@ -26,17 +31,28 @@ from app.ingestion.edgar.documents import (
     is_cover_page,
     is_information_table,
 )
+from app.ingestion.edgar.form4_documents import (
+    Form4Documents,
+    Form4DocumentsError,
+    accepted_at,
+    is_ownership_document,
+)
 from app.storage.raw import (
     DEFAULT_CONTENT_TYPE,
     RawObjectNotFoundError,
     RawStore,
+    form4_key,
+    form4_prefix,
     thirteen_f_key,
     thirteen_f_prefix,
 )
 
 #: By suffix, because EDGAR's own ``type`` field on a directory item is an icon
 #: name. Anything not listed is one of the XML documents.
-_CONTENT_TYPES: Final = {".json": "application/json"}
+_CONTENT_TYPES: Final = {".json": "application/json", ".sgml": "text/plain"}
+
+#: A Form 4 header's filename ends so; the accession number before it varies.
+_HEADER_SUFFIX: Final = ".hdr.sgml"
 
 #: The directory listing's filename, which EDGAR fixes and the archive keeps.
 _INDEX_NAME: Final = "index.json"
@@ -70,17 +86,49 @@ async def archive_13f_documents(
     if documents.info_table_url is not None and documents.info_table is not None:
         fetched.append((documents.info_table_url, documents.info_table))
 
-    puts = []
-    for url, body in fetched:
-        filename = url.rsplit("/", 1)[-1]
-        key = thirteen_f_key(cik, accession_no, filename)
-        puts.append(store.put(key, body, _content_type(filename), overwrite=overwrite))
+    await _put_all(
+        store,
+        [(thirteen_f_key(cik, accession_no, _filename(url)), body) for url, body in fetched],
+        overwrite=overwrite,
+    )
+    return thirteen_f_prefix(cik, accession_no)
 
-    outcomes = await asyncio.gather(*puts, return_exceptions=True)
+
+async def archive_form4_documents(
+    store: RawStore,
+    documents: Form4Documents,
+    *,
+    cik: str,
+    accession_no: str,
+    overwrite: bool = False,
+) -> str:
+    """Write a Form 4's three documents to ``store``, as
+    :func:`archive_13f_documents` does a 13F's. Returns the filing's prefix."""
+    fetched = (
+        (documents.index_url, documents.index),
+        (documents.document_url, documents.document),
+        (documents.header_url, documents.header),
+    )
+    await _put_all(
+        store,
+        [(form4_key(cik, accession_no, _filename(url)), body) for url, body in fetched],
+        overwrite=overwrite,
+    )
+    return form4_prefix(cik, accession_no)
+
+
+async def _put_all(store: RawStore, objects: list[tuple[str, bytes]], *, overwrite: bool) -> None:
+    """Every put, concurrently; then the first failure, raised as itself."""
+    outcomes = await asyncio.gather(
+        *(
+            store.put(key, body, _content_type(_filename(key)), overwrite=overwrite)
+            for key, body in objects
+        ),
+        return_exceptions=True,
+    )
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome
-    return thirteen_f_prefix(cik, accession_no)
 
 
 async def read_13f_documents(
@@ -135,6 +183,52 @@ async def read_13f_documents(
         info_table_url=None if table is None else f"{directory_url}/{table}",
         info_table=None if table is None else documents[table],
     )
+
+
+async def read_form4_documents(
+    store: RawStore, prefix: str, *, directory_url: str
+) -> Form4Documents:
+    """One Form 4's documents as :func:`archive_form4_documents` stored them.
+
+    :param prefix: The filing's archive prefix, as ``filing.raw_key`` holds it.
+    :param directory_url: The EDGAR directory the documents came from.
+    :raises RawObjectNotFoundError: Nothing is archived under ``prefix``, or
+        its ``index.json`` is missing.
+    :raises Form4DocumentsError: The archive holds no header or not exactly
+        one ownership document.
+    """
+    keys = await store.list(prefix)
+    if not keys:
+        raise RawObjectNotFoundError(prefix)
+    index_key = prefix + _INDEX_NAME
+    if index_key not in keys:
+        raise RawObjectNotFoundError(index_key)
+    headers = [key for key in keys if key.endswith(_HEADER_SUFFIX)]
+    if len(headers) != 1:
+        raise Form4DocumentsError(f"{prefix}: expected one archived filing header, found {headers}")
+    [header_key] = headers
+
+    others = {key: await store.get(key) for key in keys if key not in (index_key, header_key)}
+    found = [key for key, body in others.items() if is_ownership_document(body)]
+    if len(found) != 1:
+        raise Form4DocumentsError(
+            f"{prefix}: expected one archived ownership document, found {found or 'none'}"
+        )
+    [document_key] = found
+    header = await store.get(header_key)
+    return Form4Documents(
+        index_url=f"{directory_url}/{_INDEX_NAME}",
+        index=await store.get(index_key),
+        document_url=f"{directory_url}/{document_key.removeprefix(prefix)}",
+        document=others[document_key],
+        header_url=f"{directory_url}/{header_key.removeprefix(prefix)}",
+        header=header,
+        filed_at=accepted_at(header),
+    )
+
+
+def _filename(url: str) -> str:
+    return url.rsplit("/", 1)[-1]
 
 
 def _content_type(filename: str) -> str:
