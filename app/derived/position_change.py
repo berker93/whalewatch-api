@@ -370,7 +370,7 @@ def _compared(held: CTE, periods: CTE) -> Select[Any]:
         # which is a first period or a first appearance.
         return case((held_then, column))
 
-    split = _split_between(
+    split = split_between(
         held.c.security_id, periods.c.prev_period_of_report, held.c.period_of_report
     )
 
@@ -401,10 +401,12 @@ def _compared(held: CTE, periods: CTE) -> Select[Any]:
     )
 
 
-def _split_between(
-    security_id: ColumnElement[Any],
-    after: ColumnElement[Any],
-    until: ColumnElement[Any],
+def split_between(
+    security_id: SQLColumnExpression[Any],
+    after: SQLColumnExpression[Any],
+    until: SQLColumnExpression[Any],
+    *,
+    name: str = "split",
 ) -> Any:
     """``LATERAL``: every split of the security after one period and until another, multiplied.
 
@@ -429,7 +431,7 @@ def _split_between(
             split.period_of_report > after,
             split.period_of_report <= until,
         )
-        .lateral("split")
+        .lateral(name)
     )
 
 

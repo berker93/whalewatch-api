@@ -46,12 +46,12 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Final
 
-from sqlalchemy import Select, bindparam, select, text
+from sqlalchemy import Select, bindparam, select, text, true
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.api.pagination import PageParams
+from app.api.pagination import MAX_LIMIT, PageParams
 from app.api.routers.investors import LATEST, detail_query, list_query
 from app.api.routers.market import (
     DEFAULT_TOP,
@@ -91,6 +91,7 @@ from app.api.routers.stocks import (
     totals_query,
 )
 from app.core.config import get_settings
+from app.db.queries.returns import estimated_return
 from app.db.queries.top_holding import top_holdings, top_holdings_ranked
 from app.db.session import create_engine
 from app.derived.views import QUARTER_FLOWS, YEAR_FLOWS
@@ -129,6 +130,17 @@ class Query:
     @property
     def statement(self) -> str:
         return f"{self.tag}\n{self.sql.strip()}"
+
+
+def _with_returns(statement: Select[Any], period: Any) -> Select[Any]:
+    """``statement``'s rows with :func:`estimated_return` joined on, as SEC-8
+    will put it on the portfolio and the activity. ``period`` is the column or
+    parameter the return is since."""
+    rows = statement.subquery("rows")
+    returns = estimated_return(
+        rows.c.security_id, rows.c[period] if isinstance(period, str) else period
+    )
+    return select(rows, *returns.c).select_from(rows).outerjoin(returns, true())
 
 
 #: Every filer's latest published period: what the top holding is read for.
@@ -299,6 +311,27 @@ QUERIES: Final = (
         "investor_activity",
         "GET /v1/investors/{slug}/activity",
         activity_query(bindparam("filer_id"), PageParams()),
+    ),
+    # Not in the app yet: the estimated return (SEC-7) on the largest page of
+    # each, as SEC-8 will add it. One period for every row of the portfolio,
+    # and a period per row of the activity.
+    Query.from_app(
+        "investor_portfolio_returns",
+        "GET /v1/investors/{slug}/portfolio?limit=200, with estimated returns",
+        _with_returns(
+            portfolio_query(
+                bindparam("filer_id"), bindparam("period"), PageParams(limit=MAX_LIMIT)
+            )[0],
+            bindparam("period"),
+        ),
+    ),
+    Query.from_app(
+        "investor_activity_returns",
+        "GET /v1/investors/{slug}/activity?limit=200, with estimated returns",
+        _with_returns(
+            activity_query(bindparam("filer_id"), PageParams(limit=MAX_LIMIT)),
+            "period_of_report",
+        ),
     ),
     Query.from_app(
         "investor_history",

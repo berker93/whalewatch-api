@@ -1108,6 +1108,30 @@ Nearly all of it is `effective_filing` resolving every period's amendments,
 an index-only scan of `mv_filer_summary`. Over HTTP on the dev stack a miss
 is about 10 ms and a hit 1.5 ms.
 
+## Built since: estimated return
+
+`estimated_return` (SEC-7, [estimated-return.md](estimated-return.md)) is a
+`LATERAL` that SEC-8 will join onto the portfolio and the activity. `make
+explain` measures it on the largest page of each, as
+`investor_portfolio_returns` and `investor_activity_returns`. The dev database
+has 4 quotes and no splits written, so the table below was measured in a
+transaction that was rolled back afterwards. That transaction first ran
+detection (43 splits) and wrote a quote for each of the 10,781 listed
+securities. Measured for Two Sigma's largest period (6,213 positions in
+2021Q3), median of 20 runs:
+
+| Query, 200 rows | Without | With the return |
+| --- | --- | --- |
+| portfolio, by weight | 5.06 ms | 6.93 ms |
+| activity, every action but `hold` | 4.89 ms | 7.18 ms |
+
+That is about 10 µs a row. Each row runs one nested loop of primary-key probes:
+`implied_price` for the basis, a backward scan of `security_quote` and of
+`implied_price` with `LIMIT 1` for the latest later rows, and `security_split`
+twice. Each of these reads a few buffers. Storing the return would cost more
+than computing it, because every daily quote and every `recompute` would have to
+rewrite it.
+
 ## Experiments
 
 Each was run on the full data and then undone. `DROP INDEX` and
