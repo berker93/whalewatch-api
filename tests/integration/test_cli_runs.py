@@ -76,6 +76,8 @@ TRACKED: Final = {
     "crawl-form4": ("crawl-form4", ["--catch-up"], "failed"),
     # Nothing queued, so nothing is fetched.
     "ingest-form4": ("ingest-form4", [], "success"),
+    # Every year through 2027 exists since 0032, so nothing is created.
+    "create-partitions": ("create-partitions", ["--through", "2027"], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.

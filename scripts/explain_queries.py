@@ -436,8 +436,8 @@ QUERIES: Final = (
     Query.from_app(
         "insider_feed", "GET /v1/insiders/transactions", transactions_query(PageParams())[0]
     ),
-    # The date-ranged feed, the last 30 days of every code: what SEC-6's
-    # partitioning by transaction_date is to prune.
+    # The date-ranged feed, the last 30 days of every code: what the
+    # partitioning by transaction_date (0032) prunes to one or two years.
     Query.from_app(
         "insider_feed_dated",
         "GET /v1/insiders/transactions?code=all&from=&to=",

@@ -360,3 +360,32 @@ def test_limit_holds_back_the_rest(runner: CliRunner, migrated_engine: AsyncEngi
         (NVIDIA_4, "done"),
         (NVIDIA_4A, "pending"),
     ]
+
+
+# --- partitions --------------------------------------------------------------
+
+
+@pytest.fixture
+def a_year_ahead(monkeypatch: pytest.MonkeyPatch, migrated_engine: AsyncEngine) -> Iterator[None]:
+    """A calendar a year on from the migration's last partition, and that
+    partition dropped again afterwards: the run commits it."""
+    monkeypatch.setattr("app.cli.next_year", lambda: 2028)
+    yield
+    _execute(migrated_engine, text("DROP TABLE IF EXISTS insider_transaction_2028"))
+
+
+@respx.mock
+@pytest.mark.usefixtures("a_year_ahead")
+def test_a_run_first_creates_next_years_partition(
+    runner: CliRunner, migrated_engine: AsyncEngine
+) -> None:
+    _edgar()
+
+    result = runner.invoke(app, ["ingest-form4", "--concurrency", "1"])
+
+    assert result.exit_code == 0, result.output
+    assert "create-partitions  1 partition created" in result.output
+    assert _run(migrated_engine)[3]["partitions_created"] == {"insider_transaction_2028": 0}
+    assert _fetch(
+        migrated_engine, text("SELECT to_regclass('insider_transaction_2028') IS NOT NULL")
+    ) == [(True,)]

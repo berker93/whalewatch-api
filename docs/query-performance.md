@@ -1153,6 +1153,137 @@ estimate, joined per row all the same, which is one query rather than two for
 a few hundred microseconds at most. `/v1/meta/data-sources` reads one row of
 `security_quote` and is not measured.
 
+## Built since: partitioning `insider_transaction`
+
+`0032` partitions `insider_transaction` by `RANGE (transaction_date)`, a
+partition a year from 2020 through 2027 and a default (see the
+[data model](data-model.md#partitioning)). The query it is for is
+`insider_feed_dated`, the feed between two dates with every code
+(`?code=all&from=&to=`).
+
+### On the dev database
+
+The dev database has 698 lines, all traded between 2026-09-09 and 2026-10-13,
+which is inside `insider_feed_dated`'s 30 days. So there is nothing to prune,
+and the timings are the same before and after. `make explain`, client median of
+50 runs:
+
+| Query | Before (`0031`) | After (`0032`) |
+| --- | --- | --- |
+| `insider_feed` | 0.83 ms | 1.01 ms |
+| `insider_feed_dated` | 1.17 ms | 1.14 ms |
+| `insider_feed_value` | 1.04 ms | 1.05 ms |
+| `stock_insiders` | 0.23 ms (0 rows) | 0.23 ms (0 rows) |
+
+The plan is what changed. Before, `insider_feed_dated` read the one table:
+
+```
+->  Seq Scan on insider_transaction  (actual time=0.011..0.122 rows=697 loops=1)
+      Filter: ((transaction_date >= '2026-09-14'::date) AND (transaction_date <= '2026-10-14'::date))
+```
+
+After, it reads 2026's partition and no other. The planner removed the other
+eight before costing anything:
+
+```
+->  Seq Scan on insider_transaction_2026 insider_transaction  (actual time=0.002..0.073 rows=697 loops=1)
+```
+
+The same query over every year would be an `Append` of all nine. On 698 rows,
+two plans changed for the worse on paper. The unfiltered feed and the value
+sort now `Seq Scan` every partition and sort, because nine near-empty scans
+cost less than an index walk. That changes back with data, as below.
+
+### At scale: a synthetic copy
+
+To see what the partitioning is for, the 698 lines were copied 6,500 times
+into two scratch schemas on the dev database: 4,537,000 lines, 3.2 GB each,
+with dates spread evenly from 2020-01-01 to 2026-10-14 (about 670,000 a year).
+One copy was a plain table and the other partitioned as in `0032`. Both had the
+`0031` indexes and the primary key, and were vacuumed and analysed. The app's
+queries ran against each through `search_path`, under `pgbench -M prepared`,
+with the dates bound as parameters as asyncpg binds them. Mean latency over
+8 s, JIT off:
+
+| Query | Plain | Partitioned |
+| --- | --- | --- |
+| the feed, newest first (P, S) | 0.80 ms | 0.77 ms |
+| the feed, a month, P and S | 0.96 ms | 0.81 ms |
+| a stock's lines | 0.82 ms | 0.80 ms |
+| **the feed, a month, every code** | **76.3 ms** | **34.5 ms** |
+| **the feed, 2024, every code** | **1,034 ms** | **113 ms** |
+| the feed by value, all time (P, S) | 1,317 ms | 767 ms |
+| the feed by value, a quarter (P, S) | 37.6 ms | 37.8 ms |
+
+The two in bold are the point. No index orders every code by date: `0031`'s is
+partial on P and S. So a dated feed of every code reads the table. Plain, a year
+of it is a parallel scan of all 4.5M rows (364,000 buffers) to keep 670,000.
+Partitioned, it is a parallel scan of 2024's partition alone (54,000 buffers),
+nine times faster. For a month, the plain table found its rows through the
+primary key `(id, transaction_date)`. A bitmap scan on the key's second column
+reads all 17,000 pages of the index. The partitioned table scans 2026's
+partition instead. That is about the same amount of reading, but sequential and
+in parallel.
+
+Where an index already narrows the read to the range, partitioning adds
+nothing. Examples are the default feed, a month of P and S, a stock's page,
+and a quarter by value, all through the partial index. The unbounded value
+sort reads every P and S line either way. It is faster partitioned only
+because a `Parallel Append` hands whole partitions to the workers.
+
+**With an index instead.** An all-codes `(transaction_date DESC, id DESC)`
+index (137 MB at this size) on both copies made the bold rows 1.13 ms against
+0.81 ms for the month, and 0.97 ms against 1.15 ms for 2024. That index answers
+these queries better than pruning does, and makes the plain table as fast as
+the partitioned one. `0032` does not add it. The feed's default is P and S,
+which the partial index serves, and every code over a date range is a filter
+nobody has asked for yet. If it becomes common, the index is the fix, and with
+the table partitioned it is built one partition at a time.
+
+**What partitioning is really for** is removing old years. Deleting 2020's
+670,000 lines from the plain copy took 2,586 ms. It also left 670,000 dead
+tuples for vacuum and wrote every one of them to WAL. `DETACH PARTITION` and
+`DROP TABLE` on the partitioned copy took 17 ms and 6 ms. Both ran in a
+rolled-back transaction.
+
+The scratch schemas were dropped afterwards.
+
+### Pruning with bound parameters
+
+The API binds `from` and `to`, so after five executions Postgres may plan the
+statement once for any dates (a generic plan). It cannot prune that plan while
+planning. It prunes when execution starts, once the parameters are known, and
+`EXPLAIN` reports what it removed. On the dev database, under
+`plan_cache_mode = force_generic_plan`, September 2026 shows:
+
+```
+->  Append (actual rows=45 loops=1)
+      Subplans Removed: 8
+      ->  Index Scan using insider_transaction_2026_filing_id_line_number_transaction__key on insider_transaction_2026 insider_transaction_1 (actual rows=45 loops=1)
+            Index Cond: ((transaction_date >= $1) AND (transaction_date <= $2))
+```
+
+The partition's indexes are named by Postgres after the partition, and
+truncated at 63 characters. A plan names them, never the parent index.
+
+`tests/integration/test_insider_partitions.py` asserts both kinds of pruning:
+with the dates inlined (only 2026, or 2025 and 2026 across a year end), and
+with a generic plan (`Subplans Removed: 8`). It also asserts that `from` alone
+cannot prune the default partition, which could hold any future date.
+
+### The unfiltered feed: `Merge Append`, not `Append`
+
+The feed's first page has no date filter: the newest P and S lines, by
+`(transaction_date DESC, id DESC)`. Over yearly ranges with no default
+partition, Postgres could read the partitions newest first, one after another,
+and stop inside the first (an ordered `Append`). A default partition could hold
+any date, so the order of partitions is not the order of rows. Postgres reads
+the top of every partition's index instead and merges them (`Merge Append`).
+That is one index descent per partition, nine today. In the synthetic copy it
+took 0.77 ms against the plain table's 0.80 ms. It grows by one descent a year.
+The default partition catches late and mistyped dates that would otherwise fail
+a filing's load, and that is worth one index descent a year.
+
 ## Experiments
 
 Each was run on the full data and then undone. `DROP INDEX` and

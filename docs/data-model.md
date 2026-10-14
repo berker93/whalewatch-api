@@ -820,10 +820,10 @@ earliest trade's day. The filing's symbol chooses between classes. None, or
 more than one, leaves it null.
 
 **`transaction_date` is in both keys for partitioning.** It adds nothing to
-either today, since a line has one date. Postgres requires the partition key in
-every unique constraint on a partitioned table, and this table is the one that
-will be partitioned on it (see Partitioning), so the keys are already the ones
-that partitioning needs. `id` is a sequence rather than an `IDENTITY` column for
+either, since a line has one date. Postgres requires the partition key in every
+unique constraint on a partitioned table, and the table is partitioned on it
+(see Partitioning), so the keys were already the ones partitioning needed when
+`0032` moved the rows. `id` is a sequence rather than an `IDENTITY` column for
 the same reason: Postgres 16 refuses identity on a partitioned table.
 
 `transaction_code` is stored raw and interpreted nowhere but the read layer. `P`
@@ -1098,10 +1098,38 @@ most of its CUSIPs are held by no one we track. In no layer above.
 
 ## Partitioning
 
-`insider_transaction` will be partitioned by `RANGE (transaction_date)`, once
-the insider feed's date-ranged query exists to `EXPLAIN` (SEC-6). It is
-unpartitioned as of `0028`, with `transaction_date` already `NOT NULL` and in its
-primary key and its unique constraint, so the partitioning is a data move.
+`insider_transaction` is partitioned by `RANGE (transaction_date)` (`0032`):
+one partition per calendar year from 2020 (`insider_transaction_2026`), and
+`insider_transaction_default` for any date the years do not cover. It is the
+one table in the schema that grows without bound and is read by date range,
+and yearly partitions put a month's or a year's feed in one partition.
+
+- **The keys are the ones `0028` created.** `(id, transaction_date)` and
+  `(filing_id, line_number, transaction_date)` both include the partition key,
+  which is what lets Postgres enforce them per partition. The dedup works
+  because a line's date is part of it: the same line always lands in the same
+  partition. The three indexes of `0031` are partitioned indexes, with one
+  index per partition.
+- **The default partition is a net.** It holds a trade from before 2020
+  reported years late, and a date mistyped into a year that has no partition.
+  Without it either one fails its insert, and the loader fails the filing on
+  one bad line. Its price: a query with an open-ended range (`from` alone) reads
+  it too, and the unfiltered feed is a `Merge Append` of every partition's
+  index rather than an in-order `Append` (see query-performance.md).
+- **The years stay ahead of the calendar** through
+  [`ensure_partitions`](../app/db/partitions.py), which `ingest-form4` runs
+  before every load and `create-partitions` runs by hand. It creates every
+  missing year through next year. A new year's lines that the default already
+  holds are moved into it as it is created, because Postgres refuses a range
+  partition over rows in the default. No `pg_partman`, which the `postgres`
+  image does not ship.
+- **Removing old years is a `DETACH`**, not a `DELETE`: a catalog change
+  rather than a rewrite and a vacuum. Nothing removes any yet.
+
+`0032` built the partitioned table beside the live one, copied the rows, checked
+each year's count matched (the migration raises otherwise), and swapped the
+names in the same transaction. The downgrade is the same move back to one
+table.
 
 `holding` has a partitioning plan too, and it is deferred until it
 hurts. Rough shape: ~4,000 filers × ~200 positions × 4 quarters is low millions of

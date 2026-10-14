@@ -6,10 +6,12 @@ tables land here, ``nonDerivativeTable`` (shares) and ``derivativeTable``
 (options, warrants, convertibles), told apart by :attr:`is_derivative`. Its
 ``...Holding`` rows, which report a balance and no transaction, do not.
 
-**Partitioned by ``transaction_date``, eventually** (SEC-6, after the feed
-exists). Postgres requires the partition key in every unique constraint on a
-partitioned table, the primary key included, so it is in both already. That
-makes SEC-6 a data move, not a change to what counts as a duplicate.
+**Partitioned by ``transaction_date``**, one partition a year and a default
+for any other date (0032). Postgres requires the partition key in every unique
+constraint on a partitioned table, the primary key included, and it was in both
+from the start (0028), so partitioning was a data move rather than a change to
+what counts as a duplicate. :mod:`app.db.partitions` keeps the years ahead of
+the calendar.
 """
 
 from datetime import date
@@ -66,9 +68,9 @@ class InsiderTransaction(Base):
 
     transaction_date: Mapped[date] = mapped_column(Date, primary_key=True)
     """``transactionDate``: the day of the trade, not of the filing, which is
-    up to two business days later and for a late filer much more. In the
-    primary key only because SEC-6 partitions on it; :attr:`id` alone is
-    unique."""
+    up to two business days later and for a late filer much more. The
+    partition key, and in the primary key only because of that: :attr:`id`
+    alone is unique."""
 
     filing_id: Mapped[int] = mapped_column(BigInteger)
     """The Form 4 or 4/A. See the composite FK in __table_args__."""
@@ -184,9 +186,10 @@ class InsiderTransaction(Base):
         #
         # A re-ingested filing is the same filing_id, so its lines conflict on
         # line_number and ON CONFLICT DO NOTHING drops them. transaction_date
-        # adds nothing to the key today, since a line has one date. It is here
-        # for SEC-6's partitioning, which cannot keep a unique constraint
-        # without it.
+        # adds nothing to the key, since a line has one date. It is here
+        # because the table is partitioned on it, and a unique constraint on a
+        # partitioned table must include the partition key: Postgres enforces
+        # it per partition, with one index each.
         UniqueConstraint(
             "filing_id",
             "line_number",
@@ -237,4 +240,7 @@ class InsiderTransaction(Base):
         CheckConstraint("shares_owned_after >= 0", name="shares_owned_after_is_not_negative"),
         CheckConstraint("price_per_share > 0", name="a_price_is_positive_or_null"),
         CheckConstraint("jsonb_typeof(footnotes) = 'object'", name="footnotes_is_an_object"),
+        # Yearly partitions and a default (0032). The partitions themselves are
+        # DDL this metadata does not hold; see app.db.partitions.
+        {"postgresql_partition_by": "RANGE (transaction_date)"},
     )

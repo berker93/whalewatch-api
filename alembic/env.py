@@ -30,6 +30,7 @@ write the downgrade yourself.
 import asyncio
 from logging.config import fileConfig
 
+from alembic.runtime.environment import NameFilterParentNames, NameFilterType
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
@@ -37,6 +38,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from app.core.config import get_settings
 from app.db.models.base import Base
+from app.db.partitions import is_partition
 
 # Imported for the side effect of populating Base.metadata: a model class only
 # registers when its module is executed, so a model package missing from
@@ -97,6 +99,18 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def include_name(
+    name: str | None, type_: NameFilterType, parent_names: NameFilterParentNames
+) -> bool:
+    """Leave ``insider_transaction``'s partitions out of autogenerate.
+
+    Each is a table in the database that no model declares, which autogenerate
+    reads as a table to drop. They are created by 0032 and by
+    :func:`app.db.partitions.ensure_partitions`, never by a model.
+    """
+    return not (type_ == "table" and name is not None and is_partition(name))
+
+
 def do_run_migrations(connection: Connection) -> None:
     context.configure(
         connection=connection,
@@ -104,6 +118,7 @@ def do_run_migrations(connection: Connection) -> None:
         # See the module docstring: off by default, and off is how schemas drift.
         compare_type=True,
         compare_server_default=True,
+        include_name=include_name,
     )
 
     # Postgres has transactional DDL, so the whole upgrade — every revision in

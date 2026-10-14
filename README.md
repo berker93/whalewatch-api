@@ -1128,9 +1128,34 @@ security each of its tickers names on the day of the earliest trade. An issuer
 with several classes is narrowed by the filing's own symbol. When that leaves
 none or more than one, `security_id` is null and the lines load anyway.
 
+**Partitions first.** Before loading anything it creates
+`insider_transaction`'s partitions through next year if one is missing, as
+`create-partitions` does, in a transaction of its own.
+
 A filing that fails is recorded on its queue row and the run carries on. Exits
 1 if any failed, 130 if interrupted. Nothing is published, so no views are
-refreshed and no cache is dropped.
+refreshed. The insider feed reads these tables live, so a run that loaded
+anything drops the API's cache.
+
+### `create-partitions [--through YEAR]`
+
+Creates `insider_transaction`'s missing yearly partitions, from 2020 through
+`--through` (default: next year)
+([app/db/partitions.py](app/db/partitions.py)). The table is
+`PARTITION BY RANGE (transaction_date)`, a partition a year and a default
+partition for any date outside them (`0032`). `ingest-form4` runs the same step
+before every load, so this is for doing it by hand, or ahead of time.
+
+```
+create-partitions  1 partition created
+  2028        insider_transaction_2028  3 lines moved from the default partition
+```
+
+Lines the default partition already holds for a new year (a date mistyped
+into the future) are moved into it as it is created: Postgres refuses a new
+range over rows the default holds. Creating a partition blocks reads of the
+table until it commits, which is a moment. Idempotent: when every year exists
+it says so and changes nothing.
 
 ### `runs [--job NAME] [--limit N]`
 
@@ -2053,6 +2078,9 @@ that diff can see:
 
 - **Generated columns, partitions, materialised views** — not modelled, so not
   detected. They are `op.execute()` and you write them by hand.
+  `insider_transaction`'s partitions are left out of the comparison by
+  `include_name` in `env.py`; without it autogenerate would propose dropping
+  every one of them.
 - **Native enums** — it emits `CREATE TYPE` on first use but will not notice a
   new label, and `ALTER TYPE ... ADD VALUE` cannot run inside a transaction
   block, which Alembic gives you by default.

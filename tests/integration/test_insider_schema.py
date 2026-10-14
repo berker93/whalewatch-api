@@ -87,6 +87,20 @@ async def _load(session: AsyncSession, lines: list[dict[str, Any]]) -> None:
     )
 
 
+async def partition_indexes(session: AsyncSession, index: str) -> set[str]:
+    """The per-partition indexes under a partitioned index. A plan names these,
+    never the parent, and Postgres names them after the partition."""
+    names = await session.scalars(
+        text("""
+            SELECT child.relname FROM pg_inherits
+            JOIN pg_class AS child ON child.oid = pg_inherits.inhrelid
+            WHERE pg_inherits.inhparent = CAST(:index AS regclass)
+        """),
+        {"index": index},
+    )
+    return set(names)
+
+
 # --- the natural key ----------------------------------------------------------
 
 
@@ -404,6 +418,9 @@ async def test_the_open_market_index_serves_the_feed(db_session: AsyncSession) -
             """)
         )
     ).scalar_one()
+    indexes = await partition_indexes(
+        db_session, "ix_insider_transaction_transaction_date_open_market"
+    )
     await db_session.execute(text("SET LOCAL enable_seqscan = off"))
     plan = "\n".join(
         (
@@ -421,4 +438,6 @@ async def test_the_open_market_index_serves_the_feed(db_session: AsyncSession) -
 
     assert "(transaction_date DESC, id DESC)" in definition
     assert "WHERE (transaction_code = ANY (ARRAY['P'::bpchar, 'S'::bpchar]))" in definition
-    assert "ix_insider_transaction_transaction_date_open_market" in plan
+    # Partitioned (0032): the plan names the index on each partition. Scanned
+    # in order or as a bitmap, depending on what other tests left in the stats.
+    assert any(index in plan for index in indexes), plan

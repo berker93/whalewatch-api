@@ -1,7 +1,7 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
-fetch-quotes, crawl-form4, ingest-form4.
+fetch-quotes, crawl-form4, ingest-form4, create-partitions.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -41,6 +41,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli crawl-form4 --from 2026-07-01
     uv run python -m app.cli crawl-form4 --catch-up
     uv run python -m app.cli ingest-form4
+    uv run python -m app.cli create-partitions --through 2028
 
 Every run is recorded
 ---------------------
@@ -128,6 +129,7 @@ from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
 from app.db.models.sec_13f_security import ListStatus
 from app.db.models.security import ResolutionSource, Security
+from app.db.partitions import CreatedPartition, ensure_partitions, next_year
 from app.db.queries.amendments import PeriodFiling, PeriodResolution, audit_amendments
 from app.db.queries.checks import DataCheckReport, check_data
 from app.db.queries.cusip_coverage import DEFAULT_THRESHOLD_PCT, CusipCoverage, cusip_coverage
@@ -1757,6 +1759,9 @@ def ingest_form4_command(
     A 4/A replaces the Form 4 it amends: the original's lines are deleted,
     whichever of the two loads first.
 
+    First creates insider_transaction's partitions through next year, if any
+    is missing, as create-partitions does.
+
     A filing that fails is reported and recorded on its queue row, and the run
     carries on. Exits 1 if any filing failed or EDGAR blocked the run, and 130
     if Ctrl-C stopped it.
@@ -1793,6 +1798,13 @@ async def _ingest_form4(*, concurrency: int, limit: int | None, force: bool) -> 
         sessions = create_session_factory(engine)
         ran = BackfillRun(results=(), rate_limited=None)
         try:
+            # A transaction of its own: creating a partition blocks reads of
+            # the table until it commits, so it is not held through the run.
+            async with sessions.begin() as session:
+                created = await ensure_partitions(session, through=next_year())
+            if created:
+                run.metrics["partitions_created"] = _partition_metrics(created)
+                _echo_partitions(created)
             async with sessions.begin() as session:
                 plan = await plan_form4(session, force=force, limit=limit)
             _echo_form4_plan(plan, concurrency=concurrency)
@@ -1997,6 +2009,61 @@ def _echo_form4_summary(
 
 
 # --- seed-investors ----------------------------------------------------------
+
+
+@app.command("create-partitions")
+def create_partitions_command(
+    through: Annotated[
+        int | None,
+        typer.Option(
+            "--through",
+            metavar="YEAR",
+            min=2020,
+            max=9998,
+            help="Create every missing year through this one. Default: next year.",
+        ),
+    ] = None,
+) -> None:
+    """Create insider_transaction's yearly partitions, through next year.
+
+    Every year from 2020 that has no partition gets one. Lines the default
+    partition holds for a year are moved into it as it is created. Does
+    nothing when every year exists, which is almost always: ingest-form4 runs
+    the same step before every load.
+
+    Creating a partition blocks reads of insider_transaction until it commits,
+    which is a moment unless the default partition holds many lines to move.
+    """
+    asyncio.run(_create_partitions(through if through is not None else next_year()))
+
+
+async def _create_partitions(through: int) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    async with track_run(settings, "create-partitions", through=through) as run:
+        async with session_scope(settings) as session:
+            created = await ensure_partitions(session, through=through)
+        run.items_written = len(created)
+        run.metrics["partitions_created"] = _partition_metrics(created)
+    if not created:
+        typer.echo(f"create-partitions  every year through {through} has a partition")
+    else:
+        _echo_partitions(created)
+
+
+def _partition_metrics(created: list[CreatedPartition]) -> dict[str, int]:
+    return {partition.name: partition.rows_moved for partition in created}
+
+
+def _echo_partitions(created: list[CreatedPartition]) -> None:
+    typer.echo(f"create-partitions  {_count(len(created), 'partition')} created")
+    for partition in created:
+        moved = (
+            f"  {_count(partition.rows_moved, 'line')} moved from the default partition"
+            if partition.rows_moved
+            else ""
+        )
+        _line(str(partition.year), partition.name + moved)
 
 
 @app.command("seed-investors")

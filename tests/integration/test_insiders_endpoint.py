@@ -8,6 +8,7 @@ feed that says it shows trades, a default nobody is told about, a gift that
 its stocks, a page boundary inside one day's trades.
 """
 
+import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from itertools import count
@@ -29,6 +30,7 @@ from app.db.models import (
     Security,
     SecurityAlias,
 )
+from tests.integration.test_insider_schema import partition_indexes
 
 NVIDIA = "0001045810"
 LENNAR = "0000920760"
@@ -552,7 +554,12 @@ async def test_the_default_feed_reads_the_open_market_index_in_order(
     await db_session.execute(text("SET LOCAL enable_sort = off"))
 
     plan = "\n".join((await db_session.execute(text(f"EXPLAIN {sql}"))).scalars().all())
+    indexes = await partition_indexes(
+        db_session, "ix_insider_transaction_transaction_date_open_market"
+    )
 
-    assert "ix_insider_transaction_transaction_date_open_market" in plan
-    # The ticker's subquery sorts a security's few aliases; the lines never are.
-    assert "Sort Key: insider_transaction" not in plan
+    # One index scan per partition, merged in order by a Merge Append, never
+    # sorted. The ticker's subquery sorts a security's few aliases; the lines
+    # never are.
+    assert any(f" using {index} " in plan for index in indexes)
+    assert re.search(r"->  Sort .*\n\s+Sort Key: insider_transaction", plan) is None
