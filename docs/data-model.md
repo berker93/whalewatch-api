@@ -46,7 +46,8 @@ of a duplicate.
 | `issuer`, `insider` | `cik` |
 | `filing` | `accession_no` |
 | `holding` | `(filing_id, cusip, put_call, sshprnamt_type)` |
-| `insider_transaction` | `(filing_id, line_number)` |
+| `insider_transaction` | `(filing_id, line_number, transaction_date)` |
+| `reporting_owner` | `(filing_id, insider_id)` |
 | `security` | `cusip` |
 | `price` | `(security_id, trade_date)` |
 
@@ -730,39 +731,109 @@ who sold every share has no period to exit into until it files stock again. A
 plain view, for `effective_filing`'s reasons: a `GROUP BY` over the snapshot's
 primary key is cheap, and a view cannot go stale.
 
-### `insider` and `insider_transaction`
+### `insider`, `reporting_owner` and `insider_transaction`
+
+The Form 4 tables (`0028_insider_transaction`). Event-shaped where `holding` is
+periodic: a holding is what a filer had at a quarter end, a transaction is what
+an insider did on a day.
 
 ```
 insider
   id      bigint pk
-  cik     char(10)  unique, not null
-  name    text      not null
+  cik     char(10)  unique, not null      -- rptOwnerCik; the key, never the name
+  name    text      not null              -- as the latest filing spelled it
+
+reporting_owner                           -- one insider on one Form 4
+  filing_id             bigint  fk -> filing, on delete cascade
+  insider_id            bigint  fk -> insider, on delete restrict
+  is_director           boolean not null default false
+  is_officer            boolean not null default false
+  is_ten_percent_owner  boolean not null default false
+  is_other              boolean not null default false
+  officer_title         text
+  other_text            text
+  pk (filing_id, insider_id)
 
 insider_transaction
-  id                bigint pk
-  filing_id         bigint  fk -> filing
-  insider_id        bigint  fk -> insider
-  issuer_id         bigint  fk -> issuer
-  transaction_date  date    not null
-  security_title    text
-  transaction_code  char(1) not null     -- P, S, A, M, F, G, C, ...
-  acquired_disposed char(1) not null     -- 'A' | 'D'
-  shares            numeric(20,4)
-  price_per_share   numeric(20,4)        -- null for grants and gifts
+  id                 bigserial
+  transaction_date   date          not null
+  filing_id          bigint        not null  -- fk (filing_id, insider_id) -> reporting_owner
+  insider_id         bigint        not null
+  line_number        smallint      not null  -- 1-based, in document order
+  issuer_cik         char(10)      not null
+  issuer_name        text          not null
+  issuer_ticker      text                    -- issuerTradingSymbol as filed
+  security_id        bigint        fk -> security, on delete set null
+  security_title     text
+  is_derivative      boolean       not null
+  transaction_code   char(1)       not null  -- P, S, A, M, F, G, C, ...
+  acquired_disposed  char(1)       not null  -- 'A' | 'D'
+  shares             numeric(20,4)
+  price_per_share    numeric(20,8)           -- null, never zero, for grants and gifts
+  value_usd          numeric(20,2) GENERATED STORED  -- round(shares * price_per_share, 2)
   shares_owned_after numeric(20,4)
-  is_derivative     boolean not null
-  is_10b5_1         boolean not null default false
+  is_10b5_1          boolean       not null default false
+  footnotes          jsonb                   -- {"F1": "...", ...}: the ones this line cites
+  pk (id, transaction_date)
+  unique (filing_id, line_number, transaction_date)
+  index (transaction_date DESC) WHERE transaction_code IN ('P','S')
 ```
+
+**Roles live on `reporting_owner`, not on `insider`.** They are a relationship
+with one issuer at one time: Buffett is a director of Berkshire and a 10% owner
+elsewhere, and a CFO who joins the board is a director from that filing on.
+Booleans rather than an enum, because a CEO on the board is both.
+
+**A joint filing's trades are recorded once.** A Form 4 can name several
+reporting owners, typically a fund, its general partner and the person behind
+both, and reports the transactions once for all of them. Each
+`insider_transaction` row is attributed to the first owner named, and every
+owner is in `reporting_owner`. Fanning the row out to each owner would count
+one purchase three times in every sum, and as three insiders in a cluster. The
+composite FK holds a row's insider to an owner of its own filing, and carries
+the integrity of `filing_id` and `insider_id` through `reporting_owner`'s FKs.
+
+**The natural key is the line, not the values.** A Form 4 line has no identity
+of its own, and one filing can report the same sale twice (500 shares at $41.20,
+two tranches on one day) with every value equal. `line_number`, the position in
+the document counting the non-derivative table then the derivative table, is
+what tells them apart; a re-ingest of the same filing repeats it, so
+`ON CONFLICT DO NOTHING` drops the copy. A `4/A` is a new `filing_id`: it
+supersedes the original by deleting the original's rows, which cascade from the
+filing.
+
+**`transaction_date` is in both keys for partitioning.** It adds nothing to
+either today, since a line has one date. Postgres requires the partition key in
+every unique constraint on a partitioned table, and this table is the one that
+will be partitioned on it (see Partitioning), so the keys are already the ones
+that partitioning needs. `id` is a sequence rather than an `IDENTITY` column for
+the same reason: Postgres 16 refuses identity on a partitioned table.
 
 `transaction_code` is stored raw and interpreted nowhere but the read layer. `P`
 (open-market purchase) and `S` (open-market sale) are the two that carry
 information; `M` is an option exercise, `F` is shares withheld for tax, `A` is a
 grant, `G` is a gift. Collapsing them into "bought"/"sold" at ingest time is
-lossy and is how a vesting event becomes a headline.
+lossy and is how a vesting event becomes a headline. No check on it: the set is
+the SEC's, not ours. The partial index is on the two that carry information,
+which is the feed's default.
 
-`is_10b5_1` comes from the filing's own checkbox. A sale under a pre-arranged
-plan was decided months before the date on the form, which is the whole reason
-the flag is on the row rather than left to the reader.
+`price_per_share` is null, never zero, when the filing gives none, and the check
+refuses a zero. A $0 purchase averages into "insiders bought at $0" the first
+time anything computes a mean. `value_usd` is generated from it, so it is null
+for every grant and gift and cannot disagree with the shares beside it. Eight
+decimal places, like `implied_price`, for weighted-average prices.
+
+`is_10b5_1` comes from the filing's own checkbox, or before April 2023 from a
+footnote. A sale under a pre-arranged plan was decided months before the date on
+the form, which is the whole reason the flag is on the row rather than left to
+the reader.
+
+`security_id` links the issuer to a `security` where the loader can tell which
+one, from `issuer_cik`, `issuer_ticker` and `security_title`, and is null
+otherwise. Null blocks nothing: the row is loaded and found by `issuer_cik`. A
+CIK cannot always decide it alone (Alphabet is one CIK and two listed classes),
+and there is no `issuer` table to hang it on (see `issuer` / `security`).
+`ON DELETE SET NULL`, because the link is our interpretation, not the filing's.
 
 ### `pending_filing`
 
@@ -963,7 +1034,12 @@ most of its CUSIPs are held by no one we track. In no layer above.
 
 ## Partitioning
 
-`holding` is the only table with a partitioning plan, and it is deferred until it
+`insider_transaction` will be partitioned by `RANGE (transaction_date)`, once
+the insider feed's date-ranged query exists to `EXPLAIN` (SEC-6). It is
+unpartitioned as of `0028`, with `transaction_date` already `NOT NULL` and in its
+primary key and its unique constraint, so the partitioning is a data move.
+
+`holding` has a partitioning plan too, and it is deferred until it
 hurts. Rough shape: ~4,000 filers × ~200 positions × 4 quarters is low millions of
 rows a year, which Postgres does not care about. When it does, it partitions by
 `RANGE (period_of_report)` — every read path already filters on it, so partition
@@ -1139,7 +1215,10 @@ The ones worth a constraint rather than a convention. Everything marked
 - **enforced** — a 13F form type has a non-null `period_of_report`. Written as an
   implication on `form_type` rather than `NOT NULL`, because Form 4 shares this
   table and genuinely has no period.
-- `insider_transaction.acquired_disposed IN ('A','D')`.
+- **enforced** — `insider_transaction.acquired_disposed IN ('A','D')`, its
+  `price_per_share` is positive or null, its quantities are not negative,
+  `line_number > 0`, `footnotes` is a JSON object, and its insider is a
+  reporting owner on its own filing (`0028_insider_transaction`).
 - `filing.period_of_report` is the last day of a calendar quarter, for 13F form
   types. Not enforced: amended and late filings do occasionally carry an
   off-quarter date, and rejecting them at the boundary would lose the filing

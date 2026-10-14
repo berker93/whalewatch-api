@@ -39,6 +39,8 @@ from app.db.models.ingestion_run import (
     IngestionRun,
     RunStatus,
 )
+from app.db.models.insider import Insider, ReportingOwner
+from app.db.models.insider_transaction import OPEN_MARKET_CODES, InsiderTransaction
 from app.db.models.manual_review import REVIEW_STATUS_CHECK, ManualReview, ReviewStatus
 from app.db.models.matview_refresh import MatviewRefresh
 from app.db.models.pending_filing import PENDING_STATUS_CHECK, PendingFiling, PendingStatus
@@ -73,6 +75,7 @@ __all__ = [
     "NAMING_CONVENTION",
     "NEW_CHECK",
     "NOT_SUCCESS_SAYS_WHY_CHECK",
+    "OPEN_MARKET_CODES",
     "OUTCOME_CHECK",
     "OVERLAP_CHECK",
     "PARSE_STATUS_CHECK",
@@ -104,6 +107,8 @@ __all__ = [
     "Holding",
     "ImpliedPrice",
     "IngestionRun",
+    "Insider",
+    "InsiderTransaction",
     "ListStatus",
     "ManualReview",
     "MatviewRefresh",
@@ -115,6 +120,7 @@ __all__ = [
     "PositionSnapshot",
     "PriceConfidence",
     "QuoteSource",
+    "ReportingOwner",
     "ResolutionSource",
     "ReviewStatus",
     "RunStatus",
