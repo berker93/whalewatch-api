@@ -55,6 +55,7 @@ from app.db.models.position_snapshot import WEIGHT_PCT, PositionSnapshot
 from app.db.models.sec_13f_security import STATUS_CHECK, ListStatus, Sec13FSecurity
 from app.db.models.security import RESOLUTION_SOURCE_CHECK, ResolutionSource, Security
 from app.db.models.security_alias import SecurityAlias
+from app.db.models.security_quote import QUOTE_SOURCE_CHECK, QuoteSource, SecurityQuote
 from app.db.models.security_split import (
     SPLIT_CONFIDENCE_CHECK,
     SPLIT_RATIO,
@@ -80,6 +81,7 @@ __all__ = [
     "PRICED_CHECK",
     "QUANTITY",
     "QUARTER_EXPRESSION",
+    "QUOTE_SOURCE_CHECK",
     "RESOLUTION_SOURCE_CHECK",
     "REVIEW_STATUS_CHECK",
     "RUN_STATUS_CHECK",
@@ -112,12 +114,14 @@ __all__ = [
     "PositionChange",
     "PositionSnapshot",
     "PriceConfidence",
+    "QuoteSource",
     "ResolutionSource",
     "ReviewStatus",
     "RunStatus",
     "Sec13FSecurity",
     "Security",
     "SecurityAlias",
+    "SecurityQuote",
     "SecuritySplit",
     "SplitConfidence",
 ]

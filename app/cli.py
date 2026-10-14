@@ -1,6 +1,7 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
-reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias.
+reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
+fetch-quotes.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -36,6 +37,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli cusip-coverage
     uv run python -m app.cli resolve-cusip 037833100 --ticker AAPL --note "OpenFIGI miss"
     uv run python -m app.cli ticker-alias 30303M102 --ticker FB --to 2022-06-09
+    uv run python -m app.cli fetch-quotes --ticker NVDA
 
 Every run is recorded
 ---------------------
@@ -50,9 +52,9 @@ or ``backfill`` when they load something) then runs ``refresh-views`` as a
 second run, which names the first in its ``after_run_id``.
 
 Every verb that changes what the API serves — those, ``refresh-views``,
-``seed-investors``, ``resolve-cusips``, ``resolve-cusip`` and ``ticker-alias``
-— then drops every response the API has cached (:func:`_invalidate_cache`),
-and records how many in its run's ``metrics``.
+``seed-investors``, ``resolve-cusips``, ``resolve-cusip``, ``ticker-alias`` and
+``fetch-quotes`` when it writes a close — then drops every response the API has
+cached (:func:`_invalidate_cache`), and records how many in its run's ``metrics``.
 
 Exit codes
 ----------
@@ -187,6 +189,14 @@ from app.ingestion.enrichment.figi import (
     OpenFIGIRateLimited,
     OpenFIGIResponseError,
     OpenFIGIServerError,
+)
+from app.ingestion.enrichment.quotes import (
+    NullQuoteProvider,
+    QuoteFetchError,
+    QuoteProviderUnavailableError,
+    QuoteReport,
+    fetch_quotes,
+    quote_provider,
 )
 from app.ingestion.enrichment.resolution import (
     ManualResolution,
@@ -3518,6 +3528,115 @@ def _echo_ticker_alias(
     _line("current", entry.current_ticker or "no ticker")
     if note:
         _line("note", note)
+
+
+# --- fetch-quotes ----------------------------------------------------------------
+
+#: How many tickers to name on a line that lists some, before "and N more".
+_TICKERS_NAMED: Final = 8
+
+
+@app.command("fetch-quotes")
+def fetch_quotes_command(
+    tickers: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ticker",
+            metavar="T",
+            help="Only this ticker. Repeat it for more.",
+        ),
+    ] = None,
+) -> None:
+    """Fetch the latest close of every listed security from QUOTE_PROVIDER.
+
+    Every security with a ticker that is not delisted, except a ticker two of
+    them claim at once. Under QUOTE_PROVIDER=null, the default and
+    production's, nothing is asked and nothing written. yfinance is for
+    development: refused in production, and installed only with
+    uv sync --group quotes.
+
+    One ticker failing does not stop the rest; the provider failing does (exit
+    1), keeping the closes written before it did. Then drops every response
+    the API has cached, if anything was written.
+    """
+    try:
+        asyncio.run(_fetch_quotes(tickers))
+    except (QuoteProviderUnavailableError, QuoteFetchError) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+async def _fetch_quotes(tickers: list[str] | None) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    started = time.perf_counter()
+
+    async with track_run(
+        settings, "fetch-quotes", provider=settings.quote_provider, tickers=tickers
+    ) as run:
+        provider = quote_provider(settings)
+        engine = create_engine(settings)
+        try:
+            report = await fetch_quotes(
+                create_session_factory(engine), provider, tickers=tickers or None
+            )
+        finally:
+            await engine.dispose()
+        run.items_seen = report.asked
+        run.items_written = report.written
+        if report.written:
+            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+        run.metrics |= {
+            "provider": report.provider,
+            "listed": report.listed,
+            "latest": report.latest.isoformat() if report.latest else None,
+            "missing": len(report.missing),
+            "failed": len(report.failed),
+            "ambiguous": len(report.ambiguous),
+        }
+        run.errors += [f"{ticker}: {error}" for ticker, error in report.failed.items()]
+    _echo_quotes(report, tickers=tickers, elapsed=time.perf_counter() - started)
+
+
+def _echo_quotes(report: QuoteReport, *, tickers: list[str] | None, elapsed: float) -> None:
+    which = (
+        _count(len(tickers), "ticker")
+        if tickers
+        else _count(report.listed, "listed security", "listed securities")
+    )
+    if report.provider == NullQuoteProvider.name:
+        typer.echo(f"fetch-quotes  QUOTE_PROVIDER=null: nothing asked for {which}")
+    else:
+        typer.echo(
+            f"fetch-quotes  {report.provider}: {report.asked:,} asked of {which}, "
+            f"in {_duration(elapsed)}"
+        )
+        latest = f", latest {report.latest}" if report.latest else ""
+        _line("written", _count(report.written, "close") + latest)
+        if report.missing:
+            _line(
+                "no close",
+                f"{len(report.missing):,}, delisted or unknown to {report.provider}: "
+                + _some(report.missing),
+            )
+        if report.failed:
+            _line("failed", f"{len(report.failed):,}: " + _some(sorted(report.failed)))
+            for ticker, error in list(report.failed.items())[:_MAX_ECHOED_WARNINGS]:
+                _line("", f"{ticker}: {error}")
+        if report.ambiguous:
+            _line(
+                "ambiguous",
+                f"{_count(len(report.ambiguous), 'ticker')} two listed securities claim, not "
+                f"asked: {_some(report.ambiguous)}; see cusip-coverage",
+            )
+    if report.unknown:
+        _line("unknown", f"no listed security has {_some(report.unknown)}")
+
+
+def _some(tickers: list[str]) -> str:
+    named = ", ".join(tickers[:_TICKERS_NAMED])
+    rest = len(tickers) - _TICKERS_NAMED
+    return named + (f" and {rest:,} more" if rest > 0 else "")
 
 
 def _held(value: Decimal) -> str:

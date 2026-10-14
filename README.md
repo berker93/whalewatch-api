@@ -997,6 +997,43 @@ start was unknown. A range it would swallow whole, or cut in two, is refused
 one ticker at a time; the database enforces it with an exclusion constraint.
 Then drops every response the API has cached.
 
+### `fetch-quotes [--ticker T ...]`
+
+The latest close of every listed security, from `QUOTE_PROVIDER`
+([app/ingestion/enrichment/quotes.py](app/ingestion/enrichment/quotes.py)),
+into `security_quote`. Listed means a ticker and no `delisted_by`. A ticker two
+listed securities claim is not asked about, since the close would go to both.
+`--ticker` asks about only those, spelled any way.
+
+**`QUOTE_PROVIDER=null` is the default, and production's.** It knows no quotes,
+so nothing is asked and the table stays empty:
+
+```
+fetch-quotes  QUOTE_PROVIDER=null: nothing asked for 10,785 listed securities
+```
+
+`yfinance` scrapes Yahoo, for development only (see
+[Configuration](#configuration)). It is not installed by default:
+
+```bash
+uv sync --group quotes
+QUOTE_PROVIDER=yfinance uv run python -m app.cli fetch-quotes --ticker NVDA --ticker BRK.B
+```
+
+```
+fetch-quotes  yfinance: 2 asked of 2 tickers, in 0.9s
+  written     2 closes, latest 2026-10-13
+```
+
+Tickers are asked in batches of 200. A ticker with no close is reported under
+`no close`. A batch that raises is asked again one ticker at a time, so a
+ticker that breaks the provider fails alone (`failed`, and the run is
+`partial`). Ten single failures in a row, or no close for any ticker asked,
+means the provider is broken: exit 1, keeping the closes already written. A
+close dated today is used only after 16:30 New York time, since before then it
+is the price so far. A re-run replaces the closes for the same trading day.
+Drops every response the API has cached when it writes anything.
+
 ### `runs [--job NAME] [--limit N]`
 
 Lists the most recent job runs, newest first, from `ingestion_run`. Every verb
@@ -1480,6 +1517,7 @@ Write these down once so you are not re-deriving them from a 13F XML at midnight
 | EDGAR daily index | none | everything filed on one day — how we find Form 4s, whose filers we cannot know in advance |
 | EDGAR archives | none | the documents themselves |
 | OpenFIGI | optional free API key (`OPENFIGI_API_KEY`, 10× the quota) | CUSIP → ticker, because 13F reports neither ticker nor name we can trust |
+| Yahoo, through yfinance | none; **development only**, not licensed for redistribution | latest closes (`fetch-quotes`), and only when `QUOTE_PROVIDER=yfinance`. Production runs `null` and has no market data |
 
 All public, all free, hard-capped at **10 requests/second across all of sec.gov**
 by SEC's fair-access policy. `SEC_RATE_LIMIT_PER_SECOND` defaults to 8 and
@@ -1627,6 +1665,12 @@ Five things worth knowing:
   submissions history. Nothing in the cache expires, so a cached submissions
   index misses anything filed since. `Settings` refuses the variable in staging
   and production. Delete the directory to see what EDGAR says today.
+- **`QUOTE_PROVIDER=yfinance` is for development only.** Yahoo's data is not
+  licensed for redistribution, so `Settings` refuses it in production, the
+  provider refuses to be constructed there, and yfinance is in the `quotes`
+  dependency group, which neither `uv sync` nor the image installs. Staging may
+  use it. The default, `null`, fetches nothing, and every endpoint works
+  without quotes.
 - **`RAW_STORE_BACKEND=local` is for development only.** Staging and production
   must use `s3`, with a bucket, so archived documents outlive the container. See
   [The raw archive](#the-raw-archive).

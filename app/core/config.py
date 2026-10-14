@@ -120,6 +120,16 @@ class Settings(BaseSettings):
     # last checked.
     openfigi_api_key: SecretStr | None = None
 
+    # --- quotes -----------------------------------------------------------------
+    # Where ``fetch-quotes`` gets latest closes (app/ingestion/enrichment/quotes.py).
+    # "null" gets nothing and is the default, and production's: every price the
+    # API publishes is derived from SEC filings, and a quote is a vendor's data
+    # under the vendor's licence. "yfinance" scrapes Yahoo, which is fine for
+    # development and licensed for no one to redistribute, so production refuses
+    # it. It is also not installed in the image: it is in the "quotes"
+    # dependency group (uv sync --group quotes).
+    quote_provider: Literal["null", "yfinance"] = "null"
+
     # --- raw document archive -----------------------------------------------
     # Where every fetched EDGAR document is kept, byte for byte, before a parser
     # sees it (app/storage). "local" writes under raw_store_local_root and is for
@@ -184,6 +194,18 @@ class Settings(BaseSettings):
         if self.edgar_cache_dir is not None and self.environment in ("staging", "production"):
             raise ValueError(
                 f"EDGAR_CACHE_DIR is for development and must be unset in {self.environment}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _yfinance_is_not_for_production(self) -> Self:
+        """Production only, not staging: staging is not public, and is where a
+        provider is tried before anything is paid for. The provider refuses
+        production too, when constructed; this is the same refusal at boot."""
+        if self.quote_provider == "yfinance" and self.environment == "production":
+            raise ValueError(
+                "QUOTE_PROVIDER=yfinance is for development: Yahoo's data is not licensed "
+                "for redistribution. Production runs QUOTE_PROVIDER=null"
             )
         return self
 

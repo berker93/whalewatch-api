@@ -57,6 +57,12 @@ plugins = ["pydantic.mypy"]
 module = ["testcontainers.*"]
 ignore_missing_imports = true
 
+# Untyped, and in the optional "quotes" group, so often not installed at all.
+# Imported in one place (app/ingestion/enrichment/quotes.py) and used as Any.
+[[tool.mypy.overrides]]
+module = ["yfinance", "yfinance.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # Spelled out rather than left to the default, which pytest-asyncio warns about
@@ -88,4 +94,10 @@ dev = [
     "testcontainers[postgres]>=4.15",
     "types-aiobotocore[s3]>=2.15",
     "types-pyyaml>=6.0",
+]
+# Development only, and not a default group, so `uv sync` in the image never
+# installs it: QUOTE_PROVIDER=yfinance scrapes Yahoo, whose data is not licensed
+# for redistribution. `uv sync --group quotes` on a laptop.
+quotes = [
+    "yfinance>=1.7.0",
 ]

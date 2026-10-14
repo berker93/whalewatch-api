@@ -70,6 +70,8 @@ TRACKED: Final = {
         ["30303M102", "--ticker", "FB", "--to", "2022-06-09"],
         "failed",
     ),
+    # QUOTE_PROVIDER=null, the default: nothing is asked.
+    "fetch-quotes": ("fetch-quotes", [], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.
