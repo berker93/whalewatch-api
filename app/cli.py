@@ -1,6 +1,6 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
-audit-amendments, check-data, recompute, backfill, runs, refresh-views, reconcile,
-import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias.
+audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
+reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -25,6 +25,8 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli recompute --filer berkshire-hathaway
     uv run python -m app.cli recompute --period 2026Q1
     uv run python -m app.cli recompute --all
+    uv run python -m app.cli detect-splits --all --dry-run
+    uv run python -m app.cli detect-splits --period 2024Q2
     uv run python -m app.cli refresh-views
     uv run python -m app.cli refresh-views --view mv_quarter_flows --no-concurrent
     uv run python -m app.cli reconcile
@@ -43,9 +45,9 @@ it starts and its outcome as it ends, and binds the row's id as ``run_id`` on
 every log line in between. ``runs`` lists them. The exceptions are ``runs``
 itself, which reads the record, and ``verify-investors``, which has no database
 to write it to. A test fails if a new verb is neither tracked nor one of those.
-A verb that publishes (``recompute``, and ``ingest-filing`` or ``backfill`` when
-they load something) then runs ``refresh-views`` as a second run, which names
-the first in its ``after_run_id``.
+A verb that publishes (``recompute``, ``detect-splits``, and ``ingest-filing``
+or ``backfill`` when they load something) then runs ``refresh-views`` as a
+second run, which names the first in its ``after_run_id``.
 
 Every verb that changes what the API serves — those, ``refresh-views``,
 ``seed-investors``, ``resolve-cusips``, ``resolve-cusip`` and ``ticker-alias``
@@ -119,7 +121,7 @@ from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
 from app.db.models.sec_13f_security import ListStatus
-from app.db.models.security import ResolutionSource
+from app.db.models.security import ResolutionSource, Security
 from app.db.queries.amendments import PeriodFiling, PeriodResolution, audit_amendments
 from app.db.queries.checks import DataCheckReport, check_data
 from app.db.queries.cusip_coverage import DEFAULT_THRESHOLD_PCT, CusipCoverage, cusip_coverage
@@ -128,9 +130,16 @@ from app.db.queries.runs import RunSummary, job_names, recent_runs
 from app.db.session import create_engine, create_session_factory, session_scope
 from app.derived.implied_price import PriceRebuild
 from app.derived.position_change import ChangeRebuild
-from app.derived.recompute import Recomputed, hold_recompute_lock, recompute
+from app.derived.recompute import (
+    Recomputed,
+    Redetected,
+    detect_splits,
+    hold_recompute_lock,
+    recompute,
+)
 from app.derived.reconcile import INVARIANTS, SAMPLE, Reconciliation, reconcile
 from app.derived.scope import Pair, Scope, filing_pairs, resolve_scope
+from app.derived.security_split import SplitRebuild, Verdict, ratio_label
 from app.derived.views import MATERIALISED_VIEWS, Refreshed, refresh_order, refresh_views
 from app.ingestion.archive import archive_13f_documents, read_13f_documents
 from app.ingestion.backfill import (
@@ -804,6 +813,8 @@ def _echo_published(published: Recomputed) -> None:
     changed = published.scope | Scope.of(published.following)
     _line("changes", f"{_actions(published.changes)} in {_quarters(changed)}")
     _line("prices", f"{_grades(published.prices)} in {periods}")
+    if published.splits.moved:
+        _line("splits", _splits(published.splits))
 
 
 def _line(label: str, value: str) -> None:
@@ -1731,10 +1742,11 @@ def check_data_command(
 
     Lists periods withheld from position_snapshot because a suspect filing
     counts toward them, periods whose top position is over 90% of the
-    portfolio, positions whose share count grew more than 10,000% in a quarter,
-    and quarters with no 13F between a filer's first and last. Most of these
-    fire legitimately — a big enough stock split is a 10,000% jump until you
-    look at the price — and each is there to be looked at. Writes nothing.
+    portfolio, positions whose share count grew more than 10,000% in a quarter
+    other than across a split detect-splits has found, and quarters with no 13F
+    between a filer's first and last. Most of these fire legitimately — a big
+    enough split nothing detected is a 10,000% jump until you look at the
+    price — and each is there to be looked at. Writes nothing.
     Exits 1 if anything was found, 2 if --filer names no filer.
     """
     try:
@@ -2013,6 +2025,17 @@ async def _recompute(
             low=rebuilt.prices.low,
             unpriced=rebuilt.prices.unpriced,
         )
+        logger.info(
+            "security_split.recomputed",
+            filer=slug,
+            period=None if period is None else _quarter(period),
+            splits=len(rebuilt.splits.splits),
+            added=len(rebuilt.splits.added),
+            removed=len(rebuilt.splits.removed),
+            rerated=len(rebuilt.splits.rerated),
+            crossing_pairs=len(rebuilt.crossing),
+            split_changes=changes.split,
+        )
     _echo_rebuild(rebuilt, scope=described or "every filer")
     # Even after a rebuild that published nothing: it may have deleted rows
     # that the views still count.
@@ -2036,6 +2059,13 @@ def _echo_rebuild(rebuilt: Recomputed, *, scope: str) -> None:
             f"which start from a rebuilt one: {_quarters(Scope.of(rebuilt.following))}",
         )
     _line("prices", f"implied_price: {_grades(rebuilt.prices)}")
+    _line("splits", f"security_split: {_splits(rebuilt.splits)}")
+    if rebuilt.crossing:
+        _line(
+            "across",
+            f"also the changes of {_count(len(rebuilt.crossing), 'pair')} of other filers "
+            f"across a split that moved: {_quarters(Scope.of(rebuilt.crossing))}",
+        )
     if not rebuild.suspect_periods:
         return
     periods = _count(rebuild.suspect_periods, "period")
@@ -2050,10 +2080,19 @@ def _echo_rebuild(rebuilt: Recomputed, *, scope: str) -> None:
 
 
 def _actions(changes: ChangeRebuild) -> str:
+    adjusted = f" ({changes.split:,} across a split)" if changes.split else ""
     return (
         f"{changes.new:,} new, {changes.add:,} add, {changes.trim:,} trim, "
-        f"{changes.hold:,} hold, {changes.exit:,} exit"
+        f"{changes.hold:,} hold, {changes.exit:,} exit{adjusted}"
     )
+
+
+def _splits(splits: SplitRebuild) -> str:
+    """The splits detected, and how many of them are new, gone or re-rated since the last time."""
+    moved = (
+        f"{len(splits.added):,} new, {len(splits.removed):,} gone, {len(splits.rerated):,} re-rated"
+    )
+    return f"{_count(len(splits.splits), 'split')} ({moved})"
 
 
 def _grades(prices: PriceRebuild) -> str:
@@ -2068,6 +2107,167 @@ def _quarters(scope: Scope) -> str:
     """The quarters a scope's pairs are in, each once, oldest first: ``2023Q3, 2023Q4``."""
     pairs: frozenset[Pair] = scope.pairs or frozenset()
     return ", ".join(_quarter(period) for period in sorted({period for _, period in pairs}))
+
+
+# --- detect-splits -----------------------------------------------------------
+
+
+@app.command("detect-splits")
+def detect_splits_command(
+    period: Annotated[
+        date | None,
+        typer.Option(
+            "--period",
+            metavar="YYYYQN",
+            parser=_quarter_end,
+            help="Only the splits dated this quarter, e.g. 2024Q2: the first after the split.",
+        ),
+    ] = None,
+    everything: Annotated[
+        bool,
+        typer.Option("--all", help="Every security in every quarter."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report what would be detected and rebuilt. Write nothing."),
+    ] = False,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-views/--no-refresh-views",
+            help="Refresh the materialised views after the rebuild, as refresh-views does.",
+        ),
+    ] = True,
+) -> None:
+    """Detect stock splits from the holders' filings, and reclassify the changes across them.
+
+    A split is a quarter in which the holders' share counts moved by a common
+    ratio (3:2, 2:1, 3:1, 4:1, 5:1, 10:1, 20:1, 25:1, 50:1, or the reverse) and
+    the implied price moved the other way. position_change compares a change
+    across one against the previous shares times the ratio, so a holder who
+    held through a 10:1 is a hold, not a +900% add.
+
+    recompute does this for what it rebuilds, so this is for after a change
+    to how splits are detected, and for looking: --dry-run lists every split
+    it would write, and the outliers, quarters whose share counts and price
+    moved apart like a split's without being detected as one. Look at both
+    before the first real run rewrites five years of position_change.
+
+    Writes security_split for --period or --all, then rebuilds the changes of
+    every filer across a split that appeared, disappeared or changed its
+    ratio, in one transaction. A second run finds nothing moved and rebuilds
+    nothing. Then refreshes the materialised views, unless --no-refresh-views,
+    and drops every response the API has cached.
+
+    Exits 2 without --period or --all.
+    """
+    if everything == (period is not None):
+        typer.secho(
+            "error: --all detects everywhere, so it takes no --period"
+            if everything
+            else "error: say where to detect: --period or --all",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    asyncio.run(_detect_splits(period, dry_run=dry_run, refresh=refresh))
+
+
+async def _detect_splits(period: date | None, *, dry_run: bool, refresh: bool) -> None:
+    """One transaction, rolled back for a dry run, which is otherwise the same run."""
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+
+    async with track_run(
+        settings, "detect-splits", period=period, dry_run=dry_run, refresh_views=refresh
+    ) as run:
+        async with session_scope(settings) as session:
+            found = await detect_splits(session, period=period)
+            names = await _security_names(
+                session,
+                {
+                    verdict.candidate.security_id
+                    for verdict in (*found.splits.splits, *found.splits.outliers)
+                }
+                | {security_id for security_id, _ in found.splits.removed},
+            )
+            if dry_run:
+                await session.rollback()
+        splits = found.splits
+        run.items_seen = len(splits.splits)
+        if not dry_run:
+            run.items_written = len(splits.moved)
+            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+        run.metrics["crossing_pairs"] = len(found.crossing)
+        run.metrics["outliers"] = len(splits.outliers)
+
+        logger.info(
+            "security_split.detected",
+            period=None if period is None else _quarter(period),
+            splits=len(splits.splits),
+            added=len(splits.added),
+            removed=len(splits.removed),
+            rerated=len(splits.rerated),
+            outliers=len(splits.outliers),
+            crossing_pairs=len(found.crossing),
+            split_changes=found.changes.split,
+            dry_run=dry_run,
+        )
+    _echo_detected(
+        found, names, scope="every quarter" if period is None else _quarter(period), dry_run=dry_run
+    )
+    if refresh and not dry_run:
+        await _refresh(settings, after=run.id)
+
+
+async def _security_names(session: AsyncSession, ids: set[int]) -> dict[int, str]:
+    """Each security as a person looks it up: its ticker if it has one, and its CUSIP."""
+    if not ids:
+        return {}
+    rows = await session.execute(
+        select(Security.id, Security.ticker, Security.cusip).where(Security.id.in_(sorted(ids)))
+    )
+    return {
+        security_id: f"{ticker or '-':<6} {cusip}" for security_id, ticker, cusip in rows.tuples()
+    }
+
+
+def _echo_detected(found: Redetected, names: dict[int, str], *, scope: str, dry_run: bool) -> None:
+    """The splits, marked where they differ from before, then the changes rebuilt, then outliers."""
+    splits = found.splits
+    rehearsal = " (dry run: nothing written)" if dry_run else ""
+    typer.echo(f"detect-splits  {scope}: {_splits(splits)}{rehearsal}")
+    for verdict in splits.splits:
+        key = verdict.candidate.key
+        mark = "new" if key in splits.added else "re-rated" if key in splits.rerated else ""
+        typer.echo(f"  {mark:<9}{_verdict(verdict, names)}  {verdict.confidence}")
+    for security_id, period in sorted(splits.removed, key=lambda key: (key[1], key[0])):
+        typer.echo(f"  {'gone':<9}{_quarter(period)}  {names.get(security_id, security_id)}")
+    would = "would rebuild" if dry_run else "rebuilt"
+    typer.echo(
+        f"  changes  {would} {_count(len(found.crossing), 'pair')} across a split that moved: "
+        f"{_actions(found.changes)}"
+    )
+    if splits.outliers:
+        typer.echo(
+            f"  outliers {_count(len(splits.outliers), 'quarter')} whose share counts and price "
+            "moved apart like a split's, not detected as one: not adjusted for"
+        )
+        for verdict in splits.outliers:
+            typer.echo(f"           {_verdict(verdict, names)}  {verdict.reason}")
+
+
+def _verdict(verdict: Verdict, names: dict[int, str]) -> str:
+    """One line of evidence: quarter, security, ratio, holders agreeing, and the ratios."""
+    candidate = verdict.candidate
+    ratio = "-" if candidate.fraction is None else ratio_label(candidate.fraction)
+    price = "n/a" if candidate.price_ratio is None else f"x{candidate.price_ratio:.4f}"
+    return (
+        f"{_quarter(candidate.period_of_report)}  "
+        f"{names.get(candidate.security_id, str(candidate.security_id)):<16}  {ratio:>5}  "
+        f"{candidate.agreeing:>3} of {candidate.holders:<3} holders, {candidate.exact} exact  "
+        f"shares x{candidate.shares_ratio:.3f}, price {price}"
+    )
 
 
 # --- refresh-views -----------------------------------------------------------

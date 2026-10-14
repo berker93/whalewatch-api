@@ -38,6 +38,17 @@ In the order :data:`INVARIANTS` runs them:
 ``value_deltas_add_up``
     A ``(filer, period)``'s ``value_delta`` sums to the change in its
     portfolio's value since the filer's previous published period.
+``changes_adjust_for_splits``
+    A change against a previous position, across a split in
+    ``security_split`` (its previous period before the split, its own on or
+    after), is adjusted by every such split's ratio multiplied, and no other
+    change is. Every ``shares_delta`` of a change across a split is the shares
+    less the previous shares times that ratio, rounded to four places.
+``split_changes_are_plausible``
+    Across each split, the median change of the holders it was detected from,
+    adjusted for it, is within the tolerance detection uses. A wrong ratio, or
+    a split left behind by a rebuild that moved its holders, is the median
+    holder's change.
 ``nothing_negative``
     No snapshot row has negative shares or a negative value.
 ``prices_count_every_observation``
@@ -90,6 +101,7 @@ from sqlalchemy import (
     ColumnElement,
     Date,
     FunctionElement,
+    Numeric,
     Select,
     SQLColumnExpression,
     Text,
@@ -104,6 +116,7 @@ from sqlalchemy import (
     or_,
     select,
     table,
+    true,
     union_all,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,9 +129,11 @@ from app.db.models.implied_price import ImpliedPrice
 from app.db.models.position_change import ChangeAction, PositionChange
 from app.db.models.position_snapshot import PositionSnapshot
 from app.db.models.security import Security
+from app.db.models.security_split import SecuritySplit
 from app.db.queries.effective import EFFECTIVE_FILING
 from app.db.queries.periods import FILER_PERIOD
 from app.derived.implied_price import PRICE_PLACES
+from app.derived.security_split import AGREEMENT_TOLERANCE
 from app.derived.views import MATERIALISED_VIEWS, MaterialisedView
 
 #: How far a period's stored weights may sum from 100. Each weight is rounded to
@@ -800,6 +815,133 @@ def value_deltas_add_up(published: Published) -> Select[Any]:
     )
 
 
+def changes_adjust_for_splits(published: Published) -> Select[Any]:
+    """Each change adjusted for a split it does not cross, or not for one it does, or wrongly.
+
+    The splits a change crosses are those of its security after its previous
+    period and on or before its own. Only a change against a previous position
+    is adjusted: not a ``new`` one, which has none, nor an ``exit``.
+    """
+    change, split = PositionChange, SecuritySplit
+    crossed = (
+        select(
+            func.count().label("splits"),
+            func.round(func.exp(func.sum(func.ln(cast(split.numerator, Numeric))))).label("up"),
+            func.round(func.exp(func.sum(func.ln(cast(split.denominator, Numeric))))).label("down"),
+        )
+        .where(
+            split.security_id == change.security_id,
+            split.period_of_report > change.prev_period_of_report,
+            split.period_of_report <= change.period_of_report,
+        )
+        .lateral("crossed")
+    )
+    adjusted = and_(change.prev_shares.is_not(None), change.action != _EXIT, crossed.c.splits > 0)
+    previous = case(
+        (adjusted, func.round(change.prev_shares * crossed.c.up / crossed.c.down, 4)),
+        else_=func.coalesce(change.prev_shares, 0),
+    )
+    return _found(
+        select(
+            *_violation(
+                filer_id=change.filer_id,
+                period=change.period_of_report,
+                security_id=change.security_id,
+                problem=case(
+                    (change.is_split & ~adjusted, "adjusted for a split it does not cross"),
+                    (~change.is_split & adjusted, "not adjusted for a split it crosses"),
+                    (
+                        change.split_ratio != func.round(crossed.c.up / crossed.c.down, 10),
+                        "adjusted by a ratio other than the splits'",
+                    ),
+                    (
+                        change.shares_delta != change.shares - previous,
+                        "a share delta not against the previous shares, split-adjusted",
+                    ),
+                ),
+                detail=_text(
+                    "%s of %s shares against %s, delta %s, split ratio %s; "
+                    "%s splits crossed, %s:%s",
+                    change.action,
+                    change.shares,
+                    change.prev_shares,
+                    change.shares_delta,
+                    change.split_ratio,
+                    crossed.c.splits,
+                    crossed.c.up,
+                    crossed.c.down,
+                ),
+            )
+        )
+        .select_from(change)
+        .join(crossed, true())
+        # A change no split is near has its deltas checked nowhere else either:
+        # they are as filed, and a breakage of them is other invariants' to see.
+        .where(or_(change.is_split, crossed.c.splits > 0))
+    )
+
+
+def split_changes_are_plausible(published: Published) -> Select[Any]:
+    """Each split its holders do not bear out, as the changes adjusted for it now stand.
+
+    The holders a split is detected from are those holding the security in
+    the quarter before it and in its own, and their median, adjusted, must have
+    moved by no more than :data:`~app.derived.security_split.AGREEMENT_TOLERANCE`
+    either way. Detection makes sure of that when it writes the split. This is
+    the rule checked again on the published changes, so a split left behind by
+    a rebuild that moved its holders, or written with the wrong ratio, is
+    caught.
+
+    The median of those holders, and only those. One holder's change, however
+    large, is a trade: a 70-share stub bought up to 190,001 shares across a
+    20-for-1. And a holder across a skipped quarter has two quarters of
+    trading in its change: across ePlus's 2-for-1, one that skipped 2021Q4 is
+    +122%, and counting it moves the median.
+    """
+    change, split = PositionChange, SecuritySplit
+    moved = func.percentile_disc(0.5).within_group(
+        change.shares / (change.prev_shares * change.split_ratio)
+    )
+    return (
+        select(
+            *_violation(
+                filer_id=None,
+                period=split.period_of_report,
+                security_id=split.security_id,
+                problem="a split its holders' adjusted changes do not bear out",
+                detail=_text(
+                    "%s:%s; across it, %s holders moved by a median of x%s, adjusted",
+                    split.numerator,
+                    split.denominator,
+                    func.count(),
+                    func.round(moved, 3),
+                ),
+            )
+        )
+        .select_from(split)
+        .join(
+            change,
+            and_(
+                change.security_id == split.security_id,
+                change.period_of_report == split.period_of_report,
+                # The quarter end before: the day before the split's quarter began.
+                change.prev_period_of_report
+                == cast(func.date_trunc("quarter", split.period_of_report), Date) - literal(1),
+                change.is_split,
+                change.prev_shares > 0,
+                change.shares > 0,
+            ),
+        )
+        .group_by(split.security_id, split.period_of_report, split.numerator, split.denominator)
+        .having(
+            or_(
+                moved > AGREEMENT_TOLERANCE,
+                moved * AGREEMENT_TOLERANCE < 1,
+            )
+        )
+    )
+
+
 def nothing_negative(published: Published) -> Select[Any]:
     """Each snapshot row with negative shares or a negative value."""
     snapshot = PositionSnapshot
@@ -1050,6 +1192,16 @@ INVARIANTS: Final = (
         "value_deltas_add_up",
         "every (filer, period)'s value deltas sum to its change in portfolio value, exactly",
         value_deltas_add_up,
+    ),
+    Invariant(
+        "changes_adjust_for_splits",
+        "every change across a detected split is adjusted by its ratio, and no other is",
+        changes_adjust_for_splits,
+    ),
+    Invariant(
+        "split_changes_are_plausible",
+        "across each split, the median holder's adjusted change is within 25%",
+        split_changes_are_plausible,
     ),
     Invariant(
         "nothing_negative",

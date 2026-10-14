@@ -695,6 +695,7 @@ def test_recompute_period_rebuilds_the_quarter_and_the_changes_after_it(
         "  next        also the changes of 2 next periods, which start from a rebuilt one: 2024Q4",
         # Alpha's Q3, both filers at $10: the one security either held there.
         "  prices      implied_price: 1 price (0 high, 1 medium, 0 low, 0 unpriced)",
+        "  splits      security_split: 0 splits (0 new, 0 gone, 0 re-rated)",
     ]
     assert refresh.startswith("refresh-views  5 materialised views refreshed in ")
 
@@ -712,6 +713,7 @@ def test_recompute_filer_and_period_rebuild_that_one_pair(committed: AsyncEngine
         "  next        also the changes of 1 next period, which start from a rebuilt one: 2024Q4",
         # B's row is in it too: a price is every holder's, whichever was rebuilt.
         "  prices      implied_price: 1 price (0 high, 1 medium, 0 low, 0 unpriced)",
+        "  splits      security_split: 0 splits (0 new, 0 gone, 0 re-rated)",
     ]
 
 

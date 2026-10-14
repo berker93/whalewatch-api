@@ -122,6 +122,14 @@ def quarters_between(first: date, last: date) -> list[date]:
     return [_from_index(index) for index in range(_index(first), _index(last) + 1)]
 
 
+def next_quarter_end(period: date) -> date:
+    """The quarter end after ``period``: ``2026-03-31`` -> ``2026-06-30``.
+
+    :raises ValueError: ``period`` is not a quarter end.
+    """
+    return _from_index(_index(period) + 1)
+
+
 def _index(period: date) -> int:
     """Quarters since year 0, so that consecutive quarters differ by one."""
     if not is_quarter_end(period):

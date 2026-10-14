@@ -19,6 +19,7 @@ from sqlalchemy import (
     Index,
     Numeric,
     Text,
+    false,
     func,
     text,
 )
@@ -27,6 +28,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.models.base import Base
 from app.db.models.holding import MONEY, QUANTITY
 from app.db.models.position_snapshot import WEIGHT_PCT
+from app.db.models.security_split import SPLIT_RATIO
 
 
 class ChangeAction(StrEnum):
@@ -48,6 +50,8 @@ class ChangeAction(StrEnum):
         The same shares as before, within
         :data:`~app.derived.position_change.HOLD_BAND_PCT` either way. Judged
         on shares alone, so a stock that doubled in price is still a hold.
+        Across a split, the same shares as before times the ratio: a holder
+        of 100 shares who has 1,000 after a 10-for-1 held.
     ``exit``
         Held in the filer's previous period and not in this one. The row is a
         position of nothing: no shares, no value, no weight, and the deltas
@@ -74,6 +78,14 @@ NEW_CHECK = "(action = 'new') = (prev_shares IS NULL)"
 #: An exit is a position of nothing. One way only: a position the filer still
 #: lists at zero shares is not an exit, it is a filer listing zero shares.
 EXIT_CHECK = "action <> 'exit' OR (shares = 0 AND value_usd = 0 AND weight_pct = 0)"
+
+#: A split-adjusted change says by how much, and only a split-adjusted one does.
+SPLIT_CHECK = "is_split = (split_ratio IS NOT NULL)"
+
+#: Only a change against a previous position is adjusted. A ``new`` one has no
+#: previous shares to adjust, and an ``exit`` is the whole previous position
+#: gone, whatever the ratio.
+SPLIT_ROW_CHECK = "NOT is_split OR action NOT IN ('new', 'exit')"
 
 # A change in shares, in percent of the previous count. Falls are bounded at
 # -100, and growth is not: one share to a million is +99,999,900%. 22 integer
@@ -163,10 +175,17 @@ class PositionChange(Base):
 
     The number of shares by which the reported position changed, and the field
     the read API returns. The whole previous position, negative, for an exit.
-    Not "sold" when negative, for the reason given on ``trim``."""
+    Not "sold" when negative, for the reason given on ``trim``.
+
+    Across a split (:attr:`is_split`), less :attr:`prev_shares` times
+    :attr:`split_ratio` instead, in today's shares, rounded to the column's
+    four places. A holder who held through a 10-for-1 untouched has a delta of
+    nothing, not nine times the position. So across a split, the deltas no
+    longer sum to the position."""
 
     shares_delta_pct: Mapped[Decimal | None] = mapped_column(CHANGE_PCT)
-    """:attr:`shares_delta` as a percentage of :attr:`prev_shares`.
+    """:attr:`shares_delta` as a percentage of :attr:`prev_shares`, or of
+    :attr:`prev_shares` times :attr:`split_ratio` across a split.
 
     -100 for an exit. Null when the action is ``new``, since growth from
     nothing has no percentage, and when the previous count was zero for the
@@ -180,6 +199,22 @@ class PositionChange(Base):
     weight_delta: Mapped[Decimal | None] = mapped_column(WEIGHT_PCT)
     """:attr:`weight_pct` less :attr:`prev_weight_pct` in percentage points,
     or less nothing when ``new``. Null when either weight is."""
+
+    is_split: Mapped[bool] = mapped_column(server_default=false())
+    """Whether a split happened between :attr:`prev_period_of_report` and this
+    period, so that :attr:`action` and the share deltas are against the
+    previous shares times :attr:`split_ratio`.
+
+    Only on an ``add``, ``trim`` or ``hold``. A ``new`` position has no
+    previous shares to adjust, and an ``exit`` is the previous position gone
+    whatever the ratio: its deltas stay the position as it was filed, which is
+    what ``mv_quarter_flows`` prices it at."""
+
+    split_ratio: Mapped[Decimal | None] = mapped_column(SPLIT_RATIO)
+    """The ratio of every split between :attr:`prev_period_of_report` and this
+    period, multiplied: 10 across a 10-for-1, 0.1 across a 1-for-10. Null
+    exactly when :attr:`is_split` is false. More than one split only when the
+    filer skipped a quarter."""
 
     suspect: Mapped[bool] = mapped_column()
     """Whether a suspect filing counts toward this period or the previous one.
@@ -202,6 +237,8 @@ class PositionChange(Base):
         CheckConstraint(ACTION_CHECK, name="action_is_known"),
         CheckConstraint(NEW_CHECK, name="new_when_not_held_before"),
         CheckConstraint(EXIT_CHECK, name="an_exit_holds_nothing"),
+        CheckConstraint(SPLIT_CHECK, name="split_has_a_ratio"),
+        CheckConstraint(SPLIT_ROW_CHECK, name="split_against_a_position"),
         # Who added, trimmed, opened or exited a stock in a period (0017).
         # Partial because that question never includes a hold, so only a query
         # that says action <> 'hold' can use it.

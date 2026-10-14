@@ -465,14 +465,17 @@ check-data  every filer: 2 findings — 1 suspect period, 0 concentrated periods
 | --- | --- |
 | suspect periods | Every `(filer, period)` a suspect filing counts toward — exactly what `recompute` withholds. A suspect filing a later restatement replaced is not listed: nothing reads it |
 | concentrated periods | A period whose largest position is over 90% of its value |
-| position jumps | A security whose share count grew more than 10,000% on the calendar quarter before. Shares of stock only, as `position_snapshot` holds them. Printed with the implied price on both sides |
+| position jumps | A security whose share count grew more than 10,000% on the calendar quarter before, other than across a split `security_split` has. Shares of stock only, as `position_snapshot` holds them. Printed with the implied price on both sides |
 | filing gaps | Quarters with no loaded 13F between a filer's first and last. A `13F-NT` fills its quarter. Says whether filings for the gap are on file and did not load (run `backfill`) or were never found (check EDGAR) |
 
 **Most of these fire legitimately, and that is the point.** The jump check
-exists for stock splits: shares multiply and the price divides, so a split
+existed for stock splits: shares multiply and the price divides, so a split
 looks exactly like a manager buying many times over until you read the price.
-Only an extreme split crosses 10,000% — 20-for-1 is +1,900% — and a share count
-read from the wrong column looks the same. A holding company does keep 95% of
+Only an extreme split crosses 10,000% — CMG's 50-for-1, the largest in five
+years, is +4,900% — and a share count read from the wrong column looks the
+same. A split [`detect-splits`](#detect-splits---period-yyyyqn---all---dry-run---no-refresh-views)
+has found is left out, so a quiet jump check is not evidence that the splits
+were found. A holding company does keep 95% of
 its book in one name. Each finding is there to be looked at.
 
 `--include-suspect` also checks suspect periods' positions, as `recompute
@@ -495,7 +498,9 @@ the previous shares, value and weight and the deltas. A change in shares within
 read as trading. Each position the previous period had and this one does not is
 an `exit`, a row of zero shares whose deltas are the whole previous position. A
 filer's latest period has no exits until it files the next one: a missing
-filing is not an exit.
+filing is not an exit. Across a split in `security_split`, a change is against
+the previous shares times the split's ratio, so a holder who held through a
+10-for-1 is a `hold`, not a +900% `add`.
 
 Then `implied_price`, each security's quarter-end price in each period, read off
 the snapshot rather than bought from a vendor. A 13F value is the position's
@@ -507,6 +512,10 @@ noise: a filer still reporting in thousands, a share count from before a split,
 a stake carried at book value. On the backfill, a value-weighted average would
 have put Coinbase at $78 at the end of 2022Q2. It closed at $47.02, which is the
 median. A holder that reports a position at $0 is counted, not priced.
+
+Then `security_split`, from the prices: see
+[`detect-splits`](#detect-splits---period-yyyyqn---all---dry-run---no-refresh-views).
+The changes are rebuilt last, so that they are adjusted by the splits found.
 
 **What it rebuilds is a set of `(filer, period)` pairs.** `--filer` is every
 period the filer has filed for or published, `--period 2026Q1` is every filer's
@@ -521,6 +530,7 @@ an upsert would leave them behind. Over the same fixtures as above:
 recompute  position_snapshot for every filer: 144 positions in 3 periods of 1 filer
   changes     position_change: 62 new, 8 add, 15 trim, 59 hold, 16 exit
   prices      implied_price: 144 prices (0 high, 0 medium, 144 low, 0 unpriced)
+  splits      security_split: 0 splits (0 new, 0 gone, 0 re-rated)
   withheld    1 period with a suspect filing — check-data lists them; --include-suspect publishes them
 ```
 
@@ -539,6 +549,7 @@ recompute  position_snapshot for 2022Q4: 49 positions in 1 period of 1 filer
   changes     position_change: 13 new, 8 add, 15 trim, 59 hold, 16 exit
   next        also the changes of 1 next period, which start from a rebuilt one: 2023Q3
   prices      implied_price: 49 prices (0 high, 0 medium, 49 low, 0 unpriced)
+  splits      security_split: 0 splits (0 new, 0 gone, 0 re-rated)
 ```
 
 Next *published*, not next calendar quarter: 2023Q3 follows 2022Q4 across two
@@ -555,6 +566,13 @@ and nothing else: one filing of forty positions reprices forty securities. A
 security a restatement drops is repriced without it. Prices do not walk forward,
 because the next period's snapshot, which they are read from, is unchanged.
 One filer alone holds everything in these fixtures, so every price is `low`.
+
+**Splits are rebuilt with the prices, and one quarter after.** A split at
+`(security, period)` compares that quarter's shares and price with the one
+before, so a filing for Q1 can make or unmake a split dated Q2. And a split is
+every holder's: when one appears, disappears or changes its ratio, the changes
+of every filer across it are rebuilt too, listed on an `across` line. A rebuild
+that leaves every split as it was rebuilds no other filer's changes.
 
 **Ingesting a filing runs it for you.** `ingest-filing` and `backfill` rebuild
 the pair each filing is filed under, and the period after, in the transaction
@@ -580,9 +598,71 @@ published with one. Exit 1 if `--filer` names no filer, and 2 without `--filer`,
 `--period` or `--all`, or with `--all` and either of them.
 
 Migrations `0011` and `0012` create the two tables empty, in their current
-shape, `0013` adds exits without writing any, and `0025` creates
-`implied_price` empty, so run `recompute --all` once after upgrading past them.
-That refreshes the views too.
+shape, `0013` adds exits without writing any, `0025` creates `implied_price`
+empty and `0026` creates `security_split` empty, so run `recompute --all` once
+after upgrading past them. That refreshes the views too. Past `0026`, run
+`detect-splits --all --dry-run` first and read what it would detect: the
+`recompute --all` after it rewrites the changes across every split it finds.
+
+### `detect-splits [--period YYYYQN] [--all] [--dry-run] [--no-refresh-views]`
+
+Stock splits, found from the holders' filings: there is no corporate-action
+feed. Compared as filed, a 10-for-1 makes every holder of the stock a +900%
+`add`, and inflates `mv_quarter_flows`' bought value by the same. A split is a
+quarter in which the holders' share counts moved by a common ratio and the
+implied price moved the other way. Detected, it is a `security_split` row, and
+`position_change` takes every change across it against the previous shares
+times the ratio. `recompute` does all of this for what it rebuilds. This
+command is for when the detection itself changes, and for looking before it
+does.
+
+Over the five-year backfill, before the first real run:
+
+```
+detect-splits  every quarter: 43 splits (43 new, 0 gone, 0 re-rated) (dry run: nothing written)
+  new      2021Q4  ISRG   46120E602    3:1    9 of 12  holders, 0 exact  shares x2.967, price x0.3614  medium
+  new      2022Q2  AMZN   023135106   20:1   21 of 35  holders, 2 exact  shares x20.028, price x0.0326  high
+  new      2024Q2  CMG    169656105   50:1    4 of 11  holders, 1 exact  shares x50.000, price x0.0216  high
+  new      2025Q2  ORLY   67103H107   10:1    2 of 6   holders, 0 exact  shares x10.893, price x0.0629  low
+  ...
+  changes  would rebuild 302 pairs across a split that moved: 71,852 new, 89,360 add, 86,226 trim, 18,628 hold, 70,262 exit (494 across a split)
+  outliers 71 quarters whose share counts and price moved apart like a split's, not detected as one: not adjusted for
+           2024Q3  CTAS   172908105    4:1    1 of 5   holders, 0 exact  shares x4.440, price x0.2940  1 of 5 holders agree
+  ...
+```
+
+The `changes` line counts every change of the filer-periods rebuilt, and in
+brackets the ones across a split. ORLY's was a 15-for-1, a ratio not on the
+list, so it is detected as the nearest, `low`: read the `low` ones first.
+About 17 seconds, rolled back.
+
+**The rule.** Each filer holding the security this quarter and the one before
+has a shares ratio, now over before. Their median, snapped to the nearest of
+3:2, 2:1, 3:1, 4:1, 5:1, 10:1, 20:1, 25:1, 50:1 or a reverse within 25%, is the
+candidate. At least two holders, and a third of them, must be within 25% of it:
+hedge funds trade every quarter, so few move by the ratio exactly. The ratio
+times the implied price ratio, one plus the quarter's return, must be between
+0.4 and 1.6 and nearer one than the ratio is. A 3:2, 2:1 or their reverse also
+needs a holder exact to the share, since managers trimming as a price rises
+look like a 2-for-3. A 3:1 or 1:3 needs that or a majority of three or more.
+`high`, `medium` and `low` grade the evidence: an exact holder and three
+agreeing, either, or neither.
+
+**Look before the first real run.** A false positive turns a real accumulation
+into a `hold`, a quieter error than the one this fixes. `--dry-run` runs
+everything and rolls it back: every split it would write, marked `new`, `gone`
+or `re-rated` against what is there, the changes it would rebuild, and the
+outliers. An outlier is a quarter whose median holder's shares and price moved
+apart by 2.5 times or more with no split detected: a split of a ratio not on
+the list, one the holders traded through too heavily to agree, a spin-off or a
+merger. None of them is adjusted for.
+
+Writes `security_split` for `--period` (the splits dated that quarter, the
+first after the split) or `--all`, then rebuilds the changes of every filer
+across a split that appeared, disappeared or changed ratio, in one transaction.
+A second run finds nothing moved and rebuilds nothing. Then refreshes the views,
+unless `--no-refresh-views`, and drops the API's cache. Exit 2 without
+`--period` or `--all`.
 
 ### `refresh-views [--view NAME] [--no-concurrent]`
 
@@ -674,12 +754,12 @@ creates the views filled from whatever the derived tables held then.
 The published tables checked after the fact: against each other, against the
 filings they came from, and against the views built on them. `check-data`
 looks at filings before they are published; this looks at what was. Read-only,
-one `REPEATABLE READ` snapshot for every check, about 20 s over the full
+one `REPEATABLE READ` snapshot for every check, about 27 s over the full
 backfill. `make reconcile` runs it in the container. Output with one exit
 missing:
 
 ```
-reconcile  29 positions and 32 changes in 10 periods: 2 of 11 invariants fail
+reconcile  29 positions and 32 changes in 10 periods: 2 of 13 invariants fail
   ok    weights_sum_to_100              every (filer, period)'s weights sum to 100 ± 0.01
   ok    snapshot_traces_to_filing       every position traces to a non-suspect filing that counts toward its period
   ok    changes_match_snapshot          every change but an exit is a snapshot row, and every snapshot row has its change
@@ -692,6 +772,8 @@ reconcile  29 positions and 32 changes in 10 periods: 2 of 11 invariants fail
         1 row break it:
           charlie-fund  2024Q4  value deltas do not add up to the change in portfolio value
             deltas sum to $20000.00; the portfolio went from $40000.00 to $40000.00, a change of $0.00
+  ok    changes_adjust_for_splits       every change across a detected split is adjusted by its ratio, and no other is
+  ok    split_changes_are_plausible     across each split, the median holder's adjusted change is within 25%
   ok    nothing_negative                no position has negative shares or value
   ok    prices_count_every_observation  every position with shares is one observation of exactly one implied price
   ok    prices_are_positive             no implied price is negative or zero

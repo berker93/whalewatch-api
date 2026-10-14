@@ -18,7 +18,7 @@ as three layers rather than one is what makes a parser bug survivable.
         |
         v
   position_snapshot / position_change /       derived, recomputable, droppable
-  implied_price /
+  implied_price / security_split /
   mv_consensus_holdings / mv_quarter_flows /
   mv_filer_summary
 ```
@@ -482,6 +482,8 @@ shares_delta           numeric(20,4)  not null     -- from zero when new
 shares_delta_pct       numeric(28,6)               -- null when new
 value_delta            numeric(20,2)  not null
 weight_delta           numeric(9,6)                -- percentage points
+is_split               boolean   not null default false  -- taken across a split (0026)
+split_ratio            numeric(20,10)              -- that split's ratio; null exactly when not
 suspect                boolean   not null          -- either end of the change is
 computed_at            timestamptz  not null default now()
 primary key (filer_id, period_of_report, security_id)
@@ -551,12 +553,21 @@ LATERAL` with `LIMIT 1` probes once per period, but through a grouped view each
 probe aggregates the whole of the next period. The anti-join is the real cost.
 Exits roughly double the rebuild.
 
-One thing it does not do yet:
-
-- **Splits.** Shares are compared as filed, so across a 4-for-1 split every
-  holder shows an `add` of 300%. Adjusting for splits needs the corporate-action
-  feed, which is Epic 4. Until then, `check-data` flags the extreme ones as
-  position jumps.
+**Across a split, the previous shares are times the ratio** (`0026`). Compared
+as filed, a 10-for-1 makes every holder of the stock a +900% `add`. A change
+whose previous period is before a split in [`security_split`](#security_split)
+and whose own period is on or after it is taken against `prev_shares × ratio`,
+rounded to four places: a holder who held through it is a `hold`, one who also
+bought is an `add` of what they bought, and `shares_delta` and
+`shares_delta_pct` are in today's shares. `is_split` and `split_ratio` say so.
+Across a quarter the filer skipped, every split in it counts, their ratios
+multiplied. `prev_shares` stays as filed, so it is still the previous period's
+snapshot row, and so do `value_delta` and `weight_delta`, which no split
+changes. The cost is that a filer's `shares_delta` no longer sums to its
+position across a split. Only an `add`, `trim` or `hold` is adjusted, a `CHECK`
+says so: a `new` position has nothing to adjust, and an `exit` is the position
+as filed, gone, which is what `mv_quarter_flows` prices it at. The split's
+ratio comes from a `LATERAL` probe of `security_split`'s primary key per row.
 
 Recomputed, never patched. An amendment landing months later changes a past
 period and the comparison of the period after it, and nothing else: a period's
@@ -630,6 +641,74 @@ period is tens of thousands of keys and asyncpg takes at most 32,767 bind
 parameters. Prices do not walk forward with the changes: the next period's
 snapshot is unchanged, so its prices are too. `recompute --all` rebuilds every
 row, in under a second.
+
+### `security_split`
+
+Derived (`0026_security_split`). The stock splits in the data, detected from
+the holders' filings: no corporate-action feed. Rebuilt by `whalewatch
+recompute` after `implied_price`, which it reads, and before `position_change`,
+which reads it. `whalewatch detect-splits` rebuilds it on its own.
+
+```
+security_id        bigint    fk -> security, on delete cascade
+period_of_report   date      not null       -- the first quarter end after the split
+numerator          integer   not null       -- new shares: 20 in 20-for-1, 1 in 1-for-10
+denominator        integer   not null       -- old shares: 1 in 20-for-1, 10 in 1-for-10
+ratio              numeric(20,10)  generated always as (numerator::numeric / denominator) stored
+confidence         text      not null       -- high | medium | low
+holders            integer   not null       -- filers holding it this quarter and the one before
+holders_agreeing   integer   not null       -- whose shares moved by the ratio, within 25%
+holders_exact      integer   not null       -- whose shares are the ratio's, to the share
+shares_ratio       numeric(28,6)  not null  -- the median holder's shares now / before
+price_ratio        numeric(28,10) not null  -- the implied price now / before
+detected_at        timestamptz  not null default now()
+primary key (security_id, period_of_report)
+```
+
+**A split is the holders agreeing and the price corroborating.** Each filer
+that held the security in this quarter and the one before has a shares ratio,
+now over before. The median of them, snapped to the nearest common fraction
+within 25% (3:2, 2:1, 3:1, 4:1, 5:1, 10:1, 20:1, 25:1, 50:1, and the reverse
+of each), is the candidate. Holders agree when their own ratio is within 25% of
+it, not on it: these are hedge funds, which trade every quarter, and of AMZN's
+35 holders across its 20-for-1, two moved by exactly 20 and nineteen by 16 to
+25. At least two must agree, and a third of all of them. Then
+`ratio × price_ratio`, which is one plus the stock's return over the quarter,
+has to be between 0.4 and 1.6, and nearer one than the ratio is.
+
+**The smaller the ratio, the more it takes.** A manager keeping a stock at a
+fixed weight trims a quarter of it when the price rises a third, which is a
+2-for-3's shares ratio with a price to match. On the backfill, the rule above
+found over 900 splits of 3:2, 2:1 and their reverses, nearly none real. So
+those need a holder **exact to the share**, within one share of the previous
+count times the ratio: a holder that did not trade, which rebalancing lands on
+by chance but not to the share. A 3:1 or 1:3 needs that or a majority of at
+least three holders agreeing. 4:1 and beyond need neither. `confidence` is
+`high` for an exact holder and three agreeing, `medium` for either, `low` for
+two agreeing and no exact one.
+
+**The ratio is the fraction, stored exactly.** The arithmetic on shares uses
+`numerator` and `denominator`, so a 3-for-2 of 1,000 shares is 1,500, not
+1,499.99999. `ratio` is generated from them, for reading.
+
+**Rebuilt on the prices' keys and the quarter after.** A split belongs to a
+`(security, period)` and every holder decides it, as a price does. A rebuild
+detects at the securities and periods it reprices, and at the quarter after
+each, since that quarter's detection compares its shares and price with this
+one's: splits walk forward one quarter. When a split appears, goes or changes
+its ratio, the change of every filer across it is rebuilt with the rest, found
+in `position_change` by its previous period being before the split and its own
+on or after.
+
+What it does not detect: a split of any other ratio (ORLY's 15-for-1 is
+detected as 10-for-1, and RYAAY's ADR ratio change as 3-for-1), and a split
+the holders traded through too heavily to agree on (CTAS's 4-for-1, one holder
+of five). Spin-offs, mergers and stock dividends are not splits at all. Where
+the median holder's shares and the price moved apart by 2.5 times or more and
+no split was detected, `detect-splits` lists the quarter as an outlier for a
+person to look at. On the five-year backfill: 43 splits detected, among them
+all 14 that showed as a +80% `add` for five or more holders before, and 71
+outliers.
 
 ### `filer_period`
 
@@ -1081,6 +1160,11 @@ The ones worth a constraint rather than a convention. Everything marked
 - **enforced** — `implied_price.price > 0`, its `confidence IN ('high',
   'medium','low')` and null exactly when the price is, and its counts nest:
   agreeing within priced within observed (`0025_implied_price`).
+- **enforced** — `security_split`'s ratio is a split: both sides positive and
+  different. Its `confidence IN ('high','medium','low')`, and its holders nest:
+  exact within agreeing within all (`0026_security_split`).
+- **enforced** — `position_change.is_split` exactly when `split_ratio` is not
+  null, and only on an `add`, `trim` or `hold` (`0026_security_split`).
 - **enforced** — every materialised view has a unique index on plain columns,
   with no `WHERE`, which is what `REFRESH ... CONCURRENTLY` needs
   (`0014_materialised_views`). `test_materialised_views.py` checks every

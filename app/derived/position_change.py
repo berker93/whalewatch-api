@@ -72,12 +72,23 @@ square of the filer's history. ``CROSS JOIN LATERAL`` with ``LIMIT 1`` probes
 the index once per period, which is cheap against a table. Against this view it
 is not, because each probe reads the whole of the next period to aggregate it.
 
-Not here yet
-------------
-**Splits** are not adjusted for. Share counts are compared as filed, so across
-a 4-for-1 split every holder of the stock shows an ``add`` of 300%. Adjusting
-needs the corporate-action feed, which does not exist yet. ``check-data``
-flags the extreme splits, as position jumps.
+Across a split
+--------------
+Share counts as filed make a 4-for-1 split an ``add`` of 300% for every holder
+of the stock. So a change whose previous period is before a split in
+``security_split`` and whose own period is on or after it is taken against the
+previous shares times the split's ratio, and every split's ratio multiplied
+when the filer skipped a quarter that had another. A holder who held through
+it is a ``hold``, one who held and bought is an ``add`` of what they bought,
+and ``shares_delta`` is in today's shares. The previous figures stay as filed,
+so they are still the previous period's snapshot.
+
+The ratio comes from a ``LATERAL`` over ``security_split`` for each compared
+row, a probe of its primary key: there are a few dozen splits, and the range
+of periods a change spans is not something a hash join can match on. The
+product is ``exp(sum(ln(...)))`` of each side of the fraction, in ``numeric``,
+rounded back to the whole number it is. An exit is not adjusted: the position
+is gone whatever the ratio, and its deltas are the position as it was filed.
 """
 
 from __future__ import annotations
@@ -90,14 +101,18 @@ from sqlalchemy import (
     CTE,
     ColumnElement,
     FunctionElement,
+    Numeric,
     Select,
     SQLColumnExpression,
+    and_,
     case,
+    cast,
     delete,
     false,
     func,
     insert,
     literal,
+    null,
     or_,
     select,
     true,
@@ -108,6 +123,7 @@ from sqlalchemy.orm import aliased
 
 from app.db.models.position_change import ChangeAction, PositionChange
 from app.db.models.position_snapshot import PositionSnapshot
+from app.db.models.security_split import SecuritySplit
 from app.db.queries.periods import FILER_PERIOD
 from app.derived.scope import EVERYTHING, Scope
 
@@ -134,6 +150,8 @@ CHANGE_COLUMNS: Final = (
     "shares_delta_pct",
     "value_delta",
     "weight_delta",
+    "is_split",
+    "split_ratio",
     "suspect",
 )
 
@@ -147,6 +165,8 @@ class ChangeRebuild:
     trim: int
     hold: int
     exit: int
+    split: int = 0
+    """Of the others, the changes taken across a split (``is_split``)."""
 
 
 def position_changes(*, scope: Scope = EVERYTHING) -> Select[Any]:
@@ -172,6 +192,16 @@ def position_changes(*, scope: Scope = EVERYTHING) -> Select[Any]:
 
     now = compared.c
     new = now.prev_shares.is_(None)
+    is_split = and_(~new, now.split_numerator.is_not(None))
+    # The previous shares in today's shares: times the split's ratio, rounded
+    # to the column's places, or as filed.
+    previous = case(
+        (
+            is_split,
+            func.round(now.prev_shares * now.split_numerator / now.split_denominator, 4),
+        ),
+        else_=now.prev_shares,
+    )
 
     def since(previous: ColumnElement[Any]) -> ColumnElement[Any]:
         """The previous figure, or nothing for a new position, which grew from none."""
@@ -189,10 +219,10 @@ def position_changes(*, scope: Scope = EVERYTHING) -> Select[Any]:
             # Multiplied out rather than divided: exact in numeric, and a
             # previous count of zero has nothing to divide by.
             (
-                func.abs(now.shares - now.prev_shares) * 100 <= now.prev_shares * HOLD_BAND_PCT,
+                func.abs(now.shares - previous) * 100 <= previous * HOLD_BAND_PCT,
                 ChangeAction.HOLD.value,
             ),
-            (now.shares > now.prev_shares, ChangeAction.ADD.value),
+            (now.shares > previous, ChangeAction.ADD.value),
             else_=ChangeAction.TRIM.value,
         ).label("action"),
         now.shares,
@@ -202,12 +232,12 @@ def position_changes(*, scope: Scope = EVERYTHING) -> Select[Any]:
         now.prev_shares,
         now.prev_value_usd,
         now.prev_weight_pct,
-        (now.shares - since(now.prev_shares)).label("shares_delta"),
-        ((now.shares - now.prev_shares) * 100 / func.nullif(now.prev_shares, 0)).label(
-            "shares_delta_pct"
-        ),
+        (now.shares - since(previous)).label("shares_delta"),
+        ((now.shares - previous) * 100 / func.nullif(previous, 0)).label("shares_delta_pct"),
         (now.value_usd - since(now.prev_value_usd)).label("value_delta"),
         (now.weight_pct - since(now.prev_weight_pct)).label("weight_delta"),
+        is_split.label("is_split"),
+        case((is_split, now.split_numerator / now.split_denominator)).label("split_ratio"),
         now.suspect,
     ).where(*scope.covers(now.filer_id, now.period_of_report))
 
@@ -235,23 +265,27 @@ async def recompute_position_change(
         insert(PositionChange).from_select(CHANGE_COLUMNS, position_changes(scope=scope))
     )
 
-    counts: dict[str, int] = dict(
-        (
-            await session.execute(
-                select(PositionChange.action, func.count())
-                .where(*in_scope)
-                .group_by(PositionChange.action)
-            )
+    rows = await session.execute(
+        select(
+            PositionChange.action,
+            func.count(),
+            func.count().filter(PositionChange.is_split),
         )
-        .tuples()
-        .all()
+        .where(*in_scope)
+        .group_by(PositionChange.action)
     )
+    counts: dict[str, int] = {}
+    split = 0
+    for action, rebuilt, adjusted in rows.tuples():
+        counts[action] = rebuilt
+        split += adjusted
     return ChangeRebuild(
         new=counts.get(ChangeAction.NEW, 0),
         add=counts.get(ChangeAction.ADD, 0),
         trim=counts.get(ChangeAction.TRIM, 0),
         hold=counts.get(ChangeAction.HOLD, 0),
         exit=counts.get(ChangeAction.EXIT, 0),
+        split=split,
     )
 
 
@@ -336,6 +370,10 @@ def _compared(held: CTE, periods: CTE) -> Select[Any]:
         # which is a first period or a first appearance.
         return case((held_then, column))
 
+    split = _split_between(
+        held.c.security_id, periods.c.prev_period_of_report, held.c.period_of_report
+    )
+
     return (
         select(
             held.c.filer_id,
@@ -350,6 +388,8 @@ def _compared(held: CTE, periods: CTE) -> Select[Any]:
             then(held.c.last_weight_pct).label("prev_weight_pct"),
             or_(held.c.suspect, func.coalesce(periods.c.prev_suspect, false())).label("suspect"),
             false().label("exited"),
+            split.c.numerator.label("split_numerator"),
+            split.c.denominator.label("split_denominator"),
         )
         .select_from(held)
         .join(
@@ -357,6 +397,39 @@ def _compared(held: CTE, periods: CTE) -> Select[Any]:
             (periods.c.filer_id == held.c.filer_id)
             & (periods.c.period_of_report == held.c.period_of_report),
         )
+        .outerjoin(split, true())
+    )
+
+
+def _split_between(
+    security_id: ColumnElement[Any],
+    after: ColumnElement[Any],
+    until: ColumnElement[Any],
+) -> Any:
+    """``LATERAL``: every split of the security after one period and until another, multiplied.
+
+    One row always, an aggregate's: the product of the numerators and of the
+    denominators, or two nulls when there is no split between them, or no
+    previous period at all.
+    """
+
+    def product(side: SQLColumnExpression[int]) -> ColumnElement[Any]:
+        # Postgres has no product aggregate. In numeric, ln and exp of whole
+        # numbers this small round back to exactly the product.
+        return func.round(func.exp(func.sum(func.ln(cast(side, Numeric)))))
+
+    split = SecuritySplit
+    return (
+        select(
+            product(split.numerator).label("numerator"),
+            product(split.denominator).label("denominator"),
+        )
+        .where(
+            split.security_id == security_id,
+            split.period_of_report > after,
+            split.period_of_report <= until,
+        )
+        .lateral("split")
     )
 
 
@@ -390,6 +463,9 @@ def _exited(periods: CTE, scope: Scope) -> Select[Any]:
             then.weight_pct.label("prev_weight_pct"),
             or_(then.suspect, periods.c.next_suspect).label("suspect"),
             true().label("exited"),
+            # Typed, for the UNION ALL: an exit is not adjusted.
+            cast(null(), Numeric).label("split_numerator"),
+            cast(null(), Numeric).label("split_denominator"),
         )
         .select_from(then)
         .join(

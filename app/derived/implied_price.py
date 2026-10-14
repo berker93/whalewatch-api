@@ -51,6 +51,7 @@ from sqlalchemy import (
     Date,
     Select,
     SQLColumnExpression,
+    TableValuedAlias,
     and_,
     case,
     delete,
@@ -126,7 +127,7 @@ def implied_prices(keys: frozenset[SecurityPeriod] | None = None) -> Select[Any]
             (snapshot.value_usd == 0).label("unpriced"),
             snapshot.suspect,
         )
-        .where(snapshot.shares > 0, *_keyed(keys, snapshot.security_id, snapshot.period_of_report))
+        .where(snapshot.shares > 0, *keyed(keys, snapshot.security_id, snapshot.period_of_report))
         .cte("observations")
     )
     priced = observations.c.priced
@@ -196,7 +197,7 @@ async def recompute_implied_price(
     """
     if keys is not None and not keys:
         return PriceRebuild(high=0, medium=0, low=0, unpriced=0)
-    in_scope = _keyed(keys, ImpliedPrice.security_id, ImpliedPrice.period_of_report)
+    in_scope = keyed(keys, ImpliedPrice.security_id, ImpliedPrice.period_of_report)
 
     await session.execute(delete(ImpliedPrice).where(*in_scope))
     await session.execute(
@@ -235,7 +236,7 @@ async def held_in(session: AsyncSession, scope: Scope) -> frozenset[SecurityPeri
     return frozenset(cast(Iterable[SecurityPeriod], rows.tuples()))
 
 
-def _keyed(
+def keyed(
     keys: frozenset[SecurityPeriod] | None,
     security_id: SQLColumnExpression[Any],
     period_of_report: SQLColumnExpression[Any],
@@ -243,17 +244,22 @@ def _keyed(
     """A ``WHERE`` for the rows at ``keys``, to splat into ``.where(*...)``. Empty for every row."""
     if keys is None:
         return []
-    ordered = sorted(keys)
-    pairs = (
-        func.unnest(
-            literal([security for security, _ in ordered], ARRAY(BigInteger)),
-            literal([period for _, period in ordered], ARRAY(Date)),
-        )
-        .table_valued("security_id", "period_of_report")
-        .render_derived(name="keys")
-    )
+    pairs = key_table(keys)
     return [
         tuple_(security_id, period_of_report).in_(
             select(pairs.c.security_id, pairs.c.period_of_report)
         )
     ]
+
+
+def key_table(keys: frozenset[SecurityPeriod], name: str = "keys") -> TableValuedAlias:
+    """``keys`` as a table of ``security_id`` and ``period_of_report``, from two arrays."""
+    ordered = sorted(keys)
+    return (
+        func.unnest(
+            literal([security for security, _ in ordered], ARRAY(BigInteger)),
+            literal([period for _, period in ordered], ARRAY(Date)),
+        )
+        .table_valued("security_id", "period_of_report")
+        .render_derived(name=name)
+    )

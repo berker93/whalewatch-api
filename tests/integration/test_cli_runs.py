@@ -51,6 +51,7 @@ TRACKED: Final = {
     "audit-amendments": ("audit-amendments", [], "success"),
     "check-data": ("check-data", [], "success"),
     "recompute": ("recompute", ["--all"], "success"),
+    "detect-splits": ("detect-splits", ["--all"], "success"),
     "refresh-views": ("refresh-views", [], "success"),
     "reconcile": ("reconcile", [], "success"),
     "import-13f-list": (
@@ -177,6 +178,8 @@ def test_a_run_of_the_command_leaves_one_finished_row(
     ("args", "job_name"),
     [
         (["recompute", "--all", "--no-refresh-views"], "recompute"),
+        # It rewrites changes the cache holds for a day (06d §3.9).
+        (["detect-splits", "--all", "--no-refresh-views"], "detect-splits"),
         (["refresh-views"], "refresh-views"),
     ],
 )

@@ -45,6 +45,26 @@ and the period after keeps the snapshot it had, so its prices cannot have
 moved. Rebuilding them would be the changes' cascade applied where nothing
 cascades.
 
+Splits
+------
+``security_split`` is on the prices' axis, and is read from them, so it is
+rebuilt after them (:mod:`app.derived.security_split`). On the same keys, and
+on the quarter after each, since that quarter's detection compares its shares
+and price with this one's: splits do walk forward, one quarter.
+
+A split is a fact about every holder of the security, so when one appears,
+disappears or changes its ratio, the changes of every filer across it are
+wrong, and not only those of the filers in scope. The rebuild finds those
+``(filer, period)`` pairs in ``position_change`` (their previous period before
+the split, their own on or after it) and rebuilds their changes with the rest.
+Only the pairs across a split that moved: one filing that leaves every split
+as it was rebuilds no other filer's changes. So the changes are rebuilt last,
+after the splits they are adjusted by.
+
+``recompute --all`` detects every split and rebuilds every change, so it runs
+``detect-splits --all`` and then ``recompute --all`` in one go, which is the
+run order the splits need: snapshot, then prices, then splits, then changes.
+
 One rebuild at a time
 ---------------------
 Each rebuild deletes and inserts in its own transaction, and two of them over
@@ -67,18 +87,31 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
-from typing import Final
+from typing import Final, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.position_snapshot import PositionSnapshot
 from app.db.queries.periods import FILER_PERIOD
-from app.derived.implied_price import PriceRebuild, held_in, recompute_implied_price
+from app.derived.implied_price import (
+    PriceRebuild,
+    SecurityPeriod,
+    held_in,
+    recompute_implied_price,
+)
 from app.derived.position_change import ChangeRebuild, recompute_position_change
 from app.derived.position_snapshot import SnapshotRebuild, recompute_position_snapshot
 from app.derived.scope import Pair, Scope
+from app.derived.security_split import (
+    SplitRebuild,
+    crossing_pairs,
+    recompute_security_split,
+    split_keys,
+)
 
 #: The advisory lock every rebuild holds until it commits. Any 64-bit number no
 #: other lock in this database uses; these are the bytes of ``wwrecomp``.
@@ -93,13 +126,29 @@ class Recomputed:
     snapshot: SnapshotRebuild
     """``position_snapshot`` for :attr:`scope`."""
     changes: ChangeRebuild
-    """``position_change`` for :attr:`scope` and :attr:`following`."""
+    """``position_change`` for :attr:`scope`, :attr:`following` and :attr:`crossing`."""
     following: frozenset[Pair]
     """The next published period after each one in :attr:`scope`, outside it,
     whose changes start from a period this rebuilt."""
     prices: PriceRebuild
     """``implied_price`` for every security held in :attr:`scope`, before the
     rebuild or after it, in its period there."""
+    splits: SplitRebuild
+    """``security_split`` at the prices' keys, and the quarter after each."""
+    crossing: frozenset[Pair]
+    """Pairs outside :attr:`scope` and :attr:`following` whose changes cross a
+    split that appeared, disappeared or changed its ratio."""
+
+
+@dataclass(frozen=True, slots=True)
+class Redetected:
+    """What one :func:`detect_splits` found, and the changes it rebuilt."""
+
+    splits: SplitRebuild
+    crossing: frozenset[Pair]
+    """Every pair with a change across a split that moved: the ones rebuilt."""
+    changes: ChangeRebuild
+    """``position_change`` for :attr:`crossing`."""
 
 
 async def hold_recompute_lock(session: AsyncSession) -> None:
@@ -116,13 +165,15 @@ async def hold_recompute_lock(session: AsyncSession) -> None:
 async def recompute(
     session: AsyncSession, scope: Scope, *, include_suspect: bool = False
 ) -> Recomputed:
-    """Rebuild ``position_snapshot`` for ``scope``, then ``position_change`` and ``implied_price``.
+    """Rebuild ``position_snapshot`` for ``scope``, then the prices, the splits and the changes.
 
-    The snapshot first, since the other two are read from it. The changes for
-    ``scope`` and for the next published period after each pair in it. The
-    prices of the securities held in ``scope``, before or after, in its
-    periods. All in the caller's transaction, which commits them together: a
-    reader sees every table rebuilt, or none.
+    The snapshot first, since everything else is read from it. The prices of
+    the securities held in ``scope``, before or after, in its periods. The
+    splits of the same securities in the same periods, and the quarter after
+    each. The changes last, adjusted for the splits: for ``scope``, for the
+    next published period after each pair in it, and for every pair across a
+    split that moved. All in the caller's transaction, which commits them
+    together: a reader sees every table rebuilt, or none.
 
     :param include_suspect: Publish the periods in scope that a suspect filing
         counts toward, marked ``suspect``, instead of withholding them.
@@ -135,13 +186,57 @@ async def recompute(
     # After the snapshot: a period it now publishes, or withholds, is or is
     # not a "next period" for the one before it.
     following = await _following(session, scope)
-    changes = await recompute_position_change(session, scope | Scope.of(following))
-    prices = await recompute_implied_price(
-        session, None if held_before is None else held_before | await held_in(session, scope)
+    held = None if held_before is None else held_before | await held_in(session, scope)
+    prices = await recompute_implied_price(session, held)
+    splits = await recompute_security_split(session, None if held is None else split_keys(held))
+    # Before the changes are rebuilt: read from the changes as they are.
+    crossing = (
+        frozenset()
+        if scope.everything
+        else await crossing_pairs(session, splits.moved) - (scope.pairs or frozenset()) - following
+    )
+    changes = await recompute_position_change(
+        session, scope | Scope.of(following) | Scope.of(crossing)
     )
     return Recomputed(
-        scope=scope, snapshot=snapshot, changes=changes, following=following, prices=prices
+        scope=scope,
+        snapshot=snapshot,
+        changes=changes,
+        following=following,
+        prices=prices,
+        splits=splits,
+        crossing=crossing,
     )
+
+
+async def detect_splits(session: AsyncSession, *, period: date | None = None) -> Redetected:
+    """Rebuild ``security_split`` for one period or every one, and the changes across what moved.
+
+    ``recompute`` does both for what it rebuilds. This is for when the
+    detection changes without the snapshot changing: new thresholds, a
+    fraction added, the first run after the table was created. Only the
+    changes across a split that appeared, disappeared or changed its ratio
+    are rebuilt, so a second run rebuilds nothing.
+
+    :param period: Only the splits dated this quarter end. ``None`` for all.
+    """
+    await hold_recompute_lock(session)
+    keys: frozenset[SecurityPeriod] | None = None
+    if period is not None:
+        rows = await session.execute(
+            select(PositionSnapshot.security_id, PositionSnapshot.period_of_report)
+            .where(PositionSnapshot.period_of_report == period)
+            .distinct()
+        )
+        keys = frozenset(cast(Iterable[SecurityPeriod], rows.tuples()))
+    splits = await recompute_security_split(session, keys)
+    crossing = await crossing_pairs(session, splits.moved)
+    changes = (
+        await recompute_position_change(session, Scope.of(crossing))
+        if crossing
+        else ChangeRebuild(new=0, add=0, trim=0, hold=0, exit=0)
+    )
+    return Redetected(splits=splits, crossing=crossing, changes=changes)
 
 
 async def _following(session: AsyncSession, scope: Scope) -> frozenset[Pair]:

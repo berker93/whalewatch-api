@@ -33,12 +33,13 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Final
 
-from sqlalchemy import ColumnElement, Integer, cast, extract, func, select
+from sqlalchemy import ColumnElement, Integer, cast, exists, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.filer import Filer
 from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.security import Security
+from app.db.models.security_split import SecuritySplit
 from app.db.queries.effective import EFFECTIVE_FILING
 from app.derived.position_snapshot import snapshot_positions
 
@@ -49,12 +50,14 @@ from app.derived.position_snapshot import snapshot_positions
 CONCENTRATION_THRESHOLD: Final = Decimal(90)
 
 #: A quarter-on-quarter change in shares above this — 10,000%, as a fraction —
-#: is a finding. Splits are why it exists: shares multiply and the price
+#: is a finding. Splits are why it existed: shares multiply and the price
 #: divides, so a split looks exactly like a position bought many times over
 #: until you look at the price. Only an extreme one crosses this line, though —
-#: 4-for-1 is +300% and 20-for-1 is +1,900% — and what does cross it looks the
-#: same: a share count read from the wrong column, a stub position rebuilt. The
-#: finding shows the price on both sides, and the price is what tells them apart.
+#: 4-for-1 is +300%, and the largest in five years of data, CMG's 50-for-1, is
+#: +4,900% — and what does cross it looks the same: a share count read from the
+#: wrong column, a stub position rebuilt. A split ``security_split`` has
+#: detected is left out, so a future 100-for-1 is not a finding. The finding
+#: shows the price on both sides, and the price is what tells the rest apart.
 MAX_QUARTERLY_CHANGE: Final = Decimal(100)
 
 
@@ -294,6 +297,11 @@ async def position_jumps(
     Growth only. A position can fall by at most 100%, so no fall exceeds the
     threshold. A reverse split is a fall, and so is a manager selling down to a
     stub.
+
+    Not across a split ``security_split`` has, dated this period: the growth is
+    the split's. Read from the table as the last ``recompute`` left it, while
+    the positions are live, so a split the next ``recompute`` would detect is
+    still a finding until it has.
     """
     snapshot = snapshot_positions(include_suspect=include_suspect, filer_id=filer_id).cte()
     now = snapshot.alias("now")
@@ -324,6 +332,12 @@ async def position_jumps(
         .join(Security, Security.id == now.c.security_id)
         .where(before.c.shares > 0)
         .where(now.c.shares - before.c.shares > before.c.shares * MAX_QUARTERLY_CHANGE)
+        .where(
+            ~exists().where(
+                SecuritySplit.security_id == now.c.security_id,
+                SecuritySplit.period_of_report == now.c.period_of_report,
+            )
+        )
         .order_by(Filer.slug, now.c.period_of_report, Security.cusip)
     )
     return [

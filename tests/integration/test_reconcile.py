@@ -116,8 +116,10 @@ from app.db.models import (
     PositionChange,
     PositionSnapshot,
     Security,
+    SecuritySplit,
 )
 from app.db.models.enums import AmendmentKind
+from app.derived.position_change import recompute_position_change
 from app.derived.recompute import recompute
 from app.derived.reconcile import INVARIANTS, Reconciliation, reconcile
 from app.derived.scope import EVERYTHING, Scope, filing_pairs
@@ -1002,6 +1004,40 @@ async def _negative_shares(session: AsyncSession) -> None:
     await _set(session, PositionChange, CHARLIE, Q4, ECHO, shares=-180)
 
 
+async def _split(session: AsyncSession, period: date, cusip: str, up: int, down: int) -> None:
+    """A split of ``up`` for ``down`` dated ``period``, written in by hand, not detected."""
+    await session.execute(
+        insert(SecuritySplit).values(
+            security_id=select(Security.id).where(Security.cusip == cusip).scalar_subquery(),
+            period_of_report=period,
+            numerator=up,
+            denominator=down,
+            confidence="high",
+            holders=2,
+            holders_agreeing=2,
+            holders_exact=1,
+            shares_ratio=Decimal(up) / down,
+            price_ratio=Decimal(down) / up,
+        )
+    )
+
+
+async def _split_not_adjusted_for(session: AsyncSession) -> None:
+    """A 2-for-1 of DYNA in Q3 the changes were not rebuilt for. Alpha's Q3
+    DYNA is its only change across it: Q4's starts from Q3."""
+    await _split(session, Q3, DYNA, 2, 1)
+
+
+async def _split_by_the_wrong_ratio(session: AsyncSession) -> None:
+    """ACME taken as a 1-for-50 in Q3, and the changes rebuilt for it, so they
+    agree with the split. Adjusted, alpha's 1,500 are 30 and it holds 3,666,
+    and bravo's 2,500 are 50 and it holds 2,500: the median holder of the two
+    held through Q2 and Q3 grew fiftyfold. Charlie's change, across its gap,
+    is adjusted too, and is not one of them."""
+    await _split(session, Q3, ACME, 1, 50)
+    await recompute_position_change(session, EVERYTHING)
+
+
 def _price(period: date, cusip: str) -> tuple[Any, ...]:
     """A ``WHERE`` for the one implied price at ``(period, security)``."""
     return (
@@ -1182,6 +1218,18 @@ BREAKAGES: Final = {
             "prices_count_every_observation": {
                 (None, Q4, ECHO, "an implied price with no observations")
             },
+        },
+    ),
+    "a split the changes were not adjusted for": _Breakage(
+        _split_not_adjusted_for,
+        {"changes_adjust_for_splits": {(ALPHA, Q3, DYNA, "not adjusted for a split it crosses")}},
+    ),
+    "a split detected with the wrong ratio": _Breakage(
+        _split_by_the_wrong_ratio,
+        {
+            "split_changes_are_plausible": {
+                (None, Q3, ACME, "a split its holders' adjusted changes do not bear out")
+            }
         },
     ),
     "a negative value": _Breakage(
@@ -1365,7 +1413,7 @@ def test_reconcile_exits_zero_and_lists_every_invariant_when_all_hold(
 
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
-        "reconcile  29 positions and 33 changes in 10 periods: all 11 invariants hold",
+        "reconcile  29 positions and 33 changes in 10 periods: all 13 invariants hold",
         *_invariant_lines({}),
     ]
 
@@ -1380,7 +1428,7 @@ def test_reconcile_exits_one_and_shows_the_rows_that_break_an_invariant(
 
     assert result.exit_code == 1, result.output
     assert result.stdout.splitlines() == [
-        "reconcile  29 positions and 32 changes in 10 periods: 2 of 11 invariants fail",
+        "reconcile  29 positions and 32 changes in 10 periods: 2 of 13 invariants fail",
         *_invariant_lines(
             {
                 "changes_follow_previous_period": [
