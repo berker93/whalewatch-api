@@ -1777,6 +1777,226 @@
         }
       }
     },
+    "/v1/insiders/clusters": {
+      "get": {
+        "tags": [
+          "insiders"
+        ],
+        "summary": "Cluster buys: several of a company's insiders buying within a window",
+        "description": "Episodes in which at least `min_insiders` of one company's officers and\ndirectors bought its shares on the open market within `window` days, latest\nfirst. Windows that share a purchase are one episode. Found over all of\nhistory, not back from today. `meta.rules` states what counts as a purchase:\nplan purchases and 10% owners are left out.",
+        "operationId": "listInsiderClusters",
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "description": "Days a qualifying window spans: a purchase, and every other up to this many days before it. One of 14, 30, 60, 90.",
+              "enum": [
+                14,
+                30,
+                60,
+                90
+              ],
+              "default": 30,
+              "title": "Window"
+            },
+            "description": "Days a qualifying window spans: a purchase, and every other up to this many days before it. One of 14, 30, 60, 90."
+          },
+          {
+            "name": "min_insiders",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "description": "Distinct insiders a window needs. One of 2, 3, 4, 5.",
+              "enum": [
+                2,
+                3,
+                4,
+                5
+              ],
+              "default": 3,
+              "title": "Min Insiders"
+            },
+            "description": "Distinct insiders a window needs. One of 2, 3, 4, 5."
+          },
+          {
+            "name": "ticker",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its issuer's lines no security could be linked to are included.",
+              "title": "Ticker"
+            },
+            "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its issuer's lines no security could be linked to are included."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Episodes still going on or after this day, `2026-01-01`.",
+              "title": "From"
+            },
+            "description": "Episodes still going on or after this day, `2026-01-01`."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Episodes begun on or before this day, `2026-06-30`.",
+              "title": "To"
+            },
+            "description": "Episodes begun on or before this day, `2026-06-30`."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ClusterSort",
+              "description": "`date`, the episode's last purchase (the default), `insiders`, how many bought, or `value`, dollars paid.",
+              "default": "date"
+            },
+            "description": "`date`, the episode's last purchase (the default), `insiders`, how many bought, or `value`, dollars paid."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Newest or largest first by default.",
+              "default": "desc"
+            },
+            "description": "Newest or largest first by default."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsiderClusterEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/market/top-holdings": {
       "get": {
         "tags": [
@@ -3131,6 +3351,133 @@
         "title": "ChangeAction",
         "description": "What a filer did to a position between its previous period and this one.\n\nText with a ``CHECK``, by the rule in :mod:`app.db.models.enums`: the set is\nours, and it has grown once already, by ``exit``.\n\n``new``\n    Not held in the filer's previous period, or the filer has no previous\n    period. A stock sold one quarter and bought back the next is new again.\n``add``\n    More shares than before, by more than the hold band.\n``trim``\n    Fewer shares than before, by more than the hold band. Not a sale: the\n    filer may have been assigned, distributed in kind, or moved the position\n    to an affiliate that files separately.\n``hold``\n    The same shares as before, within\n    :data:`~app.derived.position_change.HOLD_BAND_PCT` either way. Judged\n    on shares alone, so a stock that doubled in price is still a hold.\n    Across a split, the same shares as before times the ratio: a holder\n    of 100 shares who has 1,000 after a 10-for-1 held.\n``exit``\n    Held in the filer's previous period and not in this one. The row is a\n    position of nothing: no shares, no value, no weight, and the deltas\n    are the whole previous position, negative. Only in a period the filer\n    published, so a quarter it did not file, or one withheld, holds no\n    exits: a missing filing is not a sale. Nor is an exit, for ``trim``'s\n    reasons."
       },
+      "ClusterInsider": {
+        "properties": {
+          "insider_cik": {
+            "type": "string",
+            "title": "Insider Cik",
+            "description": "The insider's CIK, ten digits.",
+            "examples": [
+              "0001214156"
+            ]
+          },
+          "insider_name": {
+            "type": "string",
+            "title": "Insider Name",
+            "description": "As their latest filing spells it, surname first.",
+            "examples": [
+              "LEVINSON ARTHUR D"
+            ]
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "type": "array",
+            "title": "Roles",
+            "description": "What they checked on any of the cluster's filings: `director`, `officer`, or both.",
+            "examples": [
+              [
+                "director"
+              ]
+            ]
+          },
+          "officer_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Officer Title",
+            "description": "As filed on their latest filing in the cluster, when one was given.",
+            "examples": [
+              null
+            ]
+          },
+          "first_date": {
+            "type": "string",
+            "format": "date",
+            "title": "First Date",
+            "description": "Their first purchase in the cluster.",
+            "examples": [
+              "2026-05-04"
+            ]
+          },
+          "last_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Last Date",
+            "description": "Their last purchase in the cluster.",
+            "examples": [
+              "2026-05-06"
+            ]
+          },
+          "transaction_count": {
+            "type": "integer",
+            "title": "Transaction Count",
+            "description": "Lines, as filed.",
+            "examples": [
+              2
+            ]
+          },
+          "shares": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares",
+            "description": "Shares bought.",
+            "examples": [
+              "10000.0000"
+            ]
+          },
+          "value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Usd",
+            "description": "Dollars paid. Null when no line gave a price.",
+            "examples": [
+              "1415000.00"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "insider_cik",
+          "insider_name",
+          "roles",
+          "first_date",
+          "last_date",
+          "transaction_count"
+        ],
+        "title": "ClusterInsider",
+        "description": "One insider's purchases within a cluster, summed."
+      },
+      "ClusterSort": {
+        "type": "string",
+        "enum": [
+          "date",
+          "insiders",
+          "value"
+        ],
+        "title": "ClusterSort",
+        "description": "What the clusters are ordered by."
+      },
       "Coverage": {
         "properties": {
           "filers_reported": {
@@ -4438,6 +4785,367 @@
         ],
         "title": "ImpliedPricePointEnvelope",
         "description": "One stock's implied quarter-end prices, a quarter a row."
+      },
+      "InsiderCluster": {
+        "properties": {
+          "issuer_cik": {
+            "type": "string",
+            "title": "Issuer Cik",
+            "description": "The company's CIK, ten digits.",
+            "examples": [
+              "0000320193"
+            ]
+          },
+          "issuer_name": {
+            "type": "string",
+            "title": "Issuer Name",
+            "description": "As the latest of the cluster's filings gives it.",
+            "examples": [
+              "Apple Inc."
+            ]
+          },
+          "cusip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cusip",
+            "description": "The security every purchase was linked to. Null when any was not, or they were in more than one of the issuer's classes.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "That security's ticker on `window_end`.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
+            ]
+          },
+          "window_start": {
+            "type": "string",
+            "format": "date",
+            "title": "Window Start",
+            "description": "The first purchase of the episode.",
+            "examples": [
+              "2026-05-04"
+            ]
+          },
+          "window_end": {
+            "type": "string",
+            "format": "date",
+            "title": "Window End",
+            "description": "The last purchase of the episode. Overlapping windows are one episode, so this can be further than `window` days from `window_start`.",
+            "examples": [
+              "2026-05-21"
+            ]
+          },
+          "insider_count": {
+            "type": "integer",
+            "title": "Insider Count",
+            "description": "Distinct insiders who bought. One who bought on three days is one.",
+            "examples": [
+              4
+            ]
+          },
+          "transaction_count": {
+            "type": "integer",
+            "title": "Transaction Count",
+            "description": "The purchase lines counted.",
+            "examples": [
+              6
+            ]
+          },
+          "total_shares": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Shares",
+            "description": "Shares bought, the lines' shares summed.",
+            "examples": [
+              "52000.0000"
+            ]
+          },
+          "total_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Value",
+            "description": "Dollars paid, the lines' values summed. Null when no line gave a price.",
+            "examples": [
+              "7355000.00"
+            ]
+          },
+          "insiders": {
+            "items": {
+              "$ref": "#/components/schemas/ClusterInsider"
+            },
+            "type": "array",
+            "title": "Insiders",
+            "description": "Who bought, largest purchase first."
+          }
+        },
+        "type": "object",
+        "required": [
+          "issuer_cik",
+          "issuer_name",
+          "window_start",
+          "window_end",
+          "insider_count",
+          "transaction_count",
+          "insiders"
+        ],
+        "title": "InsiderCluster",
+        "description": "An episode of cluster buying: several of one issuer's insiders buying within a window."
+      },
+      "InsiderClusterEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/InsiderCluster"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/InsiderClusterMeta",
+            "description": "What the rows describe, including how the clusters were found."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "InsiderClusterEnvelope"
+      },
+      "InsiderClusterMeta": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the data belongs to. Null only for a collection that is not about a period, such as a list of filers.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "quarters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarters",
+            "description": "For figures over more than one quarter, such as a year's flows, every quarter they cover, oldest first, ending with `period`. Null for one quarter.",
+            "examples": [
+              [
+                "2025Q3",
+                "2025Q4",
+                "2026Q1",
+                "2026Q2"
+              ]
+            ]
+          },
+          "latest_filing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing At",
+            "description": "When the most recently filed of this period's published filings reached EDGAR. Null when nothing for the period has been published.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `period` is."
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats",
+            "description": "Why the rows may be wrong although every rule for reading the filings was followed: an amendment left out because its cover page does not say whether it restates or adds to the period, additions counting with no original loaded, two originals filed for one period, or an amendment number missing from those loaded. One sentence each, for a person to read. Empty when nothing is known to be wrong, and on endpoints that do not check.",
+            "examples": [
+              [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is left out: if it restates or adds to the period, the period is wrong"
+              ]
+            ]
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At",
+            "description": "For a response read from the materialised aggregates, when they were last refreshed: the rows are as of then, and a filing published since is not in them yet. Null for a response read live, and when the refresh is unrecorded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At",
+            "description": "When this response was built.",
+            "examples": [
+              "2026-10-03T09:41:27Z"
+            ]
+          },
+          "window": {
+            "type": "integer",
+            "title": "Window",
+            "description": "Days: a purchase, and every other up to this many days before it.",
+            "examples": [
+              30
+            ]
+          },
+          "min_insiders": {
+            "type": "integer",
+            "title": "Min Insiders",
+            "description": "Distinct insiders a window needed to qualify.",
+            "examples": [
+              3
+            ]
+          },
+          "rules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Rules",
+            "description": "What a purchase has to be to count. Grants, exercises, plan purchases and 10% owners' buying are left out, and a reader who is not told so will wonder where they went.",
+            "examples": [
+              [
+                "Open-market purchases (code P) of shares, not of derivatives."
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "window",
+          "min_insiders",
+          "rules"
+        ],
+        "title": "InsiderClusterMeta",
+        "description": "``meta``, with the window and threshold the clusters were found with, and what counts."
       },
       "InsiderFeedMeta": {
         "properties": {

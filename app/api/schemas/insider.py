@@ -258,3 +258,120 @@ class InsiderTransactionEnvelope(Envelope[InsiderTransaction]):
     meta: InsiderFeedMeta = Field(
         description="What the rows describe, including the codes they were filtered to."
     )
+
+
+# --- clusters -------------------------------------------------------------------
+
+
+class ClusterInsider(BaseModel):
+    """One insider's purchases within a cluster, summed."""
+
+    insider_cik: str = Field(description="The insider's CIK, ten digits.", examples=["0001214156"])
+    insider_name: str = Field(
+        description="As their latest filing spells it, surname first.",
+        examples=["LEVINSON ARTHUR D"],
+    )
+    roles: list[Role] = Field(
+        description=(
+            "What they checked on any of the cluster's filings: `director`, `officer`, or both."
+        ),
+        examples=[["director"]],
+    )
+    officer_title: str | None = Field(
+        default=None,
+        description="As filed on their latest filing in the cluster, when one was given.",
+        examples=[None],
+    )
+    first_date: date = Field(
+        description="Their first purchase in the cluster.", examples=["2026-05-04"]
+    )
+    last_date: date = Field(
+        description="Their last purchase in the cluster.", examples=["2026-05-06"]
+    )
+    transaction_count: int = Field(description="Lines, as filed.", examples=[2])
+    shares: Quantity | None = Field(
+        default=None, description="Shares bought.", examples=["10000.0000"]
+    )
+    value_usd: Money | None = Field(
+        default=None,
+        description="Dollars paid. Null when no line gave a price.",
+        examples=["1415000.00"],
+    )
+
+
+class InsiderCluster(BaseModel):
+    """An episode of cluster buying: several of one issuer's insiders buying within a window."""
+
+    issuer_cik: str = Field(description="The company's CIK, ten digits.", examples=["0000320193"])
+    issuer_name: str = Field(
+        description="As the latest of the cluster's filings gives it.", examples=["Apple Inc."]
+    )
+    cusip: str | None = Field(
+        default=None,
+        description=(
+            "The security every purchase was linked to. Null when any was not, or "
+            "they were in more than one of the issuer's classes."
+        ),
+        examples=["037833100"],
+    )
+    ticker: str | None = Field(
+        default=None,
+        description="That security's ticker on `window_end`.",
+        examples=["AAPL"],
+    )
+    current_ticker: str | None = Field(default=None, description=CURRENT_TICKER, examples=["AAPL"])
+    delisted_by: date | None = Field(default=None, description=DELISTED_BY, examples=[None])
+    window_start: date = Field(
+        description="The first purchase of the episode.", examples=["2026-05-04"]
+    )
+    window_end: date = Field(
+        description=(
+            "The last purchase of the episode. Overlapping windows are one episode, so "
+            "this can be further than `window` days from `window_start`."
+        ),
+        examples=["2026-05-21"],
+    )
+    insider_count: int = Field(
+        description="Distinct insiders who bought. One who bought on three days is one.",
+        examples=[4],
+    )
+    transaction_count: int = Field(description="The purchase lines counted.", examples=[6])
+    total_shares: Quantity | None = Field(
+        default=None,
+        description="Shares bought, the lines' shares summed.",
+        examples=["52000.0000"],
+    )
+    total_value: Money | None = Field(
+        default=None,
+        description="Dollars paid, the lines' values summed. Null when no line gave a price.",
+        examples=["7355000.00"],
+    )
+    insiders: list[ClusterInsider] = Field(
+        description="Who bought, largest purchase first.",
+    )
+
+
+class InsiderClusterMeta(Meta):
+    """``meta``, with the window and threshold the clusters were found with, and what counts."""
+
+    window: int = Field(
+        description="Days: a purchase, and every other up to this many days before it.",
+        examples=[30],
+    )
+    min_insiders: int = Field(
+        description="Distinct insiders a window needed to qualify.", examples=[3]
+    )
+    rules: list[str] = Field(
+        description=(
+            "What a purchase has to be to count. Grants, exercises, plan purchases and "
+            "10% owners' buying are left out, and a reader who is not told so will "
+            "wonder where they went."
+        ),
+        examples=[["Open-market purchases (code P) of shares, not of derivatives."]],
+    )
+
+
+class InsiderClusterEnvelope(Envelope[InsiderCluster]):
+    meta: InsiderClusterMeta = Field(
+        description="What the rows describe, including how the clusters were found."
+    )

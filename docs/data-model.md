@@ -18,7 +18,7 @@ as three layers rather than one is what makes a parser bug survivable.
         |
         v
   position_snapshot / position_change /       derived, recomputable, droppable
-  implied_price / security_split /
+  implied_price / security_split / insider_cluster /
   mv_consensus_holdings / mv_quarter_flows /
   mv_filer_summary
 ```
@@ -859,6 +859,58 @@ otherwise. Null blocks nothing: the row is loaded and found by `issuer_cik`. A
 CIK cannot always decide it alone (Alphabet is one CIK and two listed classes),
 and there is no `issuer` table to hang it on (see `issuer` / `security`).
 `ON DELETE SET NULL`, because the link is our interpretation, not the filing's.
+
+### `insider_cluster`
+
+Cluster buys (`0033_insider_cluster`): episodes in which several of one
+issuer's officers and directors bought its shares on the open market within a
+window. Derived from `insider_transaction`, and rebuilt whole by
+`detect-clusters`, which `ingest-form4` runs after every load.
+
+```
+insider_cluster
+  window_days        smallint      not null  -- 14, 30, 60, 90
+  min_insiders       smallint      not null  -- 2, 3, 4, 5
+  issuer_cik         char(10)      not null
+  window_start       date          not null  -- the episode's first purchase
+  window_end         date          not null  -- its last
+  issuer_name        text          not null  -- as the latest-filed line spells it
+  security_id        bigint        null      fk -> security, on delete set null
+  insider_count      integer       not null  -- distinct insiders
+  transaction_count  integer       not null
+  total_shares       numeric(20,4) null
+  total_value        numeric(20,2) null      -- null when no line has a price
+  transaction_ids    bigint[]      not null  -- insider_transaction.id, oldest first
+  detected_at        timestamptz   not null default now()
+  pk (window_days, min_insiders, issuer_cik, window_start)
+  index (window_days, min_insiders, window_end desc, issuer_cik desc)
+```
+
+**What counts** is a code `P` line of the non-derivative table, by an owner
+who checked director or officer on that filing, not under a 10b5-1 plan, and
+whose footnotes do not say an employee stock purchase plan or a dividend
+reinvestment plan bought it. A 10% owner is often a fund, and a fund family
+filing under several CIKs would be several "insiders" that are one buyer.
+TSMC's ESPP files a code `P` Form 4 for each of about thirty officers on one
+day at one price, which is the reason for the footnote rule.
+
+**The window rolls.** Each purchase day anchors a window of that day and the
+`window_days` before it, and one with `min_insiders` distinct insiders
+qualifies. Qualifying windows that share a purchase are one episode
+(gaps-and-islands), so a month of buying is one row. Postgres has no
+`COUNT(DISTINCT)` window function, so the window aggregates the insider ids
+into an array and a subquery counts the distinct ones. See
+[the module](../app/derived/insider_cluster.py).
+
+**Every point of the grid is stored**, so the API's `?window=` and
+`?min_insiders=` are a read. Episodes for different parameters overlap and
+nest. **Per issuer, not per security**: insiders are insiders of a company,
+and `security_id` is set only when every line is linked to the same one.
+
+`transaction_ids` has no foreign key (an array cannot have one), and needs
+none, since the table is rebuilt whenever the lines change. Read the lines by
+id with `transaction_date` between the episode's ends, so the lookup is pruned
+to those years' partitions.
 
 ### `pending_filing`
 

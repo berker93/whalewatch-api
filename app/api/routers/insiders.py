@@ -5,6 +5,11 @@
     keyset-paged. Read live from ``insider_transaction``.
 ``GET /v1/stocks/{ticker}/insiders``
     The same, for one stock: the stock page's table.
+``GET /v1/insiders/clusters``
+    Episodes of cluster buying: several of one company's officers and
+    directors buying on the open market within a window. Read from
+    ``insider_cluster``, which ``detect-clusters`` rebuilds after every Form 4
+    load; see :mod:`app.derived.insider_cluster` for what counts.
 
 The default filter
 ------------------
@@ -58,7 +63,9 @@ from sqlalchemy import (
     literal_column,
     or_,
     select,
+    tuple_,
 )
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cache import Lifetime, cached
@@ -69,23 +76,35 @@ from app.api.routers.portfolio import SortOrder
 from app.api.routers.stocks import TickerParam, _resolve
 from app.api.schemas.insider import (
     CODE_LABELS,
+    ClusterInsider,
+    InsiderClusterEnvelope,
+    InsiderClusterMeta,
     InsiderFeedMeta,
     InsiderTransaction,
     InsiderTransactionEnvelope,
     Role,
     TransactionCode,
 )
+from app.api.schemas.insider import InsiderCluster as ClusterRow
 from app.api.schemas.stock import StockNotFound
 from app.db.models import (
     OPEN_MARKET_CODES,
     Filing,
     Insider,
+    InsiderCluster,
     ReportingOwner,
     SecCompanyTicker,
     Security,
 )
 from app.db.models import InsiderTransaction as Line
 from app.db.queries.tickers import ticker_labels
+from app.derived.insider_cluster import (
+    DEFAULT_MIN_INSIDERS,
+    DEFAULT_WINDOW,
+    MIN_INSIDERS,
+    RULES,
+    WINDOWS,
+)
 
 router = APIRouter(tags=["insiders"])
 
@@ -150,17 +169,21 @@ def _codes_condition(codes: frozenset[str]) -> ColumnElement[bool]:
     return Line.transaction_code.in_(sorted(codes))
 
 
-def _of_stock(security_id: SecurityId) -> ColumnElement[bool]:
-    """The stock's lines, and its issuer's lines linked to no security."""
+def _issuer_ciks(security_id: SecurityId) -> Select[Any]:
+    """The CIK SEC lists the stock's current ticker under, as a subquery."""
     sec_spelling = (
         select(func.replace(Security.ticker, ".", "-"))
         .where(Security.id == security_id)
         .scalar_subquery()
     )
-    issuer_ciks = select(SecCompanyTicker.cik).where(SecCompanyTicker.ticker == sec_spelling)
+    return select(SecCompanyTicker.cik).where(SecCompanyTicker.ticker == sec_spelling)
+
+
+def _of_stock(security_id: SecurityId) -> ColumnElement[bool]:
+    """The stock's lines, and its issuer's lines linked to no security."""
     return or_(
         Line.security_id == security_id,
-        and_(Line.security_id.is_(None), Line.issuer_cik.in_(issuer_ciks)),
+        and_(Line.security_id.is_(None), Line.issuer_cik.in_(_issuer_ciks(security_id))),
     )
 
 
@@ -559,4 +582,313 @@ async def read_stock_insiders(
         sort=sort,
         order=order,
         listing="stock-insiders",
+    )
+
+
+# --- clusters -------------------------------------------------------------------
+
+
+class ClusterSort(StrEnum):
+    """What the clusters are ordered by."""
+
+    DATE = "date"
+    INSIDERS = "insiders"
+    VALUE = "value"
+
+
+# A cluster whose lines gave no price has no value; below every real one.
+_CLUSTER_VALUE_KEY: Final = func.coalesce(InsiderCluster.total_value, -1)
+
+
+def _cluster_keyset(sort: ClusterSort, order: SortOrder) -> Keyset:
+    """The sort, then the latest episode, then the issuer: unique within a
+    parameter set, since one issuer's episodes do not overlap."""
+    descending = order is SortOrder.DESC
+    lead = {
+        ClusterSort.DATE: [],
+        ClusterSort.INSIDERS: [
+            SortKey("insider_count", InsiderCluster.insider_count.expression, int, descending)
+        ],
+        ClusterSort.VALUE: [SortKey("value_key", _CLUSTER_VALUE_KEY, Decimal, descending)],
+    }[sort]
+    return Keyset(
+        f"insider-clusters.{sort.value}.{order.value}",
+        (
+            *lead,
+            SortKey("window_end", InsiderCluster.window_end.expression, date, descending),
+            SortKey("issuer_cik", InsiderCluster.issuer_cik.expression, str, descending),
+        ),
+    )
+
+
+def clusters_query(
+    page: PageParams,
+    *,
+    window: int = DEFAULT_WINDOW,
+    min_insiders: int = DEFAULT_MIN_INSIDERS,
+    security_id: SecurityId | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    sort: ClusterSort = ClusterSort.DATE,
+    order: SortOrder = SortOrder.DESC,
+) -> tuple[Select[Any], Keyset]:
+    """One page of one parameter set's episodes, with their security, and the keyset.
+
+    :param security_id: One stock's: every episode of its issuer, and any
+        linked to it.
+    :param start: Episodes still going on or after this day.
+    :param end: Episodes begun on or before this day.
+    """
+    keyset = _cluster_keyset(sort, order)
+    cluster = InsiderCluster
+    conditions: list[ColumnElement[bool]] = [
+        cluster.window_days == window,
+        cluster.min_insiders == min_insiders,
+    ]
+    if security_id is not None:
+        conditions.append(
+            or_(
+                cluster.security_id == security_id,
+                cluster.issuer_cik.in_(_issuer_ciks(security_id)),
+            )
+        )
+    if start is not None:
+        conditions.append(cluster.window_end >= start)
+    if end is not None:
+        conditions.append(cluster.window_start <= end)
+
+    rows = select(
+        cluster.issuer_cik,
+        cluster.window_start,
+        cluster.window_end,
+        cluster.issuer_name,
+        cluster.security_id,
+        cluster.insider_count,
+        cluster.transaction_count,
+        cluster.total_shares,
+        cluster.total_value,
+        _CLUSTER_VALUE_KEY.label("value_key"),
+    ).where(*conditions)
+    page_rows = page_statement(rows, keyset, page).cte("page")
+    statement = (
+        select(page_rows, Security.cusip, *ticker_labels(page_rows.c.window_end))
+        .select_from(page_rows)
+        .outerjoin(Security, Security.id == page_rows.c.security_id)
+        .order_by(*keyset.order_by(on=page_rows))
+    )
+    return statement, keyset
+
+
+def cluster_insiders_query(
+    keys: list[tuple[str, date]], *, window: int, min_insiders: int
+) -> Select[Any]:
+    """Each insider's purchases in each of the episodes ``keys`` names, summed.
+
+    The lines are found by ``id = ANY(transaction_ids)`` with their date
+    between the episode's ends, both columns of each partition's primary key,
+    so every partition is probed once per episode, and the ones outside its
+    years are skipped at execution.
+    """
+    cluster = InsiderCluster
+    latest_title = func.array_agg(
+        aggregate_order_by(ReportingOwner.officer_title, Filing.filed_at.desc())
+    ).filter(ReportingOwner.officer_title.is_not(None))[1]
+    return (
+        select(
+            cluster.issuer_cik,
+            cluster.window_start,
+            Insider.cik.label("insider_cik"),
+            Insider.name.label("insider_name"),
+            func.bool_or(ReportingOwner.is_director).label("is_director"),
+            func.bool_or(ReportingOwner.is_officer).label("is_officer"),
+            latest_title.label("officer_title"),
+            func.min(Line.transaction_date).label("first_date"),
+            func.max(Line.transaction_date).label("last_date"),
+            func.count().label("transaction_count"),
+            func.sum(Line.shares).label("shares"),
+            func.sum(Line.value_usd).label("value_usd"),
+        )
+        .select_from(cluster)
+        .join(
+            Line,
+            and_(
+                Line.id == func.any(cluster.transaction_ids),
+                Line.transaction_date.between(cluster.window_start, cluster.window_end),
+                Line.issuer_cik == cluster.issuer_cik,
+            ),
+        )
+        .join(
+            ReportingOwner,
+            and_(
+                ReportingOwner.filing_id == Line.filing_id,
+                ReportingOwner.insider_id == Line.insider_id,
+            ),
+        )
+        .join(Filing, Filing.id == Line.filing_id)
+        .join(Insider, Insider.id == Line.insider_id)
+        .where(
+            cluster.window_days == window,
+            cluster.min_insiders == min_insiders,
+            tuple_(cluster.issuer_cik, cluster.window_start).in_(keys),
+        )
+        .group_by(cluster.issuer_cik, cluster.window_start, Insider.id)
+        .order_by(
+            cluster.issuer_cik,
+            cluster.window_start,
+            func.sum(Line.value_usd).desc().nulls_last(),
+            Insider.name,
+            Insider.cik,
+        )
+    )
+
+
+def _cluster_insider(row: Any) -> ClusterInsider:
+    return ClusterInsider(
+        insider_cik=row.insider_cik,
+        insider_name=row.insider_name,
+        roles=[
+            role
+            for role, checked in ((Role.DIRECTOR, row.is_director), (Role.OFFICER, row.is_officer))
+            if checked
+        ],
+        officer_title=row.officer_title,
+        first_date=row.first_date,
+        last_date=row.last_date,
+        transaction_count=row.transaction_count,
+        shares=row.shares,
+        value_usd=row.value_usd,
+    )
+
+
+def _cluster(row: Any, insiders: list[ClusterInsider]) -> ClusterRow:
+    return ClusterRow(
+        issuer_cik=row.issuer_cik,
+        issuer_name=row.issuer_name,
+        cusip=row.cusip,
+        ticker=row.ticker,
+        current_ticker=row.current_ticker,
+        delisted_by=row.delisted_by,
+        window_start=row.window_start,
+        window_end=row.window_end,
+        insider_count=row.insider_count,
+        transaction_count=row.transaction_count,
+        total_shares=row.total_shares,
+        total_value=row.total_value,
+        insiders=insiders,
+    )
+
+
+def _grid_value(name: str, value: int, allowed: tuple[int, ...]) -> int:
+    if value not in allowed:
+        raise invalid(
+            name,
+            f"{name} must be one of {', '.join(map(str, allowed))}: clusters are "
+            "detected ahead of time for those, not on request.",
+        )
+    return value
+
+
+WindowParam = Annotated[
+    int,
+    Query(
+        description=(
+            "Days a qualifying window spans: a purchase, and every other up to this many "
+            f"days before it. One of {', '.join(map(str, WINDOWS))}."
+        ),
+        json_schema_extra={"enum": list(WINDOWS)},
+    ),
+]
+MinInsidersParam = Annotated[
+    int,
+    Query(
+        description=(
+            f"Distinct insiders a window needs. One of {', '.join(map(str, MIN_INSIDERS))}."
+        ),
+        json_schema_extra={"enum": list(MIN_INSIDERS)},
+    ),
+]
+ClusterSortParam = Annotated[
+    ClusterSort,
+    Query(
+        description=(
+            "`date`, the episode's last purchase (the default), `insiders`, how many "
+            "bought, or `value`, dollars paid."
+        )
+    ),
+]
+ClusterStartParam = Annotated[
+    date | None,
+    Query(alias="from", description="Episodes still going on or after this day, `2026-01-01`."),
+]
+ClusterEndParam = Annotated[
+    date | None,
+    Query(alias="to", description="Episodes begun on or before this day, `2026-06-30`."),
+]
+
+
+@router.get(
+    "/insiders/clusters",
+    operation_id="listInsiderClusters",
+    response_model=InsiderClusterEnvelope,
+    summary="Cluster buys: several of a company's insiders buying within a window",
+    responses={**_NOT_FOUND, **INVALID_CURSOR, **INVALID},
+)
+@cached(Lifetime.INSIDERS)
+async def list_insider_clusters(
+    session: SessionDep,
+    page: PageParamsDep,
+    window: WindowParam = DEFAULT_WINDOW,
+    min_insiders: MinInsidersParam = DEFAULT_MIN_INSIDERS,
+    ticker: FeedTickerParam = None,
+    start: ClusterStartParam = None,
+    end: ClusterEndParam = None,
+    sort: ClusterSortParam = ClusterSort.DATE,
+    order: OrderParam = SortOrder.DESC,
+) -> InsiderClusterEnvelope:
+    """Episodes in which at least `min_insiders` of one company's officers and
+    directors bought its shares on the open market within `window` days, latest
+    first. Windows that share a purchase are one episode. Found over all of
+    history, not back from today. `meta.rules` states what counts as a purchase:
+    plan purchases and 10% owners are left out."""
+    window = _grid_value("window", window, WINDOWS)
+    min_insiders = _grid_value("min_insiders", min_insiders, MIN_INSIDERS)
+    if start is not None and end is not None and start > end:
+        raise invalid("from", f"from ({start}) is after to ({end}).")
+    security_id = (await _resolve(session, ticker)).id if ticker is not None else None
+
+    statement, keyset = clusters_query(
+        page,
+        window=window,
+        min_insiders=min_insiders,
+        security_id=security_id,
+        start=start,
+        end=end,
+        sort=sort,
+        order=order,
+    )
+    rows, page_info = page_of(list(await session.execute(statement)), keyset, page)
+    insiders: dict[tuple[str, date], list[ClusterInsider]] = {}
+    if rows:
+        keys = [(row.issuer_cik, row.window_start) for row in rows]
+        for row in await session.execute(
+            cluster_insiders_query(keys, window=window, min_insiders=min_insiders)
+        ):
+            insiders.setdefault((row.issuer_cik, row.window_start), []).append(
+                _cluster_insider(row)
+            )
+    detected_at = await session.scalar(
+        select(func.max(InsiderCluster.detected_at)).where(
+            InsiderCluster.window_days == window, InsiderCluster.min_insiders == min_insiders
+        )
+    )
+    return InsiderClusterEnvelope(
+        data=[_cluster(row, insiders.get((row.issuer_cik, row.window_start), [])) for row in rows],
+        meta=InsiderClusterMeta(
+            window=window,
+            min_insiders=min_insiders,
+            rules=list(RULES),
+            refreshed_at=detected_at,
+            generated_at=datetime.now(UTC),
+        ),
+        page=page_info,
     )

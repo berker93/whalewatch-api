@@ -78,6 +78,8 @@ TRACKED: Final = {
     "ingest-form4": ("ingest-form4", [], "success"),
     # Every year through 2027 exists since 0032, so nothing is created.
     "create-partitions": ("create-partitions", ["--through", "2027"], "success"),
+    # No purchases, so no clusters: the table is emptied and nothing written.
+    "detect-clusters": ("detect-clusters", [], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.

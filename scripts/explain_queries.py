@@ -52,7 +52,13 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.api.pagination import MAX_LIMIT, PageParams
-from app.api.routers.insiders import Filters, InsiderSort, transactions_query
+from app.api.routers.insiders import (
+    Filters,
+    InsiderSort,
+    cluster_insiders_query,
+    clusters_query,
+    transactions_query,
+)
 from app.api.routers.investors import LATEST, detail_query, list_query
 from app.api.routers.market import (
     DEFAULT_TOP,
@@ -119,7 +125,9 @@ class Query:
         # off and doubles each backslash in a literal, which makes LIKE's
         # ESCAPE '\\' two characters. Every server this runs against has it on.
         dialect._backslash_escapes = False
-        compiled = statement.compile(dialect=dialect)
+        # An IN list is a parameter per item, expanded at execution; render
+        # them now, since this text is sent as it is.
+        compiled = statement.compile(dialect=dialect, compile_kwargs={"render_postcompile": True})
         bound = {k: v for k, v in compiled.params.items() if v is not None}
         return cls(name, endpoint, str(compiled), bound)
 
@@ -458,6 +466,17 @@ QUERIES: Final = (
         transactions_query(
             PageParams(), security_id=bindparam("security_id"), listing="stock-insiders"
         )[0],
+    ),
+    # The default set's latest episodes, in the order the index holds them.
+    Query.from_app(
+        "insider_clusters", "GET /v1/insiders/clusters", clusters_query(PageParams())[0]
+    ),
+    # Who bought, for a page of episodes: lines by id and date, so each lookup
+    # is pruned to the partitions of the episode's years.
+    Query.from_app(
+        "insider_cluster_insiders",
+        "GET /v1/insiders/clusters (insiders)",
+        cluster_insiders_query([("0001046179", date(2026, 10, 7))], window=30, min_insiders=3),
     ),
     Query.from_app("meta_periods", "GET /v1/meta/periods", periods_query()),
     Query.from_app(

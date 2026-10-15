@@ -164,7 +164,8 @@ def _truncate(engine: AsyncEngine) -> None:
         engine,
         text(
             "TRUNCATE ingestion_run, pending_filing, insider_transaction, reporting_owner, "
-            "insider, filing, security, sec_company_ticker RESTART IDENTITY CASCADE"
+            "insider, insider_cluster, filing, security, sec_company_ticker "
+            "RESTART IDENTITY CASCADE"
         ),
     )
 
@@ -279,6 +280,9 @@ def test_the_queue_is_loaded_and_marked_done(
     assert metrics["lines_superseded"] == 1
     assert metrics["security_links"] == {"unlisted": 3}
     assert metrics["amendments"] == {"linked": 1}
+    # The clusters are rebuilt from what loaded, before the cache is dropped.
+    assert metrics["clusters"]["episodes"] == 0
+    assert "detect-clusters  0 episodes of 3+ insiders in 30 days" in result.output
     assert metrics["cache_invalidated"] == 1
     assert asyncio.run(redis.get("ww:v1:insiders.list_insider_transactions:x")) is None
 
@@ -298,7 +302,8 @@ def test_a_second_run_asks_edgar_nothing_and_changes_nothing(
     assert sum(route.call_count for route in routes) == calls
     assert _lines(migrated_engine) == lines
     assert "3 Form 4s, 3 already loaded" in result.output
-    # Nothing loaded, so the cache is left alone.
+    # Nothing loaded, so the clusters and the cache are left alone.
+    assert "clusters" not in _run(migrated_engine)[3]
     assert "cache_invalidated" not in _run(migrated_engine)[3]
 
 

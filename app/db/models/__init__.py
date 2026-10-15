@@ -41,6 +41,7 @@ from app.db.models.ingestion_run import (
     RunStatus,
 )
 from app.db.models.insider import Insider, ReportingOwner
+from app.db.models.insider_cluster import InsiderCluster
 from app.db.models.insider_transaction import OPEN_MARKET_CODES, InsiderTransaction
 from app.db.models.manual_review import REVIEW_STATUS_CHECK, ManualReview, ReviewStatus
 from app.db.models.matview_refresh import MatviewRefresh
@@ -111,6 +112,7 @@ __all__ = [
     "ImpliedPrice",
     "IngestionRun",
     "Insider",
+    "InsiderCluster",
     "InsiderTransaction",
     "ListStatus",
     "ManualReview",

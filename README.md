@@ -1132,6 +1132,10 @@ none or more than one, `security_id` is null and the lines load anyway.
 `insider_transaction`'s partitions through next year if one is missing, as
 `create-partitions` does, in a transaction of its own.
 
+**Clusters last.** A run that loaded anything then rebuilds `insider_cluster`,
+as `detect-clusters` does, in a transaction of its own. So the daily
+`crawl-form4` then `ingest-form4` keeps the clusters current.
+
 A filing that fails is recorded on its queue row and the run carries on. Exits
 1 if any failed, 130 if interrupted. Nothing is published, so no views are
 refreshed. The insider feed reads these tables live, so a run that loaded
@@ -1156,6 +1160,29 @@ into the future) are moved into it as it is created: Postgres refuses a new
 range over rows the default holds. Creating a partition blocks reads of the
 table until it commits, which is a moment. Idempotent: when every year exists
 it says so and changes nothing.
+
+### `detect-clusters`
+
+Rebuilds `insider_cluster`, the cluster buys behind `/v1/insiders/clusters`
+([app/derived/insider_cluster.py](app/derived/insider_cluster.py)): episodes
+in which at least N of one company's officers and directors bought its shares
+on the open market within a window. Every window (14, 30, 60, 90 days) and
+threshold (2 to 5 insiders) the API offers is written, replacing the table in
+one transaction. `ingest-form4` runs it after every load, so this is for after
+a change to the rules, and for looking.
+
+```
+detect-clusters  0 episodes of 3+ insiders in 30 days: 0 new or changed
+  purchases   0 counted; left out 4 not by an officer or director, 18 under a 10b5-1 plan, 31 by an ESPP or dividend plan
+```
+
+Only code `P` lines of shares count, by a director or officer, outside a
+10b5-1 plan, and not bought by an employee stock purchase or dividend
+reinvestment plan by the footnotes. The summary counts the purchases left out
+and why, and lists the 30-day, 3-insider episodes that are new or changed.
+Each insider counts once per window, however many times they bought. The
+window rolls over all of history, so a 2021 cluster is found like last week's,
+and a re-run with nothing loaded writes the same rows. Drops the API's cache.
 
 ### `runs [--job NAME] [--limit N]`
 

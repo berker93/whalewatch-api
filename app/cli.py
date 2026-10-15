@@ -1,7 +1,7 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
-fetch-quotes, crawl-form4, ingest-form4, create-partitions.
+fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -42,6 +42,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli crawl-form4 --catch-up
     uv run python -m app.cli ingest-form4
     uv run python -m app.cli create-partitions --through 2028
+    uv run python -m app.cli detect-clusters
 
 Every run is recorded
 ---------------------
@@ -57,8 +58,8 @@ second run, which names the first in its ``after_run_id``.
 
 Every verb that changes what the API serves — those, ``refresh-views``,
 ``seed-investors``, ``resolve-cusips``, ``resolve-cusip``, ``ticker-alias``,
-``fetch-quotes`` when it writes a close, and ``ingest-form4`` when it loads
-something — then drops every response the API has
+``fetch-quotes`` when it writes a close, ``ingest-form4`` when it loads
+something, and ``detect-clusters`` — then drops every response the API has
 cached (:func:`_invalidate_cache`), and records how many in its run's ``metrics``.
 
 Exit codes
@@ -137,6 +138,12 @@ from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.queries.runs import RunSummary, job_names, recent_runs
 from app.db.session import create_engine, create_session_factory, session_scope
 from app.derived.implied_price import PriceRebuild
+from app.derived.insider_cluster import (
+    DEFAULT_MIN_INSIDERS,
+    DEFAULT_WINDOW,
+    ClusterRebuild,
+    detect_clusters,
+)
 from app.derived.position_change import ChangeRebuild
 from app.derived.recompute import (
     Recomputed,
@@ -1760,7 +1767,8 @@ def ingest_form4_command(
     whichever of the two loads first.
 
     First creates insider_transaction's partitions through next year, if any
-    is missing, as create-partitions does.
+    is missing, as create-partitions does. Then, if it loaded anything,
+    rebuilds the cluster buys from every line, as detect-clusters does.
 
     A filing that fails is reported and recorded on its queue row, and the run
     carries on. Exits 1 if any filing failed or EDGAR blocked the run, and 130
@@ -1783,8 +1791,9 @@ async def _ingest_form4(*, concurrency: int, limit: int | None, force: bool) -> 
     """Plan, load, summarise. Returns the exit code.
 
     No snapshot or view reads these tables, so there is nothing to refresh.
-    The insider feed reads them live, so a run that loaded anything drops the
-    API's cache.
+    ``insider_cluster`` is derived from them, so a run that loaded anything
+    rebuilds it, in a transaction of its own after the loads, and then drops
+    the API's cache: the insider feed reads the lines live.
     """
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
@@ -1843,10 +1852,15 @@ async def _ingest_form4(*, concurrency: int, limit: int | None, force: bool) -> 
                 Counter(result.amendment.value for result in results if result.amendment)
             ),
         }
+        clusters = None
         if loaded:
+            clusters = await _rebuild_clusters(settings)
+            run.metrics["clusters"] = _cluster_metrics(clusters)
             run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
 
     _echo_form4_summary(plan, ran, loaded, elapsed=time.monotonic() - started)
+    if clusters is not None:
+        _echo_clusters(clusters)
     if ran.rate_limited is not None or ran.count(Outcome.FAILED):
         return 1
     return _INTERRUPTED if not_started else 0
@@ -2008,7 +2022,7 @@ def _echo_form4_summary(
         _line("interrupted", f"{not_started} not started. Re-run to resume")
 
 
-# --- seed-investors ----------------------------------------------------------
+# --- create-partitions -------------------------------------------------------
 
 
 @app.command("create-partitions")
@@ -2064,6 +2078,103 @@ def _echo_partitions(created: list[CreatedPartition]) -> None:
             else ""
         )
         _line(str(partition.year), partition.name + moved)
+
+
+# --- detect-clusters ---------------------------------------------------------
+
+
+@app.command("detect-clusters")
+def detect_clusters_command() -> None:
+    """Rebuild the cluster buys: several of a company's insiders buying within a window.
+
+    Reads every open-market purchase (code P) in insider_transaction by an
+    officer or director, outside a 10b5-1, employee stock purchase or dividend
+    reinvestment plan. For each issuer, every purchase day anchors a window of
+    that day and the days before it, and a window with enough distinct
+    insiders qualifies. Overlapping windows are one episode. Every window and
+    threshold /v1/insiders/clusters offers is written to insider_cluster,
+    which is replaced whole, in one transaction.
+
+    ingest-form4 does this after every run that loads something, so this is
+    for after a change to how clusters are detected, and for looking: the
+    summary counts the purchases that did not count and why, and lists the
+    30-day, 3-insider episodes that are new or changed.
+
+    Then drops every response the API has cached.
+    """
+    asyncio.run(_detect_clusters())
+
+
+async def _detect_clusters() -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    async with track_run(settings, "detect-clusters") as run:
+        clusters = await _rebuild_clusters(settings)
+        run.items_seen = clusters.lines.total()
+        run.items_written = sum(clusters.written.values())
+        run.metrics["clusters"] = _cluster_metrics(clusters)
+        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+    _echo_clusters(clusters)
+
+
+async def _rebuild_clusters(settings: Settings) -> ClusterRebuild:
+    async with session_scope(settings) as session:
+        clusters = await detect_clusters(session)
+    logger.info(
+        "insider_cluster.detected",
+        episodes=clusters.episodes,
+        added=len(clusters.added),
+        removed=len(clusters.removed),
+        lines=dict(clusters.lines),
+    )
+    return clusters
+
+
+def _cluster_metrics(clusters: ClusterRebuild) -> dict[str, object]:
+    return {
+        "episodes": clusters.episodes,
+        "added": len(clusters.added),
+        "removed": len(clusters.removed),
+        "lines": dict(clusters.lines),
+    }
+
+
+def _echo_clusters(clusters: ClusterRebuild) -> None:
+    """The default set's count and changes, then what the purchases came to."""
+    changes = [f"{len(clusters.added)} new or changed"]
+    if clusters.removed:
+        changes.append(f"{len(clusters.removed)} gone")
+    typer.echo(
+        f"detect-clusters  {_count(clusters.episodes, 'episode')} of "
+        f"{DEFAULT_MIN_INSIDERS}+ insiders in {DEFAULT_WINDOW} days: {', '.join(changes)}"
+    )
+    lines = clusters.lines
+    left_out = [
+        f"{lines[reason]} {label}"
+        for reason, label in (
+            ("role", "not by an officer or director"),
+            ("10b5_1", "under a 10b5-1 plan"),
+            ("plan", "by an ESPP or dividend plan"),
+            ("derivative", "of derivatives"),
+        )
+        if lines[reason]
+    ]
+    _line(
+        "purchases",
+        f"{lines['counted']:,} counted" + (f"; left out {', '.join(left_out)}" if left_out else ""),
+    )
+    for episode in clusters.added:
+        days = (episode.window_end - episode.window_start).days + 1
+        _line(
+            "new",
+            f"{episode.window_start} to {episode.window_end} ({_count(days, 'day')})  "
+            f"{episode.insider_count} insiders  {episode.issuer_name}",
+        )
+    for issuer_cik, window_start in clusters.removed:
+        _line("gone", f"from {window_start}  CIK {issuer_cik}")
+
+
+# --- seed-investors ----------------------------------------------------------
 
 
 @app.command("seed-investors")
