@@ -39,7 +39,7 @@ Read these before mapping. Each is a deliberate change, not an oversight.
 3. **Event `kind`s are snake_case on the wire**: `insider_trade`, `holder_change`, `filing_summary`. The FE's are kebab-case. The mapping is in §4.
 4. **`GET /v1/auth/session` answers `{ session: Session | null }`**, and `Session` has an `expires_at` beside `user`.
 5. **`AccountProfile.pending_email` exists** (BE-2's AC), so a reload still shows "Confirmation link sent to …".
-6. **Registration takes an optional `time_zone`.** Send the browser's: see Q2 in §7.
+6. **Registration takes an optional `time_zone`, but don't send it.** Every new account starts on `America/New_York` (Q2, settled), and the user changes it on the account page.
 7. **One new error code, `email_taken`** (409), for registering an address that already has an account. `AuthErrorCode` has no code for it yet (§5).
 
 ---
@@ -265,7 +265,8 @@ openapi-fetch's default query serializer writes arrays as repeated keys (`ref=a&
 Details that differ from nothing in the FE, but are worth knowing:
 
 - `at` is `filed_at`: EDGAR's acceptance time, in UTC, to the second. A Form 4 always has a clock time.
-- A Form 4 line with no linked security (`trade.cusip === null`) never matches a followed stock (Q6).
+- **A Form 4 line with no linked security still matches a followed stock when its issuer filed it** (Q6). The loader leaves `cusip` null when a company has two share classes and the filing names neither or both (Lennar writes `LEN, LEN.B`). Such a P or S line comes under the followed stock of that company, with `ref.cusip` set and `trade.cusip === null`. Link the row by `ref`, or by `trade.issuer_ticker`, not by `trade.cusip`. If both classes are followed it's still one event, under the first one sent. `/v1/stocks/{ticker}/insiders` already treats these lines the same way.
+- **`buildTimeline()` needs the same rule to stay the oracle.** Today it drops lines with a null `cusip`. Matching by issuer needs each followed stock's issuer CIK, which the mock has (`InsiderTransaction.issuer_cik`) but `StockMatch` doesn't. Matching on `issuer_ticker` containing the stock's ticker is close enough for the mock.
 - A followed insider's lines come under `ref.kind = 'insider'` even when their stock is followed too: one event, never two.
 
 ### Upcoming
@@ -365,10 +366,8 @@ export const apiAuth: AuthAdapter = {
     toSession(await call(api.POST('/v1/auth/login', { body: { ...credentials, remember } }))),
 
   register: async ({ name, email, password }) => {
-    const time_zone = Intl.DateTimeFormat().resolvedOptions().timeZone
-    const result = await call(
-      api.POST('/v1/auth/register', { body: { name, email, password, time_zone } }),
-    )
+    // No time_zone: every account starts on America/New_York (Q2).
+    const result = await call(api.POST('/v1/auth/register', { body: { name, email, password } }))
     return result.status === 'authed'
       ? { status: 'authed', session: toSession(result.session) }
       : { status: 'recorded' }
@@ -427,12 +426,12 @@ Both links are built as `WEB_URL + path + ?token=<token>`. `WEB_URL` is the app 
 
 | # | Question | What the API does now | To change it |
 |---|---|---|---|
-| Q1 | Password rule | ≥ 10 characters, the FE's rule | `PASSWORD_MIN_LENGTH` in `app/accounts/rules.py` and in the FE, together |
-| Q2 | Default `time_zone` | `America/New_York`, unless registration sends `time_zone`. The adapter above sends the browser's, so in practice the browser's wins | Drop `time_zone` from the register call to get New York |
+| Q1 | Password rule | **Settled:** ≥ 10 characters, the FE's rule | `PASSWORD_MIN_LENGTH` in `app/accounts/rules.py` and in the FE, together |
+| Q2 | Default `time_zone` | **Settled:** `America/New_York` for every new account. The FE doesn't send `time_zone` on registration. The mock should seed New York too, not the browser's zone | |
 | Q3 | Option A or B | **B** (BE-7 + BE-8) | |
 | Q4 | Joint Form 4 filings | Unchanged: lines are under the first owner's CIK, so following a co-filer listed second matches nothing | Loader change, not an API one |
 | Q5 | `insider_cik` on the feed | **Shipped**, with `filed_from` / `filed_to` and echoed in `meta` | |
-| Q6 | Stock refs matching unlinked lines by issuer CIK | Not done: a line with `cusip: null` never matches a followed stock | Say so if you want it. It's one condition in `app/api/routers/timeline.py` |
+| Q6 | Stock refs matching unlinked lines by issuer CIK | **Settled: yes.** An unlinked P/S line from the stock's issuer is under the followed stock, once (§4) | |
 
 ---
 

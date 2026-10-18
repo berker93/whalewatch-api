@@ -34,6 +34,7 @@ from app.db.models import (
     Insider,
     InsiderTransaction,
     ReportingOwner,
+    SecCompanyTicker,
     Security,
 )
 from app.derived.recompute import recompute
@@ -302,6 +303,7 @@ async def _form4(
     insider_id: int,
     filed_at: datetime,
     *lines: tuple[str, int | None, int, str | None],
+    issuer_cik: str = "0000000999",
 ) -> str:
     """A Form 4 filed at ``filed_at``: lines of (code, security id, shares, price)."""
     accession_no = f"0009999999-26-{next(_accessions):06d}"
@@ -309,7 +311,7 @@ async def _form4(
         insert(Filing)
         .values(
             accession_no=accession_no,
-            cik="0000000999",
+            cik=issuer_cik,
             form_type="4",
             filed_at=filed_at,
             value_multiplier=1,
@@ -328,7 +330,7 @@ async def _form4(
                 filing_id=filing_id,
                 insider_id=insider_id,
                 line_number=number,
-                issuer_cik="0000000999",
+                issuer_cik=issuer_cik,
                 issuer_name="ISSUER X",
                 security_id=security_id,
                 transaction_date=filed_at.date() - timedelta(days=2),
@@ -415,6 +417,80 @@ async def test_an_insider_and_their_stock_both_followed_is_one_event_under_the_i
     assert len(ceo_sale) == 1
     assert ceo_sale[0]["ref"] == {"kind": "insider", "insider_cik": "0000000101"}
     assert len(events) == 4  # the CEO's three, and the director's purchase
+
+
+LENNAR = "0000920760"
+LEN = "526057104"
+LENB = "526057302"
+
+
+async def _lennar(session: AsyncSession) -> dict[str, str]:
+    """Two classes under one CIK, as SEC lists them (LEN and LEN-B). A director
+    files a sale and a gift the loader could not link to either class, and a
+    sale linked to LEN. Another issuer files an unlinked sale too."""
+    len_a = await _security(session, LEN, ticker="LEN")
+    await _security(session, LENB, ticker="LEN.B")
+    for ticker in ("LEN", "LEN-B"):
+        await session.execute(
+            insert(SecCompanyTicker).values(
+                ticker=ticker, cik=LENNAR, name="LENNAR CORP", seen_at=at("2026-08-01")
+            )
+        )
+    director = await _insider(session, "0000000201", "LENNAR DIRECTOR")
+    stranger = await _insider(session, "0000000202", "SOMEONE ELSE")
+    return {
+        "unlinked": await _form4(
+            session,
+            director,
+            at("2026-08-06"),
+            ("S", None, 100, "10"),
+            ("G", None, 10, None),
+            issuer_cik=LENNAR,
+        ),
+        "linked": await _form4(
+            session, director, at("2026-08-05"), ("S", len_a, 50, "10"), issuer_cik=LENNAR
+        ),
+        "elsewhere": await _form4(
+            session, stranger, at("2026-08-07"), ("S", None, 5, "10"), issuer_cik="0000000303"
+        ),
+    }
+
+
+async def test_a_followed_stock_shows_its_issuers_unlinked_open_market_lines(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Q6: the line is under the stock its issuer is, with no cusip on the
+    trade to say the class is not known. As /v1/stocks/{ticker}/insiders has it."""
+    accessions = await _lennar(db_session)
+
+    events = await _timeline(client, f"stock:{LEN}")
+
+    assert [(e["id"], e["ref"]["cusip"], e["trade"]["cusip"]) for e in events] == [
+        (f"{accessions['unlinked']}:1", LEN, None),
+        (f"{accessions['linked']}:1", LEN, LEN),
+    ]
+
+
+async def test_an_unlinked_line_is_also_under_the_issuers_other_class(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    accessions = await _lennar(db_session)
+
+    events = await _timeline(client, f"stock:{LENB}")
+
+    assert [(e["id"], e["ref"]["cusip"]) for e in events] == [(f"{accessions['unlinked']}:1", LENB)]
+
+
+async def test_both_classes_followed_is_one_event_under_the_first_named(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    accessions = await _lennar(db_session)
+
+    events = await _timeline(client, f"stock:{LENB}", f"stock:{LEN}")
+
+    unlinked = [e for e in events if e["id"] == f"{accessions['unlinked']}:1"]
+    assert [e["ref"]["cusip"] for e in unlinked] == [LENB]
+    assert len(events) == 2
 
 
 async def test_the_window_is_days_in_the_zone_asked_for(

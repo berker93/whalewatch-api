@@ -277,7 +277,7 @@ TimelineEvent:                     # discriminated by `kind`
 
 **What TA-3 settled.** `buildTimeline()` in `src/modules/Timeline/buildTimeline.ts` implements these rules, and its tests are the spec. Under option B it stays as the mock and the oracle. The API's answer should match it on the same data. The details below go past the rules above:
 - **Followed insider = every code**, not only P/S/A/M/G. `F`, `D`, `X` and the rest come through too, with `side: neutral`.
-- **A Form 4 line with no `cusip` never matches a followed stock.** Stock refs are by CUSIP, and the schema leaves `cusip` null when the line couldn't be linked to a security. It still shows for a followed insider. See Q6.
+- ~~**A Form 4 line with no `cusip` never matches a followed stock.**~~ *Changed by Q6 (2026-10-19):* a P/S line with no `cusip`, filed by the followed stock's issuer, matches that stock, once, under the first followed class. `trade.cusip` stays null. It still shows for a followed insider too.
 - **Signs.** Form 4: `value_usd` is negative when `acquired_disposed = D`, whatever the code, so an `F` is negative and `neutral`. Holder change: `traded_value_usd`, negative when `shares_delta < 0`. Filing summary: the sum of the filing's signed traded values, `hold` rows aside. Its `side` follows the sign of that sum. All values in dollars to the cent.
 - **The top-4 cut is made over the whole quarter, before the window.** An event never appears just because a bigger one aged out of the window. Ties on |Δ value| go to the slug, A→Z.
 - **An amended quarter counts once per holder**, from the latest filing that reports the stock. The event's `id` and `at` are that filing's.
@@ -333,12 +333,12 @@ UpcomingFiling:
 
 | # | Question | Raised by | Answer |
 |---|---|---|---|
-| Q1 | Password rule: ≥ 10 chars (the FE today) or ≥ 12 with a letter and a number (the epic)? Registration and change-password must share one rule, on both FE and BE. | TA-1 | BE, provisional: ≥ 10 characters, the FE's rule (`app/accounts/rules.py`). Still open for product. |
-| Q2 | Default `time_zone` for new accounts: `America/New_York` (the market's clock) or the browser's at signup? | TA-1 | BE, provisional: `America/New_York`, unless registration sends `time_zone`. The FE adapter in `frontend-integration.md` sends the browser's. |
+| Q1 | Password rule: ≥ 10 chars (the FE today) or ≥ 12 with a letter and a number (the epic)? Registration and change-password must share one rule, on both FE and BE. | TA-1 | **Settled (2026-10-19):** ≥ 10 characters, the FE's rule, on both FE and BE (`app/accounts/rules.py`). |
+| Q2 | Default `time_zone` for new accounts: `America/New_York` (the market's clock) or the browser's at signup? | TA-1 | **Settled (2026-10-19):** `America/New_York` for every new account. The FE doesn't send the browser's zone, and the mock should seed New York too. |
 | Q3 | Option A or option B for the timeline (§3)? | TA-1 | B, shipped. |
 | Q4 | Joint Form 4 filings put each line under the **first** owner's CIK (`InsiderTransaction.roles` doc). Following a co-filer who isn't listed first matches nothing. Acceptable for v1? | TA-1 | Unchanged for v1: lines stay under the first owner's CIK. |
 | Q5 | Should `insider_cik` on `/v1/insiders/transactions` (BE-5) ship even under option B? Nothing filters Form 4 by insider today, so the watchlist sheet links a followed insider to `/insiders?ticker=` + their latest issuer. With the filter, it could link to that insider's own lines. | TA-2 | Yes, shipped with `filed_from` / `filed_to`. |
-| Q6 | A Form 4 line whose `cusip` is null (the issuer has no listed security, or two classes and an ambiguous symbol) never matches a followed stock today. Should a stock ref also match lines by the stock's **issuer CIK**? Under option B only the BE can do it. Under option A it needs the issuer CIK on `StockDetail`. | TA-3 | Not done: a stock ref matches linked lines only. |
+| Q6 | A Form 4 line whose `cusip` is null (the issuer has no listed security, or two classes and an ambiguous symbol) never matches a followed stock today. Should a stock ref also match lines by the stock's **issuer CIK**? Under option B only the BE can do it. Under option A it needs the issuer CIK on `StockDetail`. | TA-3 | **Settled (2026-10-19): yes.** A stock ref also matches its issuer's unlinked P/S lines (issuer CIK from SEC's ticker list, as `/v1/stocks/{ticker}/insiders` does). One event, under the first followed class. `buildTimeline()` needs the same rule. |
 
 ---
 

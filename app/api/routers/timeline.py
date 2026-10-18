@@ -24,7 +24,8 @@ mirrors its cases):
 
 - A followed **insider**: every Form 4 line they filed, any code.
 - A followed **stock**: Form 4 open-market lines (``P``, ``S``) linked to it,
-  and each quarter's four largest holder changes by traded dollars, holds
+  or linked to no security and filed by its issuer (Q6), and each quarter's
+  four largest holder changes by traded dollars, holds
   aside. The cut is over the whole quarter, before the window, so an event
   never appears because a larger one aged out; ties go to the slug, A to Z.
   An amended quarter counts once per holder, from its latest filing.
@@ -35,8 +36,9 @@ mirrors its cases):
 
 Every event is placed at its filing's ``filed_at``, a 13F never at its period
 end, and the window is on that: ``[from, to]`` as days in ``tz``, both
-included. A line with no linked security never matches a stock (open question
-Q6).
+included. A line its issuer filed with no linked security (two classes, a
+symbol naming neither or both) is under each of the issuer's followed stocks,
+as on the stock page, but once: under the first the request named.
 
 Time zones
 ----------
@@ -108,6 +110,7 @@ from app.db.models import (
     PositionChange,
     PositionSnapshot,
     ReportingOwner,
+    SecCompanyTicker,
     Security,
 )
 from app.db.models import InsiderTransaction as Line
@@ -263,18 +266,55 @@ async def window_of(session: AsyncSession, first: date, last: date, tz: str) -> 
 # --- Form 4 ---------------------------------------------------------------------
 
 
-def insider_trades_query(refs: Refs, window: Window) -> Select[Any]:
-    """Lines filed in the window by a followed insider (any code), or linked to a
-    followed stock (open-market codes), with what :func:`_transaction` reads."""
+def issuers_query(cusips: frozenset[str]) -> Select[Any]:
+    """Each followed stock's issuer: the CIK SEC lists its current ticker under,
+    as the stock page's insider table finds it (``_issuer_ciks`` there)."""
+    return (
+        select(Security.cusip, SecCompanyTicker.cik)
+        .join(SecCompanyTicker, SecCompanyTicker.ticker == func.replace(Security.ticker, ".", "-"))
+        .where(Security.cusip.in_(sorted(cusips)))
+    )
+
+
+async def followed_issuers(session: AsyncSession, refs: Refs) -> dict[str, str]:
+    """Issuer CIK to the followed stock its unlinked lines are filed under: the
+    first of the issuer's stocks the request named, when it named several."""
+    if not refs.stocks:
+        return {}
+    by_cusip: dict[str, list[str]] = {}
+    for row in await session.execute(issuers_query(refs.stocks)):
+        by_cusip.setdefault(row.cusip, []).append(row.cik)
+    issuers: dict[str, str] = {}
+    for ref in refs.ordered:
+        if isinstance(ref, WatchStock):
+            for cik in by_cusip.get(ref.cusip, ()):
+                issuers.setdefault(cik, ref.cusip)
+    return issuers
+
+
+def insider_trades_query(refs: Refs, window: Window, issuers: dict[str, str]) -> Select[Any]:
+    """Lines filed in the window by a followed insider (any code), or at a
+    followed stock (open-market codes), with what :func:`_transaction` reads.
+
+    At a followed stock means linked to it, or linked to no security at all and
+    filed by its issuer (Q6): the loader leaves a line unlinked when the issuer
+    has several classes and the filing's symbol names neither or both, as
+    Lennar's ``LEN, LEN.B`` does. The stock page counts those lines as each
+    class's, and so does this.
+    """
     owner = ReportingOwner
+    open_market = _codes_condition(frozenset(OPEN_MARKET_CODES))
     matches: list[ColumnElement[bool]] = []
     if refs.insiders:
         matches.append(Insider.cik.in_(sorted(refs.insiders)))
     if refs.stocks:
+        matches.append(and_(Security.cusip.in_(sorted(refs.stocks)), open_market))
+    if issuers:
         matches.append(
             and_(
-                Security.cusip.in_(sorted(refs.stocks)),
-                _codes_condition(frozenset(OPEN_MARKET_CODES)),
+                Line.security_id.is_(None),
+                Line.issuer_cik.in_(sorted(issuers)),
+                open_market,
             )
         )
     return (
@@ -323,15 +363,21 @@ def insider_trades_query(refs: Refs, window: Window) -> Select[Any]:
     )
 
 
-def insider_trade_events(rows: Sequence[Row[Any]], refs: Refs) -> list[InsiderTradeEvent]:
+def insider_trade_events(
+    rows: Sequence[Row[Any]], refs: Refs, issuers: dict[str, str]
+) -> list[InsiderTradeEvent]:
     events: dict[str, InsiderTradeEvent] = {}
     for row in rows:
         trade = _transaction(row)
+        open_market = trade.code.strip().upper() in OPEN_MARKET_CODES
         ref: WatchStock | WatchInsider
         if trade.insider_cik in refs.insiders:
             ref = WatchInsider(kind="insider", insider_cik=trade.insider_cik)
-        elif trade.cusip in refs.stocks and trade.code.strip().upper() in OPEN_MARKET_CODES:
+        elif trade.cusip in refs.stocks and open_market:
             ref = WatchStock(kind="stock", cusip=trade.cusip)
+        elif trade.cusip is None and trade.issuer_cik in issuers and open_market:
+            # Unlinked: under the followed stock of its issuer, cusip null on the trade.
+            ref = WatchStock(kind="stock", cusip=issuers[trade.issuer_cik])
         else:  # pragma: no cover - the query asks for nothing else
             continue
         event_id = f"{trade.accession_no}:{trade.line_number}"
@@ -587,8 +633,9 @@ def holder_change_events(rows: Sequence[Row[Any]]) -> list[HolderChangeEvent]:
 async def build_timeline(session: AsyncSession, refs: Refs, window: Window) -> list[TimelineEvent]:
     events: list[InsiderTradeEvent | HolderChangeEvent | FilingSummaryEvent] = []
     if refs.insiders or refs.stocks:
-        rows = (await session.execute(insider_trades_query(refs, window))).all()
-        events += insider_trade_events(rows, refs)
+        issuers = await followed_issuers(session, refs)
+        rows = (await session.execute(insider_trades_query(refs, window, issuers))).all()
+        events += insider_trade_events(rows, refs, issuers)
     if refs.investors:
         rows = (await session.execute(filing_summaries_query(refs, window))).all()
         events += filing_summary_events(rows)

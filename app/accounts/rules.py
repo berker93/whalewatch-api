@@ -6,8 +6,8 @@ the form accepts and the API refuses is a 422 the user cannot understand. The
 limits the frontend has no counterpart for (the maximum lengths) are far past
 anything a person types.
 
-Open question Q1 in docs/be-requirements-timeline-account.md is still open, so
-the password rule is the frontend's today: at least 10 characters. Change
+The password rule is the frontend's, at least 10 characters (Q1 in
+docs/be-requirements-timeline-account.md, settled). Change
 :data:`PASSWORD_MIN_LENGTH` here and ``PASSWORD_MIN_LENGTH`` there together.
 """
 
@@ -29,9 +29,9 @@ PASSWORD_MIN_LENGTH: Final = 10
 #: Bounds the work one login asks of scrypt, and nothing a person would hit.
 PASSWORD_MAX_LENGTH: Final = 1000
 
-#: For a new account when registration names no zone: the market's clock.
-#: Open question Q2 asks whether the browser's should win; the frontend can
-#: send it as ``time_zone`` on registration either way.
+#: Every new account's zone: the market's clock (Q2, settled), not the
+#: browser's. The user changes it on the account page. Registration still
+#: takes an optional ``time_zone``, which the frontend does not send.
 DEFAULT_TIME_ZONE: Final = "America/New_York"
 
 
