@@ -5,6 +5,7 @@ In the order a request meets them, outermost first (see :func:`app.main.create_a
 - :class:`RequestContextMiddleware` gives the request its id and logs it.
 - :class:`SecurityHeadersMiddleware` stamps the headers every response carries.
 - Starlette's ``CORSMiddleware``, which answers preflights itself.
+- :class:`OriginCheckMiddleware` refuses a write from a site not allowed to call, 403.
 - :class:`UnhandledErrorMiddleware` turns an exception nothing handled into a 500.
 - :class:`BodySizeLimitMiddleware` refuses a body over the limit, 413.
 - :class:`~app.api.rate_limit.RateLimitMiddleware`, 429.
@@ -374,3 +375,44 @@ class TimeoutMiddleware:
                 scope=scope,
             )
             await response(scope, receive, send)
+
+
+#: The methods a browser sends to a cross-origin endpoint without asking first,
+#: and that change nothing.
+_SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+class OriginCheckMiddleware:
+    """Refuse a write from a site not on the CORS allow-list, 403 ``forbidden_origin``.
+
+    The session cookie is ``SameSite=Lax``, which already keeps another site's
+    POST from carrying it; this is the second lock on the same door, for a
+    browser that gets SameSite wrong. Only writes, and only those that say
+    where they came from: a browser always sends ``Origin`` with a POST, and a
+    request without one (curl, a server) carries no one's cookie by accident.
+    The API's own origin is allowed too, so the interactive docs can sign in.
+    """
+
+    def __init__(self, app: ASGIApp, allowed: list[str]) -> None:
+        self.app = app
+        self.allowed = frozenset(allowed)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] in _SAFE_METHODS:
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers", ()))
+        origin = headers.get(b"origin", b"").decode("latin-1")
+        host = headers.get(b"host", b"").decode("latin-1")
+        own = f"{scope.get('scheme', 'http')}://{host}"
+        # "null" is a sandboxed iframe or a file:// page: nowhere a session belongs.
+        if origin and (origin == "null" or (origin not in self.allowed and origin != own)):
+            response = problem(
+                403,
+                ErrorCode.FORBIDDEN_ORIGIN,
+                f"Writes from {origin} are not accepted.",
+                scope=scope,
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)

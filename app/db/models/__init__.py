@@ -6,6 +6,15 @@ executed. Alembic imports this package and nothing else; a model module missing
 from the list below is a table autogenerate will never see.
 """
 
+from app.db.models.account import (
+    PURPOSE_CHECK,
+    AccountToken,
+    AppUser,
+    SignupRequest,
+    TokenPurpose,
+    UserSession,
+    WatchlistItem,
+)
 from app.db.models.base import NAMING_CONVENTION, Base
 from app.db.models.crawl_watermark import CrawlWatermark
 from app.db.models.enums import AmendmentKind
@@ -85,6 +94,7 @@ __all__ = [
     "PENDING_STATUS_CHECK",
     "PRICE",
     "PRICED_CHECK",
+    "PURPOSE_CHECK",
     "QUANTITY",
     "QUARTER_EXPRESSION",
     "QUOTE_SOURCE_CHECK",
@@ -98,7 +108,9 @@ __all__ = [
     "STATUS_CHECK",
     "SUSPECT_HAS_NOTES_CHECK",
     "WEIGHT_PCT",
+    "AccountToken",
     "AmendmentKind",
+    "AppUser",
     "Base",
     "ChangeAction",
     "CrawlWatermark",
@@ -135,5 +147,9 @@ __all__ = [
     "SecurityAlias",
     "SecurityQuote",
     "SecuritySplit",
+    "SignupRequest",
     "SplitConfidence",
+    "TokenPurpose",
+    "UserSession",
+    "WatchlistItem",
 ]

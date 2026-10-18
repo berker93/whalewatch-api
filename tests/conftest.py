@@ -36,15 +36,19 @@ def make_settings(**overrides: Any) -> Settings:
         "sec_contact_email": "ops@whalewatch.io",
         "environment": "test",
     }
-    # Settings refuses the local raw store and unset CORS origins in a deployed
-    # environment, and the tests that ask for "production" are asking about
-    # logging or /health, not about where documents are archived or who may
-    # call. Nothing here opens the store.
+    # Settings refuses the local raw store, unset CORS origins, an unset web
+    # URL and logged email in a deployed environment, and the tests that ask for
+    # "production" are asking about logging or /health, not about where
+    # documents are archived, who may call, or where mail goes. Nothing here
+    # opens the store or sends a message.
     if overrides.get("environment") in ("staging", "production"):
         defaults |= {
             "raw_store_backend": "s3",
             "raw_store_s3_bucket": "whalewatch-test",
             "cors_origins": ["https://whalewatch.io"],
+            "web_url": "https://app.whalewatch.io",
+            "email_backend": "smtp",
+            "smtp_host": "smtp.whalewatch.test",
         }
     return Settings(_env_file=None, **{**defaults, **overrides})
 

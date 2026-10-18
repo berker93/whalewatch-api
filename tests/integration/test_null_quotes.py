@@ -1,8 +1,8 @@
 """With ``QUOTE_PROVIDER=null``, production's setting, every endpoint still answers 200.
 
 06c's exit criterion, as a test: the API works with no market data at all. Every
-GET in the OpenAPI document is called, over one published quarter pair, with
-``security_quote`` empty. The paths are read from the document rather than
+GET in the OpenAPI document is called, signed in, over one published quarter
+pair, with ``security_quote`` empty. The paths are read from the document rather than
 listed here, so a new endpoint is covered as soon as it exists, and a new path
 parameter fails :func:`test_every_endpoint_answers_200` until it is given a
 value below.
@@ -24,6 +24,7 @@ from app.derived.recompute import recompute
 from app.derived.scope import EVERYTHING
 from app.derived.views import refresh_views
 from tests.fake_redis import FakeRedis
+from tests.integration.accounts import make_user, sign_in
 
 Q1: Final = date(2024, 3, 31)
 Q2: Final = date(2024, 6, 30)
@@ -36,6 +37,8 @@ PARAMETERS: Final = {
     "slug": "whale",
     "ticker": "NVDA",
     "q": "nvidia",
+    "from": "2024-07-01",
+    "to": "2024-08-31",
 }
 
 
@@ -107,6 +110,9 @@ async def test_every_endpoint_answers_200(
 ) -> None:
     app.dependency_overrides[get_redis] = lambda: _ReadyRedis()
     await _publish_two_quarters(db_session)
+    # Signed in, so /v1/account and /v1/watchlist answer too.
+    await make_user(db_session)
+    await sign_in(client)
     calls = _gets(app)
 
     responses = {path: await client.get(path, params=query) for path, query in calls}

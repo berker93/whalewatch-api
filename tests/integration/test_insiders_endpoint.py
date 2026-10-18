@@ -383,9 +383,53 @@ async def test_a_parameter_that_cannot_be_answered_is_a_422(
         {"min_value": "-1"},
         {"sort": "size"},
         {"from": str(DAY_3), "to": str(DAY_1)},
+        {"insider_cik": "HUANG"},
+        {"insider_cik": "12345678901"},
+        {"filed_from": "2026-09-05", "filed_to": "2026-09-04"},
     ):
         response = await client.get("/v1/insiders/transactions", params=params)
         assert response.status_code == 422, params
+
+
+# --- by insider, by filing day (BE-5) -------------------------------------------
+
+
+async def test_insider_cik_with_code_all_is_everything_one_insider_filed(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await _a_mixed_week(db_session)
+    ceo = await db_session.scalar(text("SELECT cik FROM insider WHERE name = 'HUANG JEN HSUN'"))
+
+    body = await _get(client, "/v1/insiders/transactions", insider_cik=str(int(ceo)), code="all")
+
+    assert sorted(_codes(body["data"])) == ["A", "F", "M", "S"]
+    assert {row["insider_cik"] for row in body["data"]} == {ceo}
+    assert body["meta"]["insider_ciks"] == [ceo]
+    assert body["meta"]["codes"] is None
+
+
+async def test_the_filing_window_finds_a_late_filing_for_an_old_trade(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The timeline's reason for it: a line is news when it is filed, and the
+    trade-day window misses a late filing."""
+    nvda = await _security(db_session, NVDA_CUSIP, "NVDA")
+    late = await _insider(db_session, "LATE FILER")
+    accession = await _form4(db_session, late, _line("P", date(2026, 6, 1)), security_id=nvda)
+    # Filed in September (the fixture's) for a trade in June.
+
+    by_filing = await _get(
+        client, "/v1/insiders/transactions", filed_from="2026-09-04", filed_to="2026-09-04"
+    )
+    by_trade = await _get(
+        client, "/v1/insiders/transactions", **{"from": "2026-09-01", "to": "2026-09-30"}
+    )
+    before = await _get(client, "/v1/insiders/transactions", filed_to="2026-09-03")
+
+    assert [row["accession_no"] for row in by_filing["data"]] == [accession]
+    assert by_filing["meta"]["filed_from"] == by_filing["meta"]["filed_to"] == "2026-09-04"
+    assert by_trade["data"] == []
+    assert before["data"] == []
 
 
 # --- sorting and paging -------------------------------------------------------

@@ -57,6 +57,7 @@ from app.core.config import Settings
 from app.db.session import create_session_factory
 from tests.conftest import make_settings
 from tests.fake_redis import FakeRedis
+from tests.integration.accounts import Outbox
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
@@ -286,3 +287,13 @@ async def client(
         # override left behind on a shared app is the kind of bug that shows up
         # three files away as a test passing for the wrong reason.
         app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def outbox(monkeypatch: pytest.MonkeyPatch) -> Outbox:
+    """The account emails the routes send, kept rather than logged, so a test
+    can follow the link in one."""
+    box = Outbox()
+    for module in ("app.api.routers.account", "app.api.routers.auth"):
+        monkeypatch.setattr(f"{module}.mailer_for", lambda settings: box)
+    return box

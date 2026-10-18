@@ -187,6 +187,9 @@ class TestValidation:
             RAW_STORE_S3_ENDPOINT_URL="https://account.r2.cloudflarestorage.com",
             RAW_STORE_S3_REGION="auto",
             CORS_ORIGINS="https://whalewatch.io",
+            WEB_URL="https://app.whalewatch.io",
+            EMAIL_BACKEND="smtp",
+            SMTP_HOST="smtp.whalewatch.io",
         )
 
         assert settings.raw_store_s3_bucket == "whalewatch-raw"

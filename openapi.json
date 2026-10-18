@@ -1276,7 +1276,7 @@
           "insiders"
         ],
         "summary": "Insiders' Form 4 trades, open-market purchases and sales by default",
-        "description": "Form 4 lines, newest trade first, one row per line as filed. Only\nopen-market purchases and sales unless `code` says otherwise: grants,\nexercises and tax withholding are most lines and carry no view.",
+        "description": "Form 4 lines, newest trade first, one row per line as filed. Only\nopen-market purchases and sales unless `code` says otherwise: grants,\nexercises and tax withholding are most lines and carry no view. `meta`\nechoes the codes, insiders and filing window the rows were limited to.",
         "operationId": "listInsiderTransactions",
         "parameters": [
           {
@@ -1407,6 +1407,62 @@
               "title": "Exclude 10B5 1"
             },
             "description": "Leave out trades made under a Rule 10b5-1 plan, which was set up months before and says nothing about what the insider thinks now."
+          },
+          {
+            "name": "insider_cik",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "0001197647"
+                ]
+              ],
+              "title": "Insider Cik"
+            },
+            "description": "Only these insiders, by CIK, comma-separated or repeated, with or without the leading zeros. Combine with `code=all` for everything they filed. A joint filing's lines are under its first owner's CIK."
+          },
+          {
+            "name": "filed_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first day, in UTC, the filing reached EDGAR, `2026-06-01`. Unlike `from`, which is the trade day: a late filing for an old trade is in.",
+              "title": "Filed From"
+            },
+            "description": "The first day, in UTC, the filing reached EDGAR, `2026-06-01`. Unlike `from`, which is the trade day: a late filing for an old trade is in."
+          },
+          {
+            "name": "filed_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last day, in UTC, the filing reached EDGAR, `2026-06-30`.",
+              "title": "Filed To"
+            },
+            "description": "The last day, in UTC, the filing reached EDGAR, `2026-06-30`."
           },
           {
             "name": "sort",
@@ -2992,10 +3048,1249 @@
           }
         }
       }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign in with an email and a password",
+        "description": "Sets the session cookie. A wrong email and a wrong password are the same\n403 `invalid_credentials`, and take as long, so neither says which addresses\nhave accounts.",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`, or `forbidden_origin` for a write from elsewhere.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign out",
+        "description": "Ends the session the cookie names and clears the cookie. A 204 with no\ncookie, or one already ended, too: signing out twice is signed out.",
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`, or `forbidden_origin` for a write from elsewhere.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/session": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Who the session cookie is for",
+        "description": "`session: null` when the request carried no cookie. A 401\n`session_expired` when it carried one for a session that has ended, ran out\nor was signed out, and the cookie is cleared.",
+        "operationId": "getSession",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionState"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/register": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Make an account, or ask for one while signups are closed",
+        "description": "While signups are closed, `status: recorded`: the request is kept and no\nsession starts. Open, `status: authed`, with the session cookie set. Either\nway the fields are checked first: `invalid_name`, `invalid_email` and\n`weak_password`, in that order.",
+        "operationId": "register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterResult"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`email_taken`: the address already has an account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`, or `forbidden_origin` for a write from elsewhere.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Change the password, and sign out every other session",
+        "description": "A wrong `current_password` is a 403 `invalid_credentials`, never a 401,\nwhich would mean the session is gone. A `new_password` shorter than the\nrule, or the same as the current one, is a 422 `weak_password`. On success\n`password_changed_at` is now, every other session is signed out, and this\none stays.",
+        "operationId": "changePassword",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`, or `forbidden_origin` for a write from elsewhere.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/password-reset": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Email a password reset link",
+        "description": "A 204 whether or not the address has an account, so the answer reveals\nnone. When it has one, a link valid for an hour goes to it, replacing any\nsent before.",
+        "operationId": "requestPasswordReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`, or `forbidden_origin` for a write from elsewhere.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/password-reset/confirm": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Set a new password from a reset link",
+        "description": "A token that is unknown, used, replaced or past its hour is a 422\n`invalid_token`. On success every session of the account is signed out:\nwhoever had the old password is no longer in.",
+        "operationId": "confirmPasswordReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetConfirm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`, or `forbidden_origin` for a write from elsewhere.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "The signed-in user's profile",
+        "description": "Name, email, time zone, and when the account was made and its password\nlast changed. `pending_email` while an email change waits for its link.",
+        "operationId": "getAccount",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountProfile"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Change the name, the time zone, or (once confirmed) the email",
+        "description": "Fields left out, or null, stay as they are. `name` is stored trimmed and\n`time_zone` must be an IANA zone; both apply at once. A new `email` is\nstored lowercased and waits: `profile.email` keeps the current one,\n`pending_email` names the new one, a link goes to it and a notice to the\ncurrent address. A second change replaces the first. The current address\nsent again is no change, and cancels one waiting. One refused field and none\nis applied.",
+        "operationId": "updateAccount",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountUpdate"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field was refused. `detail.errors` has one entry per field, its `loc` `[\"body\", \"<field>\"]`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account/email/confirm": {
+      "post": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Confirm an email change from its link",
+        "description": "Swaps the login to the new address and clears `pending_email`. From\nthen on the old address no longer logs in, and every session reports the\nnew one. A token that is unknown, used, replaced by a later change, or past\nits 24 hours is a 422 `invalid_token`; an address another account took in\nthe meantime, a 422 `invalid_email`. Needs no session.",
+        "operationId": "confirmEmailChange",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailConfirm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field was refused. `detail.errors` has one entry per field, its `loc` `[\"body\", \"<field>\"]`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/watchlist": {
+      "get": {
+        "tags": [
+          "watchlist"
+        ],
+        "summary": "What the signed-in user follows",
+        "description": "Stocks, investors and insiders, each list in the order its items were\nadded, oldest first. Nothing followed is three empty lists, never a 404.",
+        "operationId": "getWatchlist",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Watchlist"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/watchlist/items": {
+      "put": {
+        "tags": [
+          "watchlist"
+        ],
+        "summary": "Follow a stock, an investor or an insider",
+        "description": "Adds `ref` at the end of its list. Already followed is no change. A ref\nthat names nothing is a 404; a full watchlist (500 items) a 422.",
+        "operationId": "addWatchlistItem",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchlistItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Watchlist"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No stock with that CUSIP, investor with that slug, or insider with that CIK.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "watchlist"
+        ],
+        "summary": "Unfollow a stock, an investor or an insider",
+        "description": "Removes `ref`. Not followed is no change. A ref that names nothing is a 404.",
+        "operationId": "removeWatchlistItem",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchlistItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Watchlist"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No stock with that CUSIP, investor with that slug, or insider with that CIK.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/timeline": {
+      "get": {
+        "tags": [
+          "timeline"
+        ],
+        "summary": "Form 4 trades and 13F filings for what is followed, newest first",
+        "description": "Every event for `ref` whose filing reached EDGAR between `from` and `to`,\ndays in `tz`, newest first, ties by `id`. Not paged: the whole window in one\nanswer, `[]` when nothing happened. A 422 when `from` is after `to`, the\nwindow is over 120 days, a date is not a real one, or `tz` is not an IANA\nzone.",
+        "operationId": "getTimeline",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "description": "The window's first day, in `tz`, as `2026-06-21`. Included.",
+              "title": "From"
+            },
+            "description": "The window's first day, in `tz`, as `2026-06-21`. Included."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "description": "The window's last day, in `tz`, as `2026-10-18`. Included. At most 120 days after `from`, counting both.",
+              "title": "To"
+            },
+            "description": "The window's last day, in `tz`, as `2026-10-18`. Included. At most 120 days after `from`, counting both."
+          },
+          {
+            "name": "ref",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What is followed, as `kind:id`, repeated or comma-separated: `stock:037833100` (a CUSIP), `investor:berkshire-hathaway` (a slug), `insider:0001197647` (a CIK). The frontend's `watchRefKey` writes these. None is an empty answer.",
+              "examples": [
+                [
+                  "stock:037833100",
+                  "investor:berkshire-hathaway"
+                ]
+              ],
+              "title": "Ref"
+            },
+            "description": "What is followed, as `kind:id`, repeated or comma-separated: `stock:037833100` (a CUSIP), `investor:berkshire-hathaway` (a slug), `insider:0001197647` (a CIK). The frontend's `watchRefKey` writes these. None is an empty answer."
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The IANA zone days are counted in: the account's, which the frontend always sends. Omitted: the signed-in user's zone, or `America/New_York`.",
+              "examples": [
+                "America/New_York"
+              ],
+              "title": "Tz"
+            },
+            "description": "The IANA zone days are counted in: the account's, which the frontend always sends. Omitted: the signed-in user's zone, or `America/New_York`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelineEventEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/timeline/upcoming": {
+      "get": {
+        "tags": [
+          "timeline"
+        ],
+        "summary": "The current quarter's 13Fs still due for what is followed",
+        "description": "The current quarter is the one that ended most recently, in `tz`: from\nthe day after a quarter ends, every followed investor is upcoming until it\nfiles. A followed stock is upcoming while any of the previous quarter's\nholders (with shares at its end) has not filed. In the order `ref` named\nthem; insiders are left out. Empty once every tracked filer has filed.",
+        "operationId": "getUpcomingFilings",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What is followed, as `kind:id`, repeated or comma-separated: `stock:037833100` (a CUSIP), `investor:berkshire-hathaway` (a slug), `insider:0001197647` (a CIK). The frontend's `watchRefKey` writes these. None is an empty answer.",
+              "examples": [
+                [
+                  "stock:037833100",
+                  "investor:berkshire-hathaway"
+                ]
+              ],
+              "title": "Ref"
+            },
+            "description": "What is followed, as `kind:id`, repeated or comma-separated: `stock:037833100` (a CUSIP), `investor:berkshire-hathaway` (a slug), `insider:0001197647` (a CIK). The frontend's `watchRefKey` writes these. None is an empty answer."
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The IANA zone days are counted in: the account's, which the frontend always sends. Omitted: the signed-in user's zone, or `America/New_York`.",
+              "examples": [
+                "America/New_York"
+              ],
+              "title": "Tz"
+            },
+            "description": "The IANA zone days are counted in: the account's, which the frontend always sends. Omitted: the signed-in user's zone, or `America/New_York`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpcomingFilingEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AccountPatch": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "At least 2 characters once trimmed. Applied at once.",
+            "examples": [
+              "Ada King"
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email",
+            "description": "A new login. Not applied: a confirmation link goes to it, a notice to the current address, and `pending_email` names it until it is confirmed. The current address, sent again, cancels a waiting change.",
+            "examples": [
+              "ada@analytical.engine"
+            ]
+          },
+          "time_zone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Zone",
+            "description": "An IANA zone, such as `Europe/London`. Applied at once.",
+            "examples": [
+              "Europe/London"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AccountPatch",
+        "description": "The fields to change. Each is optional, and one left out, or null, stays as it is."
+      },
+      "AccountProfile": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name on the account, trimmed.",
+            "examples": [
+              "Ada Lovelace"
+            ]
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The login, lowercased. Unchanged until a new one is confirmed.",
+            "examples": [
+              "ada@example.com"
+            ]
+          },
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone",
+            "description": "An IANA zone: what the timeline's days and Form 4 times are shown in, and what `/v1/timeline` counts days in when sent no `tz`.",
+            "examples": [
+              "America/New_York"
+            ]
+          },
+          "member_since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Member Since",
+            "description": "When the account was made.",
+            "examples": [
+              "2026-10-17T09:30:00Z"
+            ]
+          },
+          "password_changed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Password Changed At",
+            "description": "The last password change, or `member_since` when it never changed.",
+            "examples": [
+              "2026-10-17T09:30:00Z"
+            ]
+          },
+          "pending_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Email",
+            "description": "Where the login is changing to, while the confirmation link sent there waits. Null when no change is waiting.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "email",
+          "time_zone",
+          "member_since",
+          "password_changed_at"
+        ],
+        "title": "AccountProfile",
+        "description": "The signed-in user's account, as the account page shows and edits it."
+      },
+      "AccountUpdate": {
+        "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/AccountProfile",
+            "description": "The whole profile, as it is now."
+          },
+          "pending_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Email",
+            "description": "Where the confirmation link went, when the change asked for a new email or one was already waiting. Null otherwise. The same as `profile.pending_email`.",
+            "examples": [
+              "ada@analytical.engine"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile",
+          "pending_email"
+        ],
+        "title": "AccountUpdate",
+        "description": "The profile after the change, and where a new email's confirmation went."
+      },
       "Activity": {
         "properties": {
           "cusip": {
@@ -3339,6 +4634,30 @@
         "title": "AmendmentKind",
         "description": "What a ``13F-HR/A`` claims to do to the period it amends.\n\nThis is the single most consequential field on an amendment, and getting it\nbackwards is silent. A **restatement** replaces the period's holdings\nwholesale: load it alongside the original and every position is counted\ntwice. A **new holdings** amendment adds rows the original omitted —\ntypically positions released from confidential treatment — and treating\n*that* as a restatement throws away everything the original reported.\n\nBoth failures produce a portfolio that looks entirely plausible. Neither\nraises anything.\n\nThe values are the normalised form of EDGAR's own ``<amendmentType>``:\n``RESTATEMENT`` and ``NEW HOLDINGS``. Normalised rather than raw because the\nspace in the second one makes every SQL literal in the codebase quotable but\nugly, and because these two are a closed set — unlike ``transaction_code``\non Form 4, which is stored exactly as filed precisely because it is not.\n\n``None`` on the column is the third state and the common one: the filing is\nnot an amendment at all."
       },
+      "Authed": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "authed",
+            "title": "Status",
+            "description": "Signed in.",
+            "examples": [
+              "authed"
+            ]
+          },
+          "session": {
+            "$ref": "#/components/schemas/Session",
+            "description": "The new session."
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "session"
+        ],
+        "title": "Authed",
+        "description": "Signups are open: the account exists and the response set its session cookie."
+      },
       "ChangeAction": {
         "type": "string",
         "enum": [
@@ -3350,6 +4669,51 @@
         ],
         "title": "ChangeAction",
         "description": "What a filer did to a position between its previous period and this one.\n\nText with a ``CHECK``, by the rule in :mod:`app.db.models.enums`: the set is\nours, and it has grown once already, by ``exit``.\n\n``new``\n    Not held in the filer's previous period, or the filer has no previous\n    period. A stock sold one quarter and bought back the next is new again.\n``add``\n    More shares than before, by more than the hold band.\n``trim``\n    Fewer shares than before, by more than the hold band. Not a sale: the\n    filer may have been assigned, distributed in kind, or moved the position\n    to an affiliate that files separately.\n``hold``\n    The same shares as before, within\n    :data:`~app.derived.position_change.HOLD_BAND_PCT` either way. Judged\n    on shares alone, so a stock that doubled in price is still a hold.\n    Across a split, the same shares as before times the ratio: a holder\n    of 100 shares who has 1,000 after a 10-for-1 held.\n``exit``\n    Held in the filer's previous period and not in this one. The row is a\n    position of nothing: no shares, no value, no weight, and the deltas\n    are the whole previous position, negative. Only in a period the filer\n    published, so a quarter it did not file, or one withheld, holds no\n    exits: a missing filing is not a sale. Nor is an exit, for ``trim``'s\n    reasons."
+      },
+      "ChangeCounts": {
+        "properties": {
+          "new": {
+            "type": "integer",
+            "title": "New",
+            "description": "Positions opened.",
+            "examples": [
+              3
+            ]
+          },
+          "add": {
+            "type": "integer",
+            "title": "Add",
+            "description": "Positions added to.",
+            "examples": [
+              7
+            ]
+          },
+          "trim": {
+            "type": "integer",
+            "title": "Trim",
+            "description": "Positions trimmed.",
+            "examples": [
+              5
+            ]
+          },
+          "exit": {
+            "type": "integer",
+            "title": "Exit",
+            "description": "Positions sold out of.",
+            "examples": [
+              2
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "new",
+          "add",
+          "trim",
+          "exit"
+        ],
+        "title": "ChangeCounts",
+        "description": "Positions opened, added to, trimmed and exited in one filing's quarter."
       },
       "ClusterInsider": {
         "properties": {
@@ -3623,6 +4987,25 @@
         "title": "Direction",
         "description": "Which way the stocks were traded on balance."
       },
+      "EmailConfirm": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token",
+            "description": "The `token` query parameter of the emailed link.",
+            "examples": [
+              "Zq3c9V0yJmL2x5r8u1N4a7D6b0E3f9H2k5M8p1S4t7W"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "EmailConfirm",
+        "description": "The token from an email change's confirmation link."
+      },
       "ErrorCode": {
         "type": "string",
         "enum": [
@@ -3634,6 +5017,15 @@
           "rate_limited",
           "internal_error",
           "timeout",
+          "unauthenticated",
+          "session_expired",
+          "invalid_credentials",
+          "weak_password",
+          "invalid_email",
+          "invalid_name",
+          "email_taken",
+          "invalid_token",
+          "forbidden_origin",
           "http_error"
         ],
         "title": "ErrorCode",
@@ -4124,6 +5516,167 @@
         "title": "FilingRead",
         "description": "A filing, its provenance, and every position it reports."
       },
+      "FilingSummaryEvent": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Stable however often the feed loads: the accession number, then the line (`insider_trade`) or the CUSIP (`holder_change`) where one filing gives several events.",
+            "examples": [
+              "0001197647-26-000042:1"
+            ]
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At",
+            "description": "When the event's filing reached EDGAR, in UTC, to the second: what the feed is ordered and windowed by.",
+            "examples": [
+              "2026-08-14T21:05:00Z"
+            ]
+          },
+          "side": {
+            "$ref": "#/components/schemas/TimelineSide",
+            "description": "Which way it moved shares.",
+            "examples": [
+              "dispose"
+            ]
+          },
+          "value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Usd",
+            "description": "Signed dollars to the cent: positive acquired, negative disposed. Null when the filing gives no price, as most grants and gifts do not.",
+            "examples": [
+              "-70600.00"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "const": "13f",
+            "title": "Source",
+            "description": "From a 13F.",
+            "examples": [
+              "13f"
+            ]
+          },
+          "period": {
+            "type": "string",
+            "title": "Period",
+            "description": "The quarter the filing reports.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date",
+            "title": "As Of",
+            "description": "The quarter end the holdings are as of.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "lag_days": {
+            "type": "integer",
+            "title": "Lag Days",
+            "description": "Days from `as_of` to the filing reaching EDGAR, counted in UTC.",
+            "examples": [
+              45
+            ]
+          },
+          "accession_no": {
+            "type": "string",
+            "title": "Accession No",
+            "description": "The filing the event's figures are from.",
+            "examples": [
+              "0000950123-26-008841"
+            ]
+          },
+          "investor": {
+            "$ref": "#/components/schemas/InvestorRef",
+            "description": "Who filed it."
+          },
+          "kind": {
+            "type": "string",
+            "const": "filing_summary",
+            "title": "Kind",
+            "description": "A followed investor's 13F.",
+            "examples": [
+              "filing_summary"
+            ]
+          },
+          "ref": {
+            "$ref": "#/components/schemas/WatchInvestor",
+            "description": "The followed investor."
+          },
+          "counts": {
+            "$ref": "#/components/schemas/ChangeCounts",
+            "description": "Its changes against the quarter before. All zero in the investor's first quarter, where every position is new only to us."
+          },
+          "largest_change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LargestChange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its largest trade by traded dollars, unsigned as on `/v1/market/activity`. Null in the investor's first quarter."
+          },
+          "position_count": {
+            "type": "integer",
+            "title": "Position Count",
+            "description": "Positions at `as_of`.",
+            "examples": [
+              41
+            ]
+          },
+          "portfolio_value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio Value Usd",
+            "description": "The portfolio's value at `as_of`, as of the views' last refresh.",
+            "examples": [
+              "263000000000.00"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "side",
+          "value_usd",
+          "source",
+          "period",
+          "as_of",
+          "lag_days",
+          "accession_no",
+          "investor",
+          "kind",
+          "ref",
+          "counts",
+          "position_count"
+        ],
+        "title": "FilingSummaryEvent",
+        "description": "A followed investor's 13F, summed up. `value_usd` is the net of every change."
+      },
       "FlowMetric": {
         "type": "string",
         "enum": [
@@ -4387,6 +5940,238 @@
         ],
         "title": "HistoryPointEnvelope",
         "description": "One investor's portfolio, a quarter a row."
+      },
+      "HolderChange": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "The stock's CUSIP.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as we name the security.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "action": {
+            "$ref": "#/components/schemas/ChangeAction",
+            "description": "`new`, `add`, `trim` or `exit`. Never `hold`.",
+            "examples": [
+              "trim"
+            ]
+          },
+          "shares_delta": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Shares Delta",
+            "description": "Shares now less shares the quarter before. For an exit, minus the whole previous position.",
+            "examples": [
+              "-10000000.0000"
+            ]
+          },
+          "shares_delta_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares Delta Pct",
+            "description": "`shares_delta` as a percentage of the previous shares. Null for `new`.",
+            "examples": [
+              "-1.092193"
+            ]
+          },
+          "traded_value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Traded Value Usd",
+            "description": "Unsigned: the shares that changed hands at the period-end price, as `/v1/investors/{slug}/activity` has it. `value_usd` is the same, signed.",
+            "examples": [
+              "1893400000.00"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "action",
+          "shares_delta",
+          "traded_value_usd"
+        ],
+        "title": "HolderChange",
+        "description": "What one holder did with a followed stock in one quarter."
+      },
+      "HolderChangeEvent": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Stable however often the feed loads: the accession number, then the line (`insider_trade`) or the CUSIP (`holder_change`) where one filing gives several events.",
+            "examples": [
+              "0001197647-26-000042:1"
+            ]
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At",
+            "description": "When the event's filing reached EDGAR, in UTC, to the second: what the feed is ordered and windowed by.",
+            "examples": [
+              "2026-08-14T21:05:00Z"
+            ]
+          },
+          "side": {
+            "$ref": "#/components/schemas/TimelineSide",
+            "description": "Which way it moved shares.",
+            "examples": [
+              "dispose"
+            ]
+          },
+          "value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Usd",
+            "description": "Signed dollars to the cent: positive acquired, negative disposed. Null when the filing gives no price, as most grants and gifts do not.",
+            "examples": [
+              "-70600.00"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "const": "13f",
+            "title": "Source",
+            "description": "From a 13F.",
+            "examples": [
+              "13f"
+            ]
+          },
+          "period": {
+            "type": "string",
+            "title": "Period",
+            "description": "The quarter the filing reports.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date",
+            "title": "As Of",
+            "description": "The quarter end the holdings are as of.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "lag_days": {
+            "type": "integer",
+            "title": "Lag Days",
+            "description": "Days from `as_of` to the filing reaching EDGAR, counted in UTC.",
+            "examples": [
+              45
+            ]
+          },
+          "accession_no": {
+            "type": "string",
+            "title": "Accession No",
+            "description": "The filing the event's figures are from.",
+            "examples": [
+              "0000950123-26-008841"
+            ]
+          },
+          "investor": {
+            "$ref": "#/components/schemas/InvestorRef",
+            "description": "Who filed it."
+          },
+          "kind": {
+            "type": "string",
+            "const": "holder_change",
+            "title": "Kind",
+            "description": "A holder's change in a followed stock.",
+            "examples": [
+              "holder_change"
+            ]
+          },
+          "ref": {
+            "$ref": "#/components/schemas/WatchStock",
+            "description": "The followed stock."
+          },
+          "change": {
+            "$ref": "#/components/schemas/HolderChange",
+            "description": "What the holder did."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "side",
+          "value_usd",
+          "source",
+          "period",
+          "as_of",
+          "lag_days",
+          "accession_no",
+          "investor",
+          "kind",
+          "ref",
+          "change"
+        ],
+        "title": "HolderChangeEvent",
+        "description": "One holder's change in a followed stock, from its 13F."
       },
       "HolderPoint": {
         "properties": {
@@ -5303,6 +7088,58 @@
             "examples": [
               true
             ]
+          },
+          "insider_ciks": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Insider Ciks",
+            "description": "The insiders the rows are limited to (`?insider_cik=`), or null for anyone.",
+            "examples": [
+              [
+                "0001197647"
+              ]
+            ]
+          },
+          "filed_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filed From",
+            "description": "`?filed_from=`: the first day, in UTC, the rows were filed on.",
+            "examples": [
+              "2026-06-01"
+            ]
+          },
+          "filed_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filed To",
+            "description": "`?filed_to=`: the last day, in UTC, the rows were filed on.",
+            "examples": [
+              "2026-06-30"
+            ]
           }
         },
         "type": "object",
@@ -5312,6 +7149,87 @@
         "title": "InsiderFeedMeta",
         "description": "``meta``, with the transaction codes the rows were filtered to."
       },
+      "InsiderMatch": {
+        "properties": {
+          "insider_cik": {
+            "type": "string",
+            "title": "Insider Cik",
+            "description": "Their CIK, ten digits.",
+            "examples": [
+              "0001197647"
+            ]
+          },
+          "insider_name": {
+            "type": "string",
+            "title": "Insider Name",
+            "description": "As their latest filing spells it, surname first.",
+            "examples": [
+              "HUANG JEN HSUN"
+            ]
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "type": "array",
+            "title": "Roles",
+            "description": "What they checked on their latest filing.",
+            "examples": [
+              [
+                "director",
+                "officer"
+              ]
+            ]
+          },
+          "officer_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Officer Title",
+            "description": "As filed on their latest filing. Null when none was given.",
+            "examples": [
+              "President and CEO"
+            ]
+          },
+          "issuer_name": {
+            "type": "string",
+            "title": "Issuer Name",
+            "description": "The issuer of their latest filing, as it gives its name.",
+            "examples": [
+              "NVIDIA CORP"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker of the security their latest filing's lines are linked to. The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by. Null when no line could be linked to one.",
+            "examples": [
+              "NVDA"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "insider_cik",
+          "insider_name",
+          "roles",
+          "issuer_name"
+        ],
+        "title": "InsiderMatch",
+        "description": "A followed insider, as their latest Form 4 gives them."
+      },
       "InsiderSort": {
         "type": "string",
         "enum": [
@@ -5320,6 +7238,104 @@
         ],
         "title": "InsiderSort",
         "description": "What the feed is ordered by."
+      },
+      "InsiderTradeEvent": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Stable however often the feed loads: the accession number, then the line (`insider_trade`) or the CUSIP (`holder_change`) where one filing gives several events.",
+            "examples": [
+              "0001197647-26-000042:1"
+            ]
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At",
+            "description": "When the event's filing reached EDGAR, in UTC, to the second: what the feed is ordered and windowed by.",
+            "examples": [
+              "2026-08-14T21:05:00Z"
+            ]
+          },
+          "side": {
+            "$ref": "#/components/schemas/TimelineSide",
+            "description": "Which way it moved shares.",
+            "examples": [
+              "dispose"
+            ]
+          },
+          "value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value Usd",
+            "description": "Signed dollars to the cent: positive acquired, negative disposed. Null when the filing gives no price, as most grants and gifts do not.",
+            "examples": [
+              "-70600.00"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "const": "insider_trade",
+            "title": "Kind",
+            "description": "A Form 4 line.",
+            "examples": [
+              "insider_trade"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "const": "form4",
+            "title": "Source",
+            "description": "From a Form 4.",
+            "examples": [
+              "form4"
+            ]
+          },
+          "ref": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchStock"
+              },
+              {
+                "$ref": "#/components/schemas/WatchInsider"
+              }
+            ],
+            "title": "Ref",
+            "description": "What the user followed that put it here: the insider when they are followed, even if the stock is too. One event, never two.",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "insider": "#/components/schemas/WatchInsider",
+                "stock": "#/components/schemas/WatchStock"
+              }
+            }
+          },
+          "trade": {
+            "$ref": "#/components/schemas/InsiderTransaction",
+            "description": "The line as filed."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "side",
+          "value_usd",
+          "kind",
+          "source",
+          "ref",
+          "trade"
+        ],
+        "title": "InsiderTradeEvent",
+        "description": "One Form 4 line, from a followed insider or at a followed stock."
       },
       "InsiderTransaction": {
         "properties": {
@@ -5979,6 +7995,33 @@
         "title": "InvestorMatch",
         "description": "An investor, with enough to show it and to link to ``/v1/investors/{slug}``."
       },
+      "InvestorRef": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "`/v1/investors/{slug}`.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "Our name for the institution.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "display_name"
+        ],
+        "title": "InvestorRef",
+        "description": "An investor's name, linked by slug."
+      },
       "InvestorSort": {
         "type": "string",
         "enum": [
@@ -6284,6 +8327,43 @@
         ],
         "title": "LargestChange",
         "description": "The largest trade in a filer's period, by traded dollars."
+      },
+      "LoginRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The login. Trimmed and compared without case.",
+            "examples": [
+              "ada@example.com"
+            ]
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "As typed, never trimmed.",
+            "examples": [
+              "correct horse 42"
+            ]
+          },
+          "remember": {
+            "type": "boolean",
+            "title": "Remember",
+            "description": "Keep the session for 30 days, past the browser's own session. False: the cookie ends with the browser, and the session after 12 hours regardless.",
+            "default": true,
+            "examples": [
+              true
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginRequest",
+        "description": "An email and a password, and whether to stay signed in."
       },
       "MarketHolding": {
         "properties": {
@@ -6802,6 +8882,108 @@
         ],
         "title": "Page",
         "description": "Where this page ends, as an opaque token to send back for the next one."
+      },
+      "PasswordChangeRequest": {
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "title": "Current Password",
+            "description": "The account's password now.",
+            "examples": [
+              "correct horse 42"
+            ]
+          },
+          "new_password": {
+            "type": "string",
+            "title": "New Password",
+            "description": "At least 10 characters, and not the current one.",
+            "examples": [
+              "battery staple 1999"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "title": "PasswordChangeRequest",
+        "description": "The current password, to prove it is the account's owner, and the new one."
+      },
+      "PasswordResetConfirm": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token",
+            "description": "The `token` query parameter of the emailed link.",
+            "examples": [
+              "Zq3c9V0yJmL2x5r8u1N4a7D6b0E3f9H2k5M8p1S4t7W"
+            ]
+          },
+          "new_password": {
+            "type": "string",
+            "title": "New Password",
+            "description": "At least 10 characters.",
+            "examples": [
+              "battery staple 1999"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "token",
+          "new_password"
+        ],
+        "title": "PasswordResetConfirm",
+        "description": "The token from a reset link, and the new password."
+      },
+      "PasswordResetRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The account's login.",
+            "examples": [
+              "ada@example.com"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "PasswordResetRequest",
+        "description": "Where to send a reset link."
+      },
+      "PendingHolders": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "description": "How many.",
+            "examples": [
+              12
+            ]
+          },
+          "first": {
+            "items": {
+              "$ref": "#/components/schemas/InvestorRef"
+            },
+            "type": "array",
+            "title": "First",
+            "description": "Up to three of them, largest holding first."
+          }
+        },
+        "type": "object",
+        "required": [
+          "count",
+          "first"
+        ],
+        "title": "PendingHolders",
+        "description": "The last quarter's holders of a followed stock that have not filed this one."
       },
       "PeriodCoverage": {
         "properties": {
@@ -7388,7 +9570,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call.",
             "examples": [
               "not_found"
             ]
@@ -7471,6 +9653,96 @@
         "title": "ReadinessResponse",
         "description": "``checks`` maps dependency name to ``\"ok\"`` or ``\"error: <reason>\"``."
       },
+      "Recorded": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "recorded",
+            "title": "Status",
+            "description": "The request was recorded.",
+            "examples": [
+              "recorded"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "Recorded",
+        "description": "Signups are closed: the request is recorded and no session starts."
+      },
+      "RegisterRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "At least 2 characters once trimmed.",
+            "examples": [
+              "Ada Lovelace"
+            ]
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The login. Stored trimmed and lowercased.",
+            "examples": [
+              "ada@example.com"
+            ]
+          },
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "At least 10 characters.",
+            "examples": [
+              "correct horse 42"
+            ]
+          },
+          "time_zone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Zone",
+            "description": "An IANA zone, such as the browser's. The account's zone when given, `America/New_York` when not.",
+            "examples": [
+              "Europe/London"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "email",
+          "password"
+        ],
+        "title": "RegisterRequest",
+        "description": "A new account: the name on it, its login, and its password."
+      },
+      "RegisterResult": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Recorded"
+          },
+          {
+            "$ref": "#/components/schemas/Authed"
+          }
+        ],
+        "title": "RegisterResult",
+        "description": "What registering did, by `status`: `recorded` while signups are closed,\n`authed` once they are open.",
+        "discriminator": {
+          "propertyName": "status",
+          "mapping": {
+            "authed": "#/components/schemas/Authed",
+            "recorded": "#/components/schemas/Recorded"
+          }
+        }
+      },
       "Role": {
         "type": "string",
         "enum": [
@@ -7517,6 +9789,69 @@
         ],
         "title": "SearchResults",
         "description": "What matched, best first, in a group per kind of thing."
+      },
+      "Session": {
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/SessionUser",
+            "description": "Who is signed in."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At",
+            "description": "When the session ends, whatever the browser still holds.",
+            "examples": [
+              "2026-11-17T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "user",
+          "expires_at"
+        ],
+        "title": "Session",
+        "description": "A signed-in session, as the cookie names it."
+      },
+      "SessionState": {
+        "properties": {
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Session"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the request carried no session cookie. A dead one is a 401."
+          }
+        },
+        "type": "object",
+        "required": [
+          "session"
+        ],
+        "title": "SessionState",
+        "description": "The session the request's cookie names, if any."
+      },
+      "SessionUser": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The account's login.",
+            "examples": [
+              "ada@example.com"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "SessionUser",
+        "description": "Who a session is for."
       },
       "SortOrder": {
         "type": "string",
@@ -8105,7 +10440,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call.",
             "examples": [
               "not_found"
             ]
@@ -8606,6 +10941,230 @@
         "title": "StockSuggestion",
         "description": "A stock the caller may have meant."
       },
+      "TimelineEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/InsiderTradeEvent"
+          },
+          {
+            "$ref": "#/components/schemas/HolderChangeEvent"
+          },
+          {
+            "$ref": "#/components/schemas/FilingSummaryEvent"
+          }
+        ],
+        "title": "TimelineEvent",
+        "description": "One event in the timeline: an `insider_trade`, a `holder_change` or a\n`filing_summary`, by `kind`.",
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "filing_summary": "#/components/schemas/FilingSummaryEvent",
+            "holder_change": "#/components/schemas/HolderChangeEvent",
+            "insider_trade": "#/components/schemas/InsiderTradeEvent"
+          }
+        }
+      },
+      "TimelineEventEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineEvent"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/TimelineMeta",
+            "description": "The window, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "TimelineEventEnvelope"
+      },
+      "TimelineMeta": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the data belongs to. Null only for a collection that is not about a period, such as a list of filers.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "quarters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarters",
+            "description": "For figures over more than one quarter, such as a year's flows, every quarter they cover, oldest first, ending with `period`. Null for one quarter.",
+            "examples": [
+              [
+                "2025Q3",
+                "2025Q4",
+                "2026Q1",
+                "2026Q2"
+              ]
+            ]
+          },
+          "latest_filing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing At",
+            "description": "When the most recently filed of this period's published filings reached EDGAR. Null when nothing for the period has been published.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `period` is."
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats",
+            "description": "Why the rows may be wrong although every rule for reading the filings was followed: an amendment left out because its cover page does not say whether it restates or adds to the period, additions counting with no original loaded, two originals filed for one period, or an amendment number missing from those loaded. One sentence each, for a person to read. Empty when nothing is known to be wrong, and on endpoints that do not check.",
+            "examples": [
+              [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is left out: if it restates or adds to the period, the period is wrong"
+              ]
+            ]
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At",
+            "description": "For a response read from the materialised aggregates, when they were last refreshed: the rows are as of then, and a filing published since is not in them yet. Null for a response read live, and when the refresh is unrecorded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At",
+            "description": "When this response was built.",
+            "examples": [
+              "2026-10-03T09:41:27Z"
+            ]
+          },
+          "window_from": {
+            "type": "string",
+            "format": "date",
+            "title": "Window From",
+            "description": "The first day of the window, in `tz`.",
+            "examples": [
+              "2026-06-21"
+            ]
+          },
+          "window_to": {
+            "type": "string",
+            "format": "date",
+            "title": "Window To",
+            "description": "The last day of the window, in `tz`.",
+            "examples": [
+              "2026-10-18"
+            ]
+          },
+          "tz": {
+            "type": "string",
+            "title": "Tz",
+            "description": "The IANA zone the window's days were counted in.",
+            "examples": [
+              "America/New_York"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "window_from",
+          "window_to",
+          "tz"
+        ],
+        "title": "TimelineMeta",
+        "description": "``meta``, with the window the events were chosen for."
+      },
+      "TimelineSide": {
+        "type": "string",
+        "enum": [
+          "acquire",
+          "dispose",
+          "neutral"
+        ],
+        "title": "TimelineSide",
+        "description": "Which way an event moved shares. Form 4 codes `P`, `A` and `M` acquire, `S`\nand `G` dispose, every other code is `neutral`. A 13F change acquires when it\nopened or added, and disposes when it trimmed or exited. A filing summary\nfollows the sign of its net."
+      },
       "TopHolding": {
         "properties": {
           "cusip": {
@@ -8734,6 +11293,236 @@
         "title": "TransactionCode",
         "description": "A transaction code, and what it means."
       },
+      "UpcomingFiling": {
+        "properties": {
+          "ref": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WatchStock"
+              },
+              {
+                "$ref": "#/components/schemas/WatchInvestor"
+              }
+            ],
+            "title": "Ref",
+            "description": "The followed stock or investor.",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "investor": "#/components/schemas/WatchInvestor",
+                "stock": "#/components/schemas/WatchStock"
+              }
+            }
+          },
+          "period": {
+            "type": "string",
+            "title": "Period",
+            "description": "The current quarter: the one that ended most recently, in `tz`.",
+            "examples": [
+              "2026Q3"
+            ]
+          },
+          "due_at": {
+            "type": "string",
+            "format": "date",
+            "title": "Due At",
+            "description": "When its 13Fs are due: 45 days after it ended.",
+            "examples": [
+              "2026-11-14"
+            ]
+          },
+          "pending_holders": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingHolders"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Stock refs only: the holders still to file. Null for an investor."
+          }
+        },
+        "type": "object",
+        "required": [
+          "ref",
+          "period",
+          "due_at"
+        ],
+        "title": "UpcomingFiling",
+        "description": "A 13F still to come for the current quarter, for a followed stock or investor."
+      },
+      "UpcomingFilingEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/UpcomingFiling"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/UpcomingMeta",
+            "description": "The current quarter, and how far it has filled in."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "UpcomingFilingEnvelope"
+      },
+      "UpcomingMeta": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the data belongs to. Null only for a collection that is not about a period, such as a list of filers.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "quarters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarters",
+            "description": "For figures over more than one quarter, such as a year's flows, every quarter they cover, oldest first, ending with `period`. Null for one quarter.",
+            "examples": [
+              [
+                "2025Q3",
+                "2025Q4",
+                "2026Q1",
+                "2026Q2"
+              ]
+            ]
+          },
+          "latest_filing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing At",
+            "description": "When the most recently filed of this period's published filings reached EDGAR. Null when nothing for the period has been published.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `period` is."
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats",
+            "description": "Why the rows may be wrong although every rule for reading the filings was followed: an amendment left out because its cover page does not say whether it restates or adds to the period, additions counting with no original loaded, two originals filed for one period, or an amendment number missing from those loaded. One sentence each, for a person to read. Empty when nothing is known to be wrong, and on endpoints that do not check.",
+            "examples": [
+              [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is left out: if it restates or adds to the period, the period is wrong"
+              ]
+            ]
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At",
+            "description": "For a response read from the materialised aggregates, when they were last refreshed: the rows are as of then, and a filing published since is not in them yet. Null for a response read live, and when the refresh is unrecorded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At",
+            "description": "When this response was built.",
+            "examples": [
+              "2026-10-03T09:41:27Z"
+            ]
+          },
+          "tz": {
+            "type": "string",
+            "title": "Tz",
+            "description": "The IANA zone whose today chose the current quarter.",
+            "examples": [
+              "America/New_York"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "tz"
+        ],
+        "title": "UpcomingMeta",
+        "description": "``meta``: the current quarter and its coverage, and the zone that chose it."
+      },
       "ValidationDetail": {
         "properties": {
           "errors": {
@@ -8770,7 +11559,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call.",
             "examples": [
               "not_found"
             ]
@@ -8811,6 +11600,167 @@
         ],
         "title": "ValidationProblemError",
         "description": "A parameter is missing or malformed."
+      },
+      "WatchInsider": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "insider",
+            "title": "Kind",
+            "description": "An insider.",
+            "examples": [
+              "insider"
+            ]
+          },
+          "insider_cik": {
+            "type": "string",
+            "title": "Insider Cik",
+            "description": "Their CIK, with or without the leading zeros.",
+            "examples": [
+              "0001197647"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "insider_cik"
+        ],
+        "title": "WatchInsider",
+        "description": "An insider, by CIK."
+      },
+      "WatchInvestor": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "investor",
+            "title": "Kind",
+            "description": "An investor.",
+            "examples": [
+              "investor"
+            ]
+          },
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "As `/v1/investors/{slug}` takes it.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "slug"
+        ],
+        "title": "WatchInvestor",
+        "description": "An investor, by slug."
+      },
+      "WatchRef": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/WatchStock"
+          },
+          {
+            "$ref": "#/components/schemas/WatchInvestor"
+          },
+          {
+            "$ref": "#/components/schemas/WatchInsider"
+          }
+        ],
+        "title": "WatchRef",
+        "description": "Something that can be followed: a stock, an investor or an insider, by `kind`.",
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "insider": "#/components/schemas/WatchInsider",
+            "investor": "#/components/schemas/WatchInvestor",
+            "stock": "#/components/schemas/WatchStock"
+          }
+        }
+      },
+      "WatchStock": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "stock",
+            "title": "Kind",
+            "description": "A stock.",
+            "examples": [
+              "stock"
+            ]
+          },
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "Nine characters, case-insensitive.",
+            "examples": [
+              "037833100"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "cusip"
+        ],
+        "title": "WatchStock",
+        "description": "A stock, by CUSIP."
+      },
+      "Watchlist": {
+        "properties": {
+          "securities": {
+            "items": {
+              "$ref": "#/components/schemas/StockMatch"
+            },
+            "type": "array",
+            "title": "Securities",
+            "description": "Followed stocks."
+          },
+          "investors": {
+            "items": {
+              "$ref": "#/components/schemas/InvestorMatch"
+            },
+            "type": "array",
+            "title": "Investors",
+            "description": "Followed investors."
+          },
+          "insiders": {
+            "items": {
+              "$ref": "#/components/schemas/InsiderMatch"
+            },
+            "type": "array",
+            "title": "Insiders",
+            "description": "Followed insiders."
+          }
+        },
+        "type": "object",
+        "required": [
+          "securities",
+          "investors",
+          "insiders"
+        ],
+        "title": "Watchlist",
+        "description": "What the user follows, in three lists, each in the order it was added, oldest first.\n\nEvery list is always present, empty when nothing of its kind is followed."
+      },
+      "WatchlistItemRequest": {
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/WatchRef",
+            "description": "What to follow or unfollow."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref"
+        ],
+        "title": "WatchlistItemRequest",
+        "description": "One thing to follow or unfollow."
       }
     }
   }

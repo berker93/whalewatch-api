@@ -1,0 +1,126 @@
+"""Account emails: confirm an email change, tell the old address, reset a password.
+
+Two backends, by ``EMAIL_BACKEND``. ``log`` writes each message to the log,
+link included, and sends nothing: in development the link is in the API's log
+(``make logs s=api``). ``smtp`` sends through ``SMTP_HOST``, with the standard
+library's client in a thread, since it blocks.
+
+Sending is best effort. A message that cannot be sent is logged and the request
+that asked for it still succeeds: the change it describes is already committed,
+and the user can ask again. The links point at whalewatch-web (``WEB_URL``),
+which posts the token back to the API.
+"""
+
+import asyncio
+import smtplib
+from dataclasses import dataclass
+from email.message import EmailMessage
+from typing import Protocol
+from urllib.parse import urlencode
+
+from app.core.config import Settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class Message:
+    to: str
+    subject: str
+    body: str
+
+
+class Mailer(Protocol):
+    async def send(self, message: Message) -> None: ...
+
+
+class LogMailer:
+    """Writes each message to the log, and sends nothing."""
+
+    async def send(self, message: Message) -> None:
+        logger.info("mail.logged", to=message.to, subject=message.subject, body=message.body)
+
+
+class SmtpMailer:
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    async def send(self, message: Message) -> None:
+        await asyncio.to_thread(self._send, message)
+
+    def _send(self, message: Message) -> None:
+        settings = self._settings
+        email = EmailMessage()
+        email["From"] = settings.email_from
+        email["To"] = message.to
+        email["Subject"] = message.subject
+        email.set_content(message.body)
+        assert settings.smtp_host is not None  # Settings refuses smtp without it
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as client:
+            if settings.smtp_starttls:
+                client.starttls()
+            if settings.smtp_username and settings.smtp_password:
+                client.login(settings.smtp_username, settings.smtp_password.get_secret_value())
+            client.send_message(email)
+
+
+def mailer_for(settings: Settings) -> Mailer:
+    return SmtpMailer(settings) if settings.email_backend == "smtp" else LogMailer()
+
+
+async def deliver(mailer: Mailer, message: Message) -> None:
+    """Send ``message``, logging rather than raising when it cannot be sent."""
+    try:
+        await mailer.send(message)
+    except (OSError, smtplib.SMTPException) as exc:
+        logger.error("mail.failed", to=message.to, subject=message.subject, error=repr(exc))
+
+
+def link(settings: Settings, path: str, token: str) -> str:
+    """``WEB_URL`` + ``path`` + ``?token=``: a page of whalewatch-web."""
+    return f"{settings.web_url}{path}?{urlencode({'token': token})}"
+
+
+# --- the messages ---------------------------------------------------------------
+
+#: The pages of whalewatch-web each link opens. They post the token back.
+CONFIRM_EMAIL_PATH = "/account/confirm-email"
+RESET_PASSWORD_PATH = "/reset-password"
+
+
+def email_change_confirmation(settings: Settings, *, to: str, token: str, hours: int) -> Message:
+    return Message(
+        to=to,
+        subject="Confirm your new WhaleWatch email",
+        body=(
+            "Someone asked to change the email on a WhaleWatch account to this address.\n\n"
+            f"Confirm it here within {hours} hours:\n{link(settings, CONFIRM_EMAIL_PATH, token)}"
+            "\n\nIf it wasn't you, ignore this message and nothing changes."
+        ),
+    )
+
+
+def email_change_notice(*, to: str, new_email: str) -> Message:
+    return Message(
+        to=to,
+        subject="Your WhaleWatch email is changing",
+        body=(
+            f"A change of your WhaleWatch login to {new_email} was asked for. It takes "
+            "effect once the new address confirms it.\n\nIf it wasn't you, change your "
+            "password now: whoever asked is signed in to your account."
+        ),
+    )
+
+
+def password_reset(settings: Settings, *, to: str, token: str, minutes: int) -> Message:
+    return Message(
+        to=to,
+        subject="Reset your WhaleWatch password",
+        body=(
+            f"Choose a new password here within {minutes} minutes:\n"
+            f"{link(settings, RESET_PASSWORD_PATH, token)}\n\n"
+            "If you didn't ask for this, ignore this message and your password stays "
+            "as it is."
+        ),
+    )

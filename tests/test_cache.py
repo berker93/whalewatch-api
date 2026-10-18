@@ -443,7 +443,15 @@ def _routes(routes: Sequence[BaseRoute], prefix: str = "") -> Iterator[tuple[str
 
 def test_every_public_read_is_cached() -> None:
     """A new /v1 endpoint is cached unless it is added here with the reason."""
-    uncached: set[str] = set()
+    uncached = {
+        # One person's: a shared cache must never hold them (app.api.auth).
+        "/v1/account",
+        "/v1/auth/session",
+        "/v1/watchlist",
+        # With no `tz`, the answer is in the signed-in user's zone.
+        "/v1/timeline",
+        "/v1/timeline/upcoming",
+    }
     reads = {
         path: route
         for path, route in _routes(create_app(make_settings()).routes)

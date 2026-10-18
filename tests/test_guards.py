@@ -210,12 +210,70 @@ async def test_a_preflight_for_a_revalidation_is_allowed(http: AsyncClient) -> N
     assert response.headers["access-control-allow-origin"] == FRONTEND
 
 
-async def test_a_preflight_for_a_write_is_refused(http: AsyncClient) -> None:
+async def test_a_preflight_for_a_write_from_the_frontend_is_allowed_with_its_cookie(
+    http: AsyncClient,
+) -> None:
+    """The account, auth and watchlist writes, with the session cookie and a JSON body."""
     response = await http.options(
-        "/v1/ok", headers={"origin": FRONTEND, "access-control-request-method": "DELETE"}
+        "/v1/ok",
+        headers={
+            "origin": FRONTEND,
+            "access-control-request-method": "PATCH",
+            "access-control-request-headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == FRONTEND
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+async def test_a_preflight_for_a_write_from_another_site_is_refused(http: AsyncClient) -> None:
+    response = await http.options(
+        "/v1/ok",
+        headers={"origin": "https://evil.example", "access-control-request-method": "DELETE"},
     )
 
     assert response.status_code == 400
+
+
+async def test_a_write_from_another_site_is_refused_before_the_route(http: AsyncClient) -> None:
+    """A browser that sent it anyway, cookie and all, gets a 403 and the route never runs."""
+    response = await http.post(
+        "/v1/echo", json={"a": 1}, headers={"origin": "https://evil.example"}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden_origin"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{"origin": FRONTEND}, {"origin": "http://test"}, {}],
+    ids=["the frontend", "the API's own docs", "no browser"],
+)
+async def test_a_write_from_an_allowed_origin_or_none_goes_through(
+    http: AsyncClient, headers: dict[str, str]
+) -> None:
+    response = await http.post("/v1/echo", json={"a": 1}, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"a": 1}
+
+
+async def test_a_write_from_an_opaque_origin_is_refused(http: AsyncClient) -> None:
+    response = await http.post("/v1/echo", json={"a": 1}, headers={"origin": "null"})
+
+    assert response.status_code == 403
+
+
+async def test_a_read_from_another_site_is_not_the_origin_checks_business(
+    http: AsyncClient,
+) -> None:
+    """Reads are public: CORS decides whether a browser may read the answer."""
+    response = await http.get("/v1/ok", headers={"origin": "https://evil.example"})
+
+    assert response.status_code == 200
 
 
 async def test_a_browser_can_read_the_500_it_needs_to_report(http: AsyncClient) -> None:

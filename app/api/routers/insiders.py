@@ -46,7 +46,7 @@ at least anything.
 """
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Final
@@ -139,6 +139,12 @@ class Filters:
     start: date | None = None
     end: date | None = None
     exclude_10b5_1: bool = False
+    insider_ciks: frozenset[str] = frozenset()
+    """Any of these insiders; empty for anyone."""
+    filed_start: date | None = None
+    """Filed on or after this day, in UTC."""
+    filed_end: date | None = None
+    """Filed on or before this day, in UTC."""
 
 
 def _keyset(listing: str, sort: InsiderSort, order: SortOrder) -> Keyset:
@@ -233,6 +239,21 @@ def transactions_query(
         conditions.append(Line.transaction_date <= filters.end)
     if filters.exclude_10b5_1:
         conditions.append(Line.is_10b5_1.is_(false()))
+    if filters.insider_ciks:
+        conditions.append(
+            Line.insider_id.in_(
+                select(Insider.id).where(Insider.cik.in_(sorted(filters.insider_ciks)))
+            )
+        )
+    if filters.filed_start is not None or filters.filed_end is not None:
+        filed = []
+        if filters.filed_start is not None:
+            filed.append(Filing.filed_at >= _utc_midnight(filters.filed_start))
+        if filters.filed_end is not None:
+            filed.append(Filing.filed_at < _utc_midnight(filters.filed_end + timedelta(days=1)))
+            # Nothing is traded after it is filed: the later partitions are skipped.
+            conditions.append(Line.transaction_date <= filters.filed_end + timedelta(days=1))
+        conditions.append(Line.filing_id.in_(select(Filing.id).where(*filed)))
 
     rows = (
         select(
@@ -290,6 +311,10 @@ def transactions_query(
     return statement, keyset
 
 
+def _utc_midnight(day: date) -> datetime:
+    return datetime.combine(day, time(), tzinfo=UTC)
+
+
 def _transaction(row: Any) -> InsiderTransaction:
     roles = [
         role
@@ -332,12 +357,16 @@ def _transaction(row: Any) -> InsiderTransaction:
     )
 
 
-def _meta(codes: frozenset[str] | None, *, default: bool) -> InsiderFeedMeta:
+def _meta(filters: Filters, *, default: bool) -> InsiderFeedMeta:
+    codes = filters.codes
     return InsiderFeedMeta(
         codes=None
         if codes is None
         else [TransactionCode(code=code, label=CODE_LABELS.get(code)) for code in sorted(codes)],
         codes_default=default,
+        insider_ciks=sorted(filters.insider_ciks) or None,
+        filed_from=filters.filed_start,
+        filed_to=filters.filed_end,
         generated_at=datetime.now(UTC),
     )
 
@@ -369,6 +398,18 @@ def _codes(value: object) -> frozenset[str]:
     if not names:
         raise ValueError("no code given")
     return frozenset(names)
+
+
+def _ciks(value: object) -> frozenset[str]:
+    """``?insider_cik=1197647,0001045810``, or repeated: CIKs, zero-padded to ten."""
+    if isinstance(value, frozenset):
+        return value
+    names = _names(value)
+    if bad := [name for name in names if not name.isdigit() or len(name) > 10]:
+        raise ValueError(f"not a CIK: {', '.join(map(repr, bad))}; a CIK is up to ten digits")
+    if not names:
+        raise ValueError("no CIK given")
+    return frozenset(name.zfill(10) for name in names)
 
 
 def _roles(value: object) -> frozenset[Role]:
@@ -435,6 +476,31 @@ Exclude10b51Param = Annotated[
         )
     ),
 ]
+InsiderCiksParam = Annotated[
+    frozenset[str] | None,
+    PlainValidator(_ciks),
+    WithJsonSchema({"type": "array", "items": {"type": "string"}, "examples": [["0001197647"]]}),
+    Query(
+        description=(
+            "Only these insiders, by CIK, comma-separated or repeated, with or without "
+            "the leading zeros. Combine with `code=all` for everything they filed. A "
+            "joint filing's lines are under its first owner's CIK."
+        )
+    ),
+]
+FiledFromParam = Annotated[
+    date | None,
+    Query(
+        description=(
+            "The first day, in UTC, the filing reached EDGAR, `2026-06-01`. Unlike "
+            "`from`, which is the trade day: a late filing for an old trade is in."
+        )
+    ),
+]
+FiledToParam = Annotated[
+    date | None,
+    Query(description="The last day, in UTC, the filing reached EDGAR, `2026-06-30`."),
+]
 SortParam = Annotated[
     InsiderSort,
     Query(description="`date`, the trade day (the default), or `value`, in dollars."),
@@ -465,9 +531,15 @@ def _filters(
     start: date | None,
     end: date | None,
     exclude_10b5_1: bool,
+    *,
+    insider_ciks: frozenset[str] | None = None,
+    filed_start: date | None = None,
+    filed_end: date | None = None,
 ) -> Filters:
     if start is not None and end is not None and start > end:
         raise invalid("from", f"from ({start}) is after to ({end}).")
+    if filed_start is not None and filed_end is not None and filed_start > filed_end:
+        raise invalid("filed_from", f"filed_from ({filed_start}) is after filed_to ({filed_end}).")
     if codes is None:
         chosen: frozenset[str] | None = DEFAULT_CODES
     elif ALL_CODES in codes:
@@ -481,6 +553,9 @@ def _filters(
         start=start,
         end=end,
         exclude_10b5_1=exclude_10b5_1,
+        insider_ciks=insider_ciks or frozenset(),
+        filed_start=filed_start,
+        filed_end=filed_end,
     )
 
 
@@ -501,7 +576,7 @@ async def _envelope(
     rows, page_info = page_of(list(await session.execute(statement)), keyset, page)
     return InsiderTransactionEnvelope(
         data=[_transaction(row) for row in rows],
-        meta=_meta(filters.codes, default=defaulted),
+        meta=_meta(filters, default=defaulted),
         page=page_info,
     )
 
@@ -527,13 +602,27 @@ async def list_insider_transactions(
     start: StartParam = None,
     end: EndParam = None,
     exclude_10b5_1: Exclude10b51Param = False,
+    insider_cik: InsiderCiksParam = None,
+    filed_from: FiledFromParam = None,
+    filed_to: FiledToParam = None,
     sort: SortParam = InsiderSort.DATE,
     order: OrderParam = SortOrder.DESC,
 ) -> InsiderTransactionEnvelope:
     """Form 4 lines, newest trade first, one row per line as filed. Only
     open-market purchases and sales unless `code` says otherwise: grants,
-    exercises and tax withholding are most lines and carry no view."""
-    filters = _filters(code, role, min_value, start, end, exclude_10b5_1)
+    exercises and tax withholding are most lines and carry no view. `meta`
+    echoes the codes, insiders and filing window the rows were limited to."""
+    filters = _filters(
+        code,
+        role,
+        min_value,
+        start,
+        end,
+        exclude_10b5_1,
+        insider_ciks=insider_cik,
+        filed_start=filed_from,
+        filed_end=filed_to,
+    )
     security_id = (await _resolve(session, ticker)).id if ticker is not None else None
     return await _envelope(
         session,

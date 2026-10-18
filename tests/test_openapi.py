@@ -203,10 +203,14 @@ async def test_a_malformed_parameter_is_a_validation_problem(
 
 
 def _object_refs(document: Schema) -> set[str]:
-    return {
+    """Models, and the unions of models a discriminator chooses between
+    (``TimelineEvent``, ``WatchRef``): one of several objects is an object."""
+    schemas = document["components"]["schemas"]
+    objects = {name for name, schema in schemas.items() if schema.get("type") == "object"}
+    return objects | {
         name
-        for name, schema in document["components"]["schemas"].items()
-        if schema.get("type") == "object"
+        for name, schema in schemas.items()
+        if schema.get("oneOf") and all(_ref_name(b) in objects for b in schema["oneOf"])
     }
 
 
@@ -218,6 +222,8 @@ def _is_object(prop: Schema, objects: set[str]) -> bool:
     if _ref_name(prop) in objects:
         return True
     if prop.get("type") == "array" and _is_object(prop.get("items", {}), objects):
+        return True
+    if prop.get("oneOf") and all(_ref_name(b) in objects for b in prop["oneOf"]):
         return True
     branches = [b for b in prop.get("anyOf", []) if b.get("type") != "null"]
     return len(branches) == 1 and _is_object(branches[0], objects)

@@ -23,14 +23,17 @@ from app.api.errors import RATE_LIMITED, http_error, validation_error
 from app.api.middleware import (
     REQUEST_ID_HEADER,
     BodySizeLimitMiddleware,
+    OriginCheckMiddleware,
     RequestContextMiddleware,
     SecurityHeadersMiddleware,
     TimeoutMiddleware,
     UnhandledErrorMiddleware,
     request_id_on_server_error,
 )
-from app.api.rate_limit import RateLimitMiddleware, SlidingWindowLimiter
+from app.api.rate_limit import AUTH_KEY_PREFIX, RateLimitMiddleware, SlidingWindowLimiter
 from app.api.routers import (
+    account,
+    auth,
     filings,
     health,
     insiders,
@@ -40,6 +43,8 @@ from app.api.routers import (
     portfolio,
     search,
     stocks,
+    timeline,
+    watchlist,
 )
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
@@ -70,6 +75,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_factory = create_session_factory(app.state.engine)
     app.state.redis = create_redis(settings)
     app.state.rate_limiter = SlidingWindowLimiter(app.state.redis, settings.rate_limit_per_minute)
+    app.state.auth_rate_limiter = SlidingWindowLimiter(
+        app.state.redis, settings.auth_rate_limit_per_minute, prefix=AUTH_KEY_PREFIX
+    )
     try:
         yield
     finally:
@@ -117,15 +125,19 @@ def create_app(settings: Settings) -> FastAPI:
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
     app.add_middleware(UnhandledErrorMiddleware)
+    # Inside CORS, so its 403 carries the headers a browser needs to read it.
+    app.add_middleware(OriginCheckMiddleware, allowed=settings.cors_origins or [])
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins or [],
-        # Everything here is a read. A preflight for anything else is refused
-        # by the browser, before the request is sent.
-        allow_methods=["GET", "HEAD", "OPTIONS"],
-        # Not safelisted, so without these a browser revalidating by ETag, or
-        # passing on a trace id, would be refused at the preflight.
-        allow_headers=["If-None-Match", REQUEST_ID_HEADER],
+        # The reads, and the account, auth and watchlist writes. Only the
+        # allow-listed origins may send them, and OriginCheckMiddleware refuses
+        # a write from anywhere else even if a browser sent it.
+        allow_methods=["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"],
+        # Not safelisted, so without these a browser revalidating by ETag,
+        # passing on a trace id, or sending a JSON body would be refused at the
+        # preflight.
+        allow_headers=["If-None-Match", REQUEST_ID_HEADER, "Content-Type"],
         # What a script on the frontend may read off a response. Cache-Control
         # is safelisted already; these are not.
         expose_headers=[
@@ -135,8 +147,10 @@ def create_app(settings: Settings) -> FastAPI:
             "X-RateLimit-Limit",
             "X-RateLimit-Remaining",
         ],
-        # No cookies, no auth: nothing a credentialed request would add.
-        allow_credentials=False,
+        # The session cookie (app.api.auth). Safe only because the origins are
+        # an allow-list: Settings refuses "*", which with credentials would let
+        # any site act as whoever is signed in.
+        allow_credentials=True,
         max_age=600,
     )
     app.add_middleware(SecurityHeadersMiddleware, environment=settings.environment)
@@ -155,7 +169,19 @@ def create_app(settings: Settings) -> FastAPI:
     # The probes are not rate limited; everything else documents its 429.
     app.include_router(health.router)
     app.include_router(filings.router, responses=RATE_LIMITED)
-    for router in (investors, portfolio, stocks, insiders, market, search, meta):
+    for router in (
+        investors,
+        portfolio,
+        stocks,
+        insiders,
+        market,
+        search,
+        meta,
+        auth,
+        account,
+        watchlist,
+        timeline,
+    ):
         app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)
 
     return app

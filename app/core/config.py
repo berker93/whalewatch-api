@@ -18,14 +18,21 @@ from urllib.parse import quote
 from pydantic import EmailStr, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-#: Where ``npm run dev`` and ``npm run preview`` serve whalewatch-web from. The
-#: CORS allow-list when none is configured, outside staging and production.
+#: Where ``npm run dev`` and ``npm run preview`` serve whalewatch-web from,
+#: both surfaces (the app is ``app.localhost`` in dev). The CORS allow-list when
+#: none is configured, outside staging and production.
 DEV_CORS_ORIGINS: Final = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://app.localhost:5173",
     "http://localhost:4173",
     "http://127.0.0.1:4173",
+    "http://app.localhost:4173",
 )
+
+#: whalewatch-web's app surface under ``npm run dev`` (its VITE_APP_ORIGIN):
+#: where account emails link when WEB_URL is unset, outside staging and production.
+DEV_WEB_URL: Final = "http://app.localhost:5173"
 
 
 class Settings(BaseSettings):
@@ -88,9 +95,42 @@ class Settings(BaseSettings):
     # docs/query-performance.md many times over.
     request_timeout_seconds: float = Field(default=30.0, gt=0)
 
-    # Every endpoint is a GET, so nothing legitimate sends a body at all; this
-    # only bounds what a client can make the server read before refusing it.
+    # The account, auth and watchlist bodies are a few hundred bytes; this only
+    # bounds what a client can make the server read before refusing it.
     max_request_body_bytes: int = Field(default=64 * 1024, ge=0)
+
+    # --- accounts and sessions ---------------------------------------------------
+    # The session is an opaque token in an httpOnly cookie (app/accounts). The
+    # domain is what lets whalewatch.com and app.whalewatch.com share one
+    # session: SESSION_COOKIE_DOMAIN=.whalewatch.com. Unset is the host that
+    # set it, which is what localhost needs. Secure (HTTPS only) in staging and
+    # production, where a cookie sent over plain HTTP is a session handed out.
+    session_cookie_name: str = "ww_session"
+    session_cookie_domain: str | None = None
+
+    # Logins, registrations and password calls per client IP per minute, on top
+    # of rate_limit_per_minute: a password is guessed one request at a time.
+    auth_rate_limit_per_minute: int = Field(default=10, ge=1)
+
+    # Whether POST /v1/auth/register makes an account. Closed, it records the
+    # request (signup_request) and starts no session, as the frontend's
+    # FEATURES.signupsOpen promises; `create-user` makes accounts by hand.
+    signups_open: bool = False
+
+    # Where whalewatch-web's app surface is served: the links in emails (confirm
+    # an email change, reset a password) point here. Required in staging and
+    # production, where a localhost link would be a dead one in someone's inbox.
+    web_url: str | None = None
+
+    # How account emails leave. "log" writes them to the log, link included, and
+    # is for development: nothing is sent. "smtp" sends through smtp_host.
+    email_backend: Literal["log", "smtp"] = "log"
+    email_from: str = "WhaleWatch <no-reply@whalewatch.io>"
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_starttls: bool = True
 
     # --- SEC / EDGAR ---------------------------------------------------------
     # No default, on purpose. SEC's fair-access policy requires a real contact
@@ -262,6 +302,34 @@ class Settings(BaseSettings):
                 )
             self.cors_origins = list(DEV_CORS_ORIGINS)
         return self
+
+    @model_validator(mode="after")
+    def _accounts_are_configured_where_deployed(self) -> Self:
+        """The same refusal as CORS_ORIGINS: a deployed API that mails links to
+        localhost, or "sends" mail to its own log, fails quietly in someone
+        else's inbox."""
+        if self.environment in ("staging", "production"):
+            if self.web_url is None:
+                raise ValueError(
+                    f"WEB_URL must be set in {self.environment}: where whalewatch-web is "
+                    "served, for the links in account emails"
+                )
+            if self.email_backend == "log":
+                raise ValueError(
+                    f"EMAIL_BACKEND=log is for development; {self.environment} needs "
+                    "EMAIL_BACKEND=smtp so account emails are sent"
+                )
+        if self.email_backend == "smtp" and not self.smtp_host:
+            raise ValueError("EMAIL_BACKEND=smtp needs SMTP_HOST")
+        if self.web_url is None:
+            self.web_url = DEV_WEB_URL
+        self.web_url = self.web_url.rstrip("/")
+        return self
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        """Whether the session cookie is HTTPS-only: wherever the API is deployed."""
+        return self.environment in ("staging", "production")
 
     def _postgres_dsn(self, database: str) -> str:
         """Assemble an asyncpg DSN for ``database`` from the parts above.

@@ -36,6 +36,15 @@ class ErrorCode(StrEnum):
     RATE_LIMITED = "rate_limited"
     INTERNAL_ERROR = "internal_error"
     TIMEOUT = "timeout"
+    UNAUTHENTICATED = "unauthenticated"
+    SESSION_EXPIRED = "session_expired"
+    INVALID_CREDENTIALS = "invalid_credentials"
+    WEAK_PASSWORD = "weak_password"
+    INVALID_EMAIL = "invalid_email"
+    INVALID_NAME = "invalid_name"
+    EMAIL_TAKEN = "email_taken"
+    INVALID_TOKEN = "invalid_token"
+    FORBIDDEN_ORIGIN = "forbidden_origin"
     #: Any other status. Nothing in this API raises one on purpose; it is here
     #: so that an exception from a dependency still answers in this shape.
     HTTP_ERROR = "http_error"
@@ -53,7 +62,15 @@ class ProblemError(BaseModel):
             "`rate_limited`: too many requests from this address; wait `Retry-After` "
             "seconds. `payload_too_large`: the request body is over the limit. "
             "`timeout`: the answer took too long to build. `internal_error`: a fault "
-            "on our side; quote `request_id` when reporting it."
+            "on our side; quote `request_id` when reporting it. Accounts: "
+            "`unauthenticated` (401): no session; `session_expired` (401): the "
+            "session the cookie named has ended or was signed out; "
+            "`invalid_credentials` (403): wrong email or password, or a wrong current "
+            "password; `weak_password`, `invalid_email`, `invalid_name` (422): a "
+            "refused field, named in `detail.errors`; `email_taken` (409): "
+            "registration for an address that has an account; `invalid_token` (422): "
+            "an emailed link that is unknown, used, replaced or expired; "
+            "`forbidden_origin` (403): a write from a site not allowed to call."
         ),
         examples=["not_found"],
     )

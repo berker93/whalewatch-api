@@ -1,7 +1,7 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
-fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters.
+fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -43,6 +43,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli ingest-form4
     uv run python -m app.cli create-partitions --through 2028
     uv run python -m app.cli detect-clusters
+    uv run python -m app.cli create-user --email ada@example.com --name "Ada Lovelace"
 
 Every run is recorded
 ---------------------
@@ -50,8 +51,9 @@ Every verb that touches the database runs its body inside
 :func:`~app.jobs.tracking.track_run`, which writes an ``ingestion_run`` row as
 it starts and its outcome as it ends, and binds the row's id as ``run_id`` on
 every log line in between. ``runs`` lists them. The exceptions are ``runs``
-itself, which reads the record, and ``verify-investors``, which has no database
-to write it to. A test fails if a new verb is neither tracked nor one of those.
+itself, which reads the record, ``verify-investors``, which has no database
+to write it to, and ``create-user``, whose row would hold a person's email. A
+test fails if a new verb is neither tracked nor one of those.
 A verb that publishes (``recompute``, ``detect-splits``, and ``ingest-filing``
 or ``backfill`` when they load something) then runs ``refresh-views`` as a
 second run, which names the first in its ``after_run_id``.
@@ -118,6 +120,9 @@ from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.accounts import rules as account_rules
+from app.accounts.passwords import hash_password
+from app.accounts.rules import DEFAULT_TIME_ZONE
 from app.api.cache import invalidate
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
@@ -125,6 +130,7 @@ from app.core.logging import configure_logging, get_logger
 from app.core.periods import quarter_label
 from app.core.redis import create_redis
 from app.core.tickers import normalise_ticker
+from app.db.models.account import AppUser
 from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
 from app.db.models.pending_filing import PendingStatus
@@ -2175,6 +2181,67 @@ def _echo_clusters(clusters: ClusterRebuild) -> None:
 
 
 # --- seed-investors ----------------------------------------------------------
+
+
+@app.command("create-user")
+def create_user_command(
+    email: Annotated[str, typer.Option("--email", help="The login.")],
+    name: Annotated[str, typer.Option("--name", help="The name on the account.")],
+    time_zone: Annotated[
+        str,
+        typer.Option("--time-zone", help="An IANA zone. Default: America/New_York."),
+    ] = DEFAULT_TIME_ZONE,
+    password_stdin: Annotated[
+        bool,
+        typer.Option(
+            "--password-stdin",
+            help="Read the password from stdin rather than prompting, for scripts.",
+        ),
+    ] = False,
+) -> None:
+    """Make an account, while signups are closed or for a developer.
+
+    The password is prompted for, twice and hidden, or read from stdin with
+    --password-stdin: never an option, which would put it in the shell's
+    history and the process list. The same rules as registration apply.
+    Untracked: a run row would put the account's email in the operations log.
+    """
+    if password_stdin:
+        password = sys.stdin.readline().rstrip("\n")
+    else:
+        password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
+    try:
+        asyncio.run(_create_user(email, name, time_zone, password))
+    except CommandError as exc:
+        typer.echo(f"create-user: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
+async def _create_user(email: str, name: str, time_zone: str, password: str) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    email, name = account_rules.normalise_email(email), account_rules.normalise_name(name)
+    for field, problem in (
+        ("--name", account_rules.name_problem(name)),
+        ("--email", account_rules.email_problem(email)),
+        ("password", account_rules.password_problem(password)),
+    ):
+        if problem:
+            raise CommandError(f"{field} {problem}")
+    async with session_scope(settings) as session:
+        if problem := await account_rules.time_zone_problem(session, time_zone):
+            raise CommandError(f"--time-zone: {problem}")
+        if await session.scalar(select(AppUser.id).where(AppUser.email == email)) is not None:
+            raise CommandError(f"{email} already has an account")
+        session.add(
+            AppUser(
+                email=email,
+                name=name,
+                password_hash=await hash_password(password),
+                time_zone=time_zone,
+            )
+        )
+    typer.echo(f"create-user  {email}  ({name}, {time_zone})")
 
 
 @app.command("seed-investors")

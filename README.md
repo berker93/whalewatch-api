@@ -23,6 +23,8 @@ Docker.
 | [Data model](docs/data-model.md) | Tables, natural keys, the raw → normalised → derived split, and the invariants worth a constraint |
 | [Ingestion spec](docs/ingestion-spec.md) | EDGAR sources, rate limits, the 13F and Form 4 parsers, enrichment, and every way the numbers can be quietly wrong |
 | [Query performance](docs/query-performance.md) | The API's ten queries under `EXPLAIN ANALYZE` on the full dataset, the indexes that changed because of it, and how to read a plan |
+| [Frontend integration](docs/frontend-integration.md) | The account, auth, watchlist and timeline endpoints as whalewatch-web calls them: shapes, field mappings, error codes, adapter code |
+| [Connecting the frontend](docs/how-to-connect-frontend.md) | Step by step: run the API, make an account, point whalewatch-web at it, get the session cookie flowing, and deploy both |
 
 The rest of this file is how to run it; the specs are what it is.
 

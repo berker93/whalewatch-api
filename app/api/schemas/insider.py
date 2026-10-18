@@ -252,6 +252,21 @@ class InsiderFeedMeta(Meta):
         ),
         examples=[True],
     )
+    insider_ciks: list[str] | None = Field(
+        default=None,
+        description="The insiders the rows are limited to (`?insider_cik=`), or null for anyone.",
+        examples=[["0001197647"]],
+    )
+    filed_from: date | None = Field(
+        default=None,
+        description="`?filed_from=`: the first day, in UTC, the rows were filed on.",
+        examples=["2026-06-01"],
+    )
+    filed_to: date | None = Field(
+        default=None,
+        description="`?filed_to=`: the last day, in UTC, the rows were filed on.",
+        examples=["2026-06-30"],
+    )
 
 
 class InsiderTransactionEnvelope(Envelope[InsiderTransaction]):

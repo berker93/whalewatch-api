@@ -59,6 +59,8 @@ logger = get_logger(__name__)
 
 #: Outside ``ww:v1:``, which cache invalidation deletes wholesale.
 KEY_PREFIX: Final = "ww:rl:"
+#: The stricter limit on sign-ins and password calls (app.api.auth).
+AUTH_KEY_PREFIX: Final = "ww:rl:auth:"
 
 #: The load balancer's and the orchestrator's probes, which come from a few
 #: addresses many times a minute and would spend those addresses' budgets.
@@ -97,9 +99,15 @@ class Decision:
 class SlidingWindowLimiter:
     """``limit`` requests per ``window_seconds`` per address."""
 
-    def __init__(self, redis: Redis, limit: int, window_seconds: int = 60) -> None:
+    def __init__(
+        self, redis: Redis, limit: int, window_seconds: int = 60, *, prefix: str = KEY_PREFIX
+    ) -> None:
+        """:param prefix: Where this limiter's counts are kept, so that two
+        limiters on one Redis (the global one and the stricter one for
+        sign-ins) count the same address separately."""
         self.limit = limit
         self.window_ms = window_seconds * 1000
+        self.prefix = prefix
         self._redis = redis
         self._script: AsyncScript | None = None
 
@@ -118,7 +126,7 @@ class SlidingWindowLimiter:
             # sends it whole if Redis has not seen it.
             self._script = self._redis.register_script(_SLIDING_WINDOW)
         admitted, remaining, wait_ms = await self._script(
-            keys=[KEY_PREFIX + bucket(client)],
+            keys=[self.prefix + bucket(client)],
             args=[self.window_ms, self.limit, uuid.uuid4().hex],
         )
         # Ceiling, and never 0: "retry after 0 seconds" invites the retry that

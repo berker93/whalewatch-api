@@ -86,6 +86,7 @@ TRACKED: Final = {
 UNTRACKED: Final = {
     "runs": "reads the record; a listing that added itself would show itself first",
     "verify-investors": "never opens a database: it runs on the host and in a GitHub workflow",
+    "create-user": "account administration: its row would put a person's email in the run log",
 }
 
 
