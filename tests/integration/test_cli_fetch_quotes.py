@@ -298,10 +298,10 @@ def test_the_command_reports_each_outcome_records_a_partial_run_and_drops_the_ca
     )
     provider = FakeProvider({"NVDA": "181.5", "BAD": "1"})
     provider.breaking = {"BAD"}
-    monkeypatch.setattr("app.cli.quote_provider", lambda settings: provider)
+    monkeypatch.setattr("app.jobs.enrichment.quote_provider", lambda settings: provider)
     redis = FakeRedis()
     redis.values = {f"{KEY_PREFIX}stocks.get_stock:0f0f": "{}"}
-    monkeypatch.setattr("app.cli.create_redis", lambda settings: redis)
+    monkeypatch.setattr("app.jobs.cache.create_redis", lambda settings: redis)
 
     result = runner.invoke(app, ["fetch-quotes"])
 
@@ -335,7 +335,7 @@ def test_a_provider_that_fails_is_exit_1_and_a_failed_run(
     yfinance_settings: Settings,
 ) -> None:
     _listed(migrated_engine, "NVDA")
-    monkeypatch.setattr("app.cli.quote_provider", lambda settings: FakeProvider({}))
+    monkeypatch.setattr("app.jobs.enrichment.quote_provider", lambda settings: FakeProvider({}))
 
     result = runner.invoke(app, ["fetch-quotes"])
 

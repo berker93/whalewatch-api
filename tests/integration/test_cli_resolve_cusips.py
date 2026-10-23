@@ -148,14 +148,14 @@ def runner() -> CliRunner:
 @pytest.fixture
 def figi(monkeypatch: pytest.MonkeyPatch) -> FakeOpenFIGI:
     fake = FakeOpenFIGI()
-    monkeypatch.setattr("app.cli.OpenFIGIClient", fake)
+    monkeypatch.setattr("app.jobs.enrichment.OpenFIGIClient", fake)
     return fake
 
 
 @pytest.fixture
 def redis(monkeypatch: pytest.MonkeyPatch) -> FakeRedis:
     fake = FakeRedis()
-    monkeypatch.setattr("app.cli.create_redis", lambda settings: fake)
+    monkeypatch.setattr("app.jobs.cache.create_redis", lambda settings: fake)
     return fake
 
 

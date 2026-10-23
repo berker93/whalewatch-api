@@ -38,16 +38,39 @@ an ``Exception``. Catching only those would leave an abandoned backfill saying
 ``running`` forever, which is the wrong answer to the question this module
 exists to answer. Nothing can be done about ``SIGKILL``: an old ``running`` row
 is a process that died without the chance to say so.
+
+Jobs: ``@tracked_task``
+-----------------------
+A job that runs on a schedule as well as by hand is an ``async`` function
+decorated with :func:`tracked_task`, and both its entry points — the CLI verb
+and the Celery task (app/jobs/tasks.py) — call the decorated function. The
+decorator is everything the two must not each remember: the job's lock
+(app/jobs/locks.py), its ``track_run``, and the ``job_name`` on every line::
+
+    @tracked_task("discover-filings")
+    async def discover_13f_filings(
+        run: TrackedRun, settings: Settings, *, filer: str | None
+    ) -> list[FilerDiscovery]: ...
+
+    ran = await discover_13f_filings(settings, filer="berkshire-hathaway")
+    ran.run.id, ran.value
+
+The body is handed its ``TrackedRun`` and counts into it; the caller gets it
+back with the body's value. A run that finds the lock taken never starts, and
+leaves no row: :class:`JobLocked` says so, and both entry points treat it as
+the non-event it is.
 """
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Concatenate
 
 import structlog
 from sqlalchemy import func, insert, update
@@ -56,6 +79,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.models.ingestion_run import IngestionRun, RunStatus
 from app.db.session import session_scope
+from app.jobs.locks import job_lock
 
 logger = get_logger(__name__)
 
@@ -175,3 +199,101 @@ def _jsonable(context: dict[str, Any]) -> dict[str, Any]:
     UUIDs as strings."""
     parameters: dict[str, Any] = json.loads(json.dumps(context, default=str))
     return parameters
+
+
+class JobLocked(Exception):  # noqa: N818
+    """Another run of the job holds its lock, so this one did nothing.
+
+    Not a failure, and nothing is recorded: the run that holds the lock is
+    doing what this one would have done, and has a row of its own saying so.
+    """
+
+    def __init__(self, job_name: str) -> None:
+        super().__init__(f"another {job_name} run is in progress; this one did nothing")
+        self.job_name = job_name
+
+
+@dataclass(frozen=True, slots=True)
+class Ran[T]:
+    """A finished run of a job: what it counted, and what its body returned."""
+
+    run: TrackedRun
+    value: T
+
+    @property
+    def status(self) -> RunStatus:
+        """What its row says. A run that raised has no :class:`Ran` at all."""
+        return RunStatus.PARTIAL if self.run.errors else RunStatus.SUCCESS
+
+
+Context = Callable[[Settings, dict[str, Any]], dict[str, Any]]
+"""The settings and the job's keyword arguments in, the row's ``context`` out."""
+
+
+def tracked_task[**P, T](
+    job_name: str, *, context: Context | None = None
+) -> Callable[
+    [Callable[Concatenate[TrackedRun, Settings, P], Awaitable[T]]],
+    Callable[Concatenate[Settings, P], Coroutine[Any, Any, Ran[T]]],
+]:
+    """Make an ``async`` function a job: locked, tracked, and named in the log.
+
+    The decorated function takes ``settings`` and the body's keyword
+    arguments, and in order:
+
+    1. Binds ``job_name`` into the logging context, so that even a run that
+       goes no further says which job it was.
+    2. Tries for the job's advisory lock, and raises :class:`JobLocked`
+       without a row if another run has it.
+    3. Runs the body inside :func:`track_run`, which writes the row, binds
+       ``run_id`` and records the outcome, an exception included.
+
+    :param job_name: The row's ``job_name`` and the lock's name: the CLI verb,
+        or ``backfill_13f``, as before there were tasks, so that ``runs --job``
+        reads one history whichever entry point started each run.
+    :param context: Turns the keyword arguments into the row's ``context``,
+        for a job that takes something that is not a parameter worth storing
+        (a progress printer), is too long to store whole, or defaults to a
+        setting the row should name. By default every keyword argument, as
+        given.
+    """
+    to_context = context or _arguments
+
+    def decorate(
+        body: Callable[Concatenate[TrackedRun, Settings, P], Awaitable[T]],
+    ) -> Callable[Concatenate[Settings, P], Coroutine[Any, Any, Ran[T]]]:
+        # So that the row has every parameter, the ones left at their default
+        # included, and two runs with the same parameters have the same context.
+        defaults = {
+            name: parameter.default
+            for name, parameter in inspect.signature(body).parameters.items()
+            if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+            and parameter.default is not inspect.Parameter.empty
+        }
+
+        @functools.wraps(body)
+        async def job(settings: Settings, /, *args: P.args, **kwargs: P.kwargs) -> Ran[T]:
+            arguments = {**defaults, **kwargs}
+            with structlog.contextvars.bound_contextvars(job_name=job_name):
+                async with job_lock(settings, job_name) as held:
+                    if not held:
+                        logger.info("job.skipped", reason="locked")
+                        raise JobLocked(job_name)
+                    async with track_run(
+                        settings, job_name, **to_context(settings, arguments)
+                    ) as run:
+                        value = await body(run, settings, *args, **kwargs)
+            return Ran(run=run, value=value)
+
+        return job
+
+    return decorate
+
+
+def _arguments(_: Settings, arguments: dict[str, Any]) -> dict[str, Any]:
+    return arguments
+
+
+def without_progress(_: Settings, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Every keyword argument but ``progress``, which is a printer, not a parameter."""
+    return {name: value for name, value in arguments.items() if name != "progress"}

@@ -62,7 +62,18 @@ Every verb that changes what the API serves — those, ``refresh-views``,
 ``seed-investors``, ``resolve-cusips``, ``resolve-cusip``, ``ticker-alias``,
 ``fetch-quotes`` when it writes a close, ``ingest-form4`` when it loads
 something, and ``detect-clusters`` — then drops every response the API has
-cached (:func:`_invalidate_cache`), and records how many in its run's ``metrics``.
+cached (:func:`~app.jobs.cache.invalidate_cache`), and records how many in its
+run's ``metrics``.
+
+The verbs that are also Celery tasks
+------------------------------------
+``discover-filings``, ``backfill``, ``crawl-form4``, ``ingest-form4``,
+``resolve-cusips``, ``fetch-quotes``, ``recompute`` and ``refresh-views`` are
+each a call to a ``@tracked_task`` job (app/jobs/), the same call its task
+makes (app/jobs/tasks.py), with the arguments parsed on the way in and the
+summary printed on the way out. The job holds its advisory lock for the run,
+so a verb started while the same job is running — the worker's, or another
+shell's — prints ``skipped: ...`` on stderr, records nothing and exits 0.
 
 Exit codes
 ----------
@@ -109,30 +120,26 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from functools import partial
 from pathlib import Path
 from typing import Annotated, Final, NoReturn, TextIO
 
 import httpx
 import structlog
 import typer
-from redis.exceptions import RedisError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts import rules as account_rules
 from app.accounts.passwords import hash_password
 from app.accounts.rules import DEFAULT_TIME_ZONE
-from app.api.cache import invalidate
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.periods import quarter_label
-from app.core.redis import create_redis
 from app.core.tickers import normalise_ticker
 from app.db.models.account import AppUser
 from app.db.models.filer import OverlapPolicy
-from app.db.models.filing import LOADED_STATUSES, Filing, ParseStatus
+from app.db.models.filing import LOADED_STATUSES, Filing
 from app.db.models.pending_filing import PendingStatus
 from app.db.models.sec_13f_security import ListStatus
 from app.db.models.security import ResolutionSource, Security
@@ -142,49 +149,36 @@ from app.db.queries.checks import DataCheckReport, check_data
 from app.db.queries.cusip_coverage import DEFAULT_THRESHOLD_PCT, CusipCoverage, cusip_coverage
 from app.db.queries.overlaps import OverlapFinding, audit_overlaps
 from app.db.queries.runs import RunSummary, job_names, recent_runs
-from app.db.session import create_engine, create_session_factory, session_scope
+from app.db.session import session_scope
 from app.derived.implied_price import PriceRebuild
 from app.derived.insider_cluster import (
     DEFAULT_MIN_INSIDERS,
     DEFAULT_WINDOW,
     ClusterRebuild,
-    detect_clusters,
 )
 from app.derived.position_change import ChangeRebuild
 from app.derived.recompute import (
     Recomputed,
     Redetected,
     detect_splits,
-    hold_recompute_lock,
-    recompute,
 )
 from app.derived.reconcile import INVARIANTS, SAMPLE, Reconciliation, reconcile
-from app.derived.scope import Pair, Scope, filing_pairs, resolve_scope
+from app.derived.scope import Pair, Scope
 from app.derived.security_split import SplitRebuild, Verdict, ratio_label
-from app.derived.views import MATERIALISED_VIEWS, Refreshed, refresh_order, refresh_views
+from app.derived.views import MATERIALISED_VIEWS, Refreshed
 from app.ingestion.archive import (
     archive_13f_documents,
-    archive_form4_documents,
-    read_13f_documents,
-    read_form4_documents,
 )
 from app.ingestion.backfill import (
     BackfillPlan,
     BackfillRun,
     FilingResult,
     Outcome,
-    PlannedFiling,
-    plan_backfill,
-    record_attempt,
-    run_backfill,
-    stop_on_interrupt,
 )
 from app.ingestion.discovery import (
     FilerDiscovery,
     QueuedFiling,
     UnknownFilerError,
-    default_since,
-    discover_filings,
     mark_ingested,
     queued_filing,
     record_failure,
@@ -195,14 +189,11 @@ from app.ingestion.edgar.company_tickers import CompanyTickersMalformedError
 from app.ingestion.edgar.documents import (
     FilingDocuments,
     FilingDocumentsError,
-    fetch_13f_documents,
 )
-from app.ingestion.edgar.form4_documents import fetch_form4_documents
 from app.ingestion.edgar.submissions import (
     Submission,
     SubmissionMalformedError,
     SubmissionNotFoundError,
-    find_submission,
 )
 from app.ingestion.edgar.thirteen_f_list import (
     ThirteenFListUnavailableError,
@@ -210,8 +201,6 @@ from app.ingestion.edgar.thirteen_f_list import (
     find_list_url,
 )
 from app.ingestion.enrichment.figi import (
-    DatabaseResponseLog,
-    OpenFIGIClient,
     OpenFIGIRateLimited,
     OpenFIGIResponseError,
     OpenFIGIServerError,
@@ -221,14 +210,11 @@ from app.ingestion.enrichment.quotes import (
     QuoteFetchError,
     QuoteProviderUnavailableError,
     QuoteReport,
-    fetch_quotes,
-    quote_provider,
 )
 from app.ingestion.enrichment.resolution import (
     ManualResolution,
     ResolutionReport,
     resolve_manually,
-    resolve_securities,
 )
 from app.ingestion.enrichment.tickers import (
     Delistings,
@@ -244,14 +230,9 @@ from app.ingestion.insider_discovery import (
     NoWatermarkError,
     Universe,
     UniverseError,
-    catch_up_days,
-    crawl_form4,
     days_between,
-    held_universe,
     new_york_today,
-    sp500_universe,
 )
-from app.ingestion.insider_ingest import plan_form4
 from app.ingestion.investors import (
     DEFAULT_INVESTORS_PATH,
     InvestorEntry,
@@ -264,22 +245,16 @@ from app.ingestion.investors import (
 from app.ingestion.loaders import (
     AdditionsCheck,
     AmendmentLink,
-    Form4LoadResult,
     LoadResult,
     SecurityLink,
     check_additions,
     load_13f_list,
-    load_filing,
-    load_form4,
 )
-from app.ingestion.normalisation import NormalisedFiling, NoteKind, normalise_filing
+from app.ingestion.normalisation import NormalisedFiling, NoteKind
 from app.ingestion.parsers.errors import FilingParseError
-from app.ingestion.parsers.form4 import Form4Document, parse_form4
 from app.ingestion.parsers.thirteen_f import (
     InformationTable,
     PrimaryDoc,
-    parse_information_table,
-    parse_primary_doc,
 )
 from app.ingestion.parsers.thirteen_f_list import (
     ThirteenFList,
@@ -287,7 +262,34 @@ from app.ingestion.parsers.thirteen_f_list import (
     parse_13f_list,
 )
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
-from app.jobs.tracking import track_run
+from app.jobs.cache import invalidate_cache
+from app.jobs.derived import recompute_positions, refresh_matviews
+from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
+from app.jobs.errors import JobError
+from app.jobs.form4 import (
+    READ_DAYS,
+    Form4Loaded,
+    Form4Progress,
+    cluster_metrics,
+    crawl_form4_daily,
+    ingest_form4,
+    partition_metrics,
+    rebuild_clusters,
+)
+from app.jobs.thirteen_f import (
+    MAX_CONCURRENCY,
+    Parsed,
+    Progress,
+    discover_13f_filings,
+    discovery_cutoff,
+    fetch_13f,
+    ingest_pending_filings,
+    log_ingested,
+    parse_13f,
+    positions,
+    write_13f,
+)
+from app.jobs.tracking import JobLocked, track_run
 from app.storage.raw import (
     RawStore,
     RawStoreError,
@@ -297,12 +299,6 @@ from app.storage.raw import (
 )
 
 logger = get_logger(__name__)
-
-#: The form types this command knows how to parse. Checked against EDGAR's own
-#: word for what the submission is, before anything is fetched from the filing
-#: directory, because the 13F parser applied to a Form 4 does not fail — it
-#: finds no ``<infoTable>`` elements and yields an empty portfolio.
-_THIRTEEN_F_FORMS: Final = ("13F-HR", "13F-NT")
 
 #: Width of the label column in the summary. Wide enough for the longest label
 #: below, which keeps the values in one column that the eye can run down.
@@ -317,7 +313,7 @@ _MAX_ECHOED_WARNINGS: Final = 10
 _NOTE_KIND_WIDTH: Final = max(len(kind) for kind in NoteKind)
 
 
-class CommandError(Exception):
+class CommandError(JobError):
     """An operational failure with a message worth printing and no traceback.
 
     Everything the operator can act on — a CIK we could not work out, a filing
@@ -404,7 +400,9 @@ def ingest_filing(
             _ingest_filing(accession_no, cik=cik, force=force, dry_run=dry_run, refresh=refresh)
         )
     except (
-        CommandError,
+        # The job's own, from the steps ingest-filing shares with backfill, and
+        # this command's.
+        JobError,
         FilingDocumentsError,
         FilingParseError,
         SubmissionMalformedError,
@@ -481,11 +479,11 @@ async def _ingest_filing(
         if report.result is not None:
             run.items_written = 1
         if report.published is not None:
-            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+            run.metrics["cache_invalidated"] = await invalidate_cache(settings)
         _echo_report(report)
 
     if refresh and report.published is not None:
-        await _refresh(settings, after=run.id)
+        await _refresh_after(settings, run.id)
 
 
 async def _fetch_and_load(
@@ -493,7 +491,7 @@ async def _fetch_and_load(
 ) -> _Report:
     """Everything after the decision that there is work to do."""
     async with EdgarClient(settings) as edgar:
-        submission, documents = await _fetch(edgar, accession, cik=cik)
+        submission, documents = await fetch_13f(edgar, accession, cik=cik)
 
     # Archived before parsed, always: a parser that raises below has nothing
     # left to lose, and the fix is a re-parse of these bytes instead of a
@@ -507,7 +505,7 @@ async def _fetch_and_load(
     # Parsing happens after the client is closed: it is pure CPU over bytes we
     # already hold, and holding a connection pool open across it keeps a socket
     # to sec.gov alive for no reason.
-    parsed = _parse(documents, filed_at=submission.filed_at)
+    parsed = parse_13f(documents, filed_at=submission.filed_at)
 
     result, published = (
         (None, None)
@@ -575,13 +573,13 @@ async def _load(
     *,
     accession: str,
     filed_at: datetime,
-    parsed: _Parsed,
+    parsed: Parsed,
     raw_prefix: str | None,
     source_url: str,
 ) -> tuple[LoadResult, Recomputed | None]:
     """Write the parsed filing, in one transaction that ``session_scope`` commits."""
     async with session_scope(settings) as session:
-        result, published = await _write(
+        written = await write_13f(
             session,
             accession=accession,
             filed_at=filed_at,
@@ -589,95 +587,8 @@ async def _load(
             raw_prefix=raw_prefix,
             source_url=source_url,
         )
-    _log_ingested(parsed, result, published)
-    return result, published
-
-
-# --- the steps ingest-filing and backfill share ------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class _Parsed:
-    """Both documents parsed, and the verdict of the guards on them."""
-
-    cover: PrimaryDoc
-    table: InformationTable
-    normalised: NormalisedFiling
-
-
-async def _fetch(
-    edgar: EdgarClient, accession: str, *, cik: str
-) -> tuple[Submission, FilingDocuments]:
-    """EDGAR's account of the submission, then its documents — unless it is not a 13F."""
-    submission = await find_submission(edgar, cik=cik, accession_no=accession)
-    _require_thirteen_f(submission)
-    return submission, await fetch_13f_documents(edgar, cik=cik, accession_no=accession)
-
-
-def _parse(documents: FilingDocuments, *, filed_at: datetime) -> _Parsed:
-    """Parse and normalise. Pure: the same bytes and ``filed_at`` give the same rows."""
-    cover = parse_primary_doc(documents.primary_doc)
-    table = (
-        parse_information_table(documents.info_table)
-        if documents.info_table is not None
-        else InformationTable(rows=(), warnings=())
-    )
-    normalised = normalise_filing(filed_at=filed_at, cover=cover, table=table)
-    return _Parsed(cover=cover, table=table, normalised=normalised)
-
-
-async def _write(
-    session: AsyncSession,
-    *,
-    accession: str,
-    filed_at: datetime,
-    parsed: _Parsed,
-    raw_prefix: str | None,
-    source_url: str,
-) -> tuple[LoadResult, Recomputed | None]:
-    """Load the filing, mark its queue row ``done`` and publish it, in the caller's transaction.
-
-    Publishing is :func:`~app.derived.recompute.recompute` over the pair the
-    filing is filed under, and the pair it was filed under before if a
-    re-ingest moved it, with the period after each. In the load's transaction,
-    so a reader never sees holdings that the snapshot has not caught up with,
-    and a load whose rebuild fails is not loaded. ``None`` while the filing has
-    no filer, and so no pair.
-
-    ``raw_key`` is the filing's archive *prefix*, not one document's key: a
-    13F is several documents, and the prefix is what lists all of them. It is
-    only ever ``None`` on a dry run, which never gets here.
-    """
-    # Before the first write, not just before the rebuild: see the deadlock in
-    # app.derived.recompute.
-    await hold_recompute_lock(session)
-    filed_before = await filing_pairs(session, accession)
-    result = await load_filing(
-        session,
-        accession_no=accession,
-        filed_at=filed_at,
-        primary_doc=parsed.cover,
-        normalised=parsed.normalised,
-        raw_key=raw_prefix,
-        source_url=source_url,
-    )
-    await mark_ingested(session, accession)
-    scope = Scope.of(filed_before | await filing_pairs(session, accession))
-    return result, (await recompute(session, scope) if scope.pairs else None)
-
-
-def _log_ingested(parsed: _Parsed, result: LoadResult, published: Recomputed | None) -> None:
-    """After the commit, so the line never reports a load that rolled back."""
-    logger.info(
-        "filing.ingested",
-        cik=parsed.cover.cik,
-        period=parsed.cover.period_of_report.isoformat(),
-        filing_id=result.filing_id,
-        rows=result.holdings_loaded,
-        status=parsed.normalised.parse_status.value,
-        positions_published=None if published is None else published.snapshot.positions,
-        periods_withheld=None if published is None else published.snapshot.withheld,
-    )
+    log_ingested(parsed, written)
+    return written.result, written.published
 
 
 # --- what we already know ----------------------------------------------------
@@ -743,24 +654,6 @@ def _resolve_cik(
         "whoever transmitted the filing, usually a filing agent, and EDGAR's archive "
         "path is keyed on the filer instead."
     )
-
-
-def _require_thirteen_f(submission: Submission) -> None:
-    """Refuse anything this command cannot parse, before fetching its documents.
-
-    A guard rather than a filter because of how the alternative fails. Handing a
-    Form 4 to the 13F parser raises nothing: there are no ``<infoTable>``
-    elements in it, so the information table comes back empty, the guards have
-    no declared totals to check it against, and the filing loads clean with zero
-    holdings — which is a valid ``13F-NT``. The wrong form loads as a correct
-    filing of the right one.
-    """
-    form = submission.form_type.upper()
-    if not form.startswith(_THIRTEEN_F_FORMS):
-        raise CommandError(
-            f"{submission.accession_no} is a {submission.form_type or 'unknown'} filing; "
-            f"ingest-filing reads {' and '.join(_THIRTEEN_F_FORMS)} (and their /A amendments)"
-        )
 
 
 # --- input normalisation -----------------------------------------------------
@@ -978,25 +871,11 @@ def _rows_line(report: _Report) -> str:
     if result is None:
         return ", ".join(parts)
 
-    positions = _positions(report.table, result)
-    parts.append(f"{positions} positions {'deferred' if result.holdings_deferred else 'loaded'}")
+    count = positions(report.table, result)
+    parts.append(f"{count} positions {'deferred' if result.holdings_deferred else 'loaded'}")
     if result.rows_collapsed:
         parts.append(f"{result.rows_collapsed} folded into another line")
     return ", ".join(parts)
-
-
-def _positions(table: InformationTable, result: LoadResult) -> int:
-    """Positions loaded, or waiting to be.
-
-    Deferred holdings are counted rather than reported as the zero the loader
-    returns, because "0 positions loaded" is what a 13F-NT looks like and this
-    is the opposite: the positions exist, they are waiting on a filer. The
-    arithmetic is the loader's own — rows minus the ones it folded — so the
-    two branches give the same number for the same filing either way.
-    """
-    if result.holdings_deferred:
-        return len(table.rows) - result.rows_collapsed
-    return result.holdings_loaded
 
 
 def _written_line(result: LoadResult) -> str:
@@ -1104,7 +983,9 @@ def discover_filings_command(
     if since is not None and full_history:
         typer.secho("error: --since and --all contradict each other", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
-    cutoff = None if full_history else since.date() if since else default_since(date.today())
+    cutoff = discovery_cutoff(
+        since.date() if since else None, full_history=full_history, today=date.today()
+    )
     try:
         failed = asyncio.run(_discover_filings(filer, since=cutoff))
     except (UnknownFilerError, EdgarRateLimited) as failure:
@@ -1115,40 +996,16 @@ def discover_filings_command(
 
 
 async def _discover_filings(slug: str | None, *, since: date | None) -> bool:
-    """Discover filer by filer, each committed on its own. Returns whether any CIK failed.
-
-    One engine for the run rather than a ``session_scope`` per filer: each of
-    those builds and disposes an engine, and this opens two sessions per filer
-    across a hundred filers.
-
-    Counted filer by filer, so a run that EDGAR blocks partway records what the
-    filers before the block found and queued, which are committed.
-    """
+    """The job, then its summary. Returns whether any CIK failed."""
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-
-    async with track_run(settings, "discover-filings", filer=slug, since=since) as run:
-        engine = create_engine(settings)
-        sessions = create_session_factory(engine)
-        results: list[FilerDiscovery] = []
-        try:
-            async with sessions() as session:
-                filer_ids = await tracked_filer_ids(session, slug=slug)
-            async with EdgarClient(settings) as edgar:
-                for filer_id in filer_ids:
-                    result = await discover_filings(sessions, edgar, filer_id, since=since)
-                    results.append(result)
-                    run.items_seen += len(result.found)
-                    run.items_written += len(result.new)
-                    run.errors.extend(
-                        f"{result.filer.slug} CIK {failure.cik}: {failure.error}"
-                        for failure in result.failures
-                    )
-        finally:
-            await engine.dispose()
-
-    _echo_discovery(results, since=since)
-    return any(result.failures for result in results)
+    try:
+        ran = await discover_13f_filings(settings, filer=slug, since=since)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return False
+    _echo_discovery(ran.value, since=since)
+    return any(result.failures for result in ran.value)
 
 
 def _echo_discovery(results: list[FilerDiscovery], *, since: date | None) -> None:
@@ -1271,61 +1128,30 @@ def _usage(message: str) -> NoReturn:
     raise typer.Exit(code=2)
 
 
-async def _crawl_form4(days: list[date] | None, *, universe: str | None, today: date) -> bool:
-    """Choose the days, build the universe, crawl. Returns whether a day failed.
+def _echo_locked(locked: JobLocked) -> None:
+    """Another run of the job is in progress, so this one did nothing: exit 0.
 
-    The days before the universe, so that a --catch-up with no watermark fails
-    without a request to SEC.
+    Not a failure: the run holding the lock is doing this one's work, and a
+    loop or cron around the command should not page anyone for it.
     """
+    typer.secho(f"skipped: {locked}", fg=typer.colors.YELLOW, err=True)
+
+
+async def _crawl_form4(days: list[date] | None, *, universe: str | None, today: date) -> bool:
+    """The job, then its summary. Returns whether a day failed."""
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
-    kind = universe or settings.form4_universe
-
-    async with track_run(
-        settings,
-        "crawl-form4",
-        days=None if days is None else f"{days[0]}..{days[-1]}",
-        catch_up=days is None,
-        universe=kind,
-    ) as run:
-        engine = create_engine(settings)
-        sessions = create_session_factory(engine)
-        try:
-            if days is None:
-                async with sessions() as session:
-                    days = await catch_up_days(session, today)
-            if not days:
-                typer.echo("crawl-form4  nothing to crawl: the watermark is today")
-                return False
-            async with EdgarClient(settings) as edgar:
-                if kind == "held":
-                    chosen = await held_universe(
-                        sessions, edgar, min_weight_pct=settings.form4_min_weight_pct
-                    )
-                else:
-                    chosen = sp500_universe(settings.form4_sp500_path)
-                crawl = await crawl_form4(sessions, edgar, chosen.ciks, days, today=today)
-        finally:
-            await engine.dispose()
-
-        run.items_seen = sum(len(crawled.matched) for crawled in crawl.days)
-        run.items_written = sum(crawled.new for crawled in crawl.days)
-        if crawl.failed and crawl.stopped is not None:
-            run.errors.append(f"{crawl.stopped.day}: {crawl.stopped.error}")
-        run.metrics |= {
-            "universe_issuers": len(chosen.ciks),
-            "days_read": sum(1 for crawled in crawl.days if crawled.kind in _READ_DAYS),
-            "watermark_before": _iso(crawl.watermark_before, blank=""),
-            "watermark_after": _iso(crawl.watermark_after, blank=""),
-            "stopped": None if crawl.stopped is None else crawl.stopped.kind.value,
-        }
-
-    _echo_crawl(chosen, crawl)
-    return crawl.failed
-
-
-#: The kinds of day that count as read, and move the watermark.
-_READ_DAYS: Final = frozenset({DayKind.INDEXED, DayKind.WEEKEND, DayKind.NO_INDEX})
+    try:
+        ran = await crawl_form4_daily(settings, days=days, universe=universe, today=today)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return False
+    crawled = ran.value
+    if crawled.universe is None or crawled.crawl is None:
+        typer.echo("crawl-form4  nothing to crawl: the watermark is today")
+        return False
+    _echo_crawl(crawled.universe, crawled.crawl)
+    return crawled.failed
 
 
 def _echo_crawl(universe: Universe, crawl: Crawl) -> None:
@@ -1346,7 +1172,7 @@ def _echo_crawl(universe: Universe, crawl: Crawl) -> None:
             detail = "no index (holiday)"
         typer.echo(f"  {crawled.day}  {detail}")
 
-    read = [crawled for crawled in crawl.days if crawled.kind in _READ_DAYS]
+    read = [crawled for crawled in crawl.days if crawled.kind in READ_DAYS]
     matched = sum(len(crawled.matched) for crawled in read)
     new = sum(crawled.new for crawled in read)
     typer.echo(
@@ -1361,13 +1187,6 @@ def _echo_crawl(universe: Universe, crawl: Crawl) -> None:
 
 
 # --- backfill ----------------------------------------------------------------
-
-#: The most filings in flight at once. Bounded by the database rather than by
-#: EDGAR: every worker writes through the run's one engine, whose pool is five
-#: connections plus ten overflow, and a worker past that waits out
-#: ``pool_timeout`` and fails its filing. EDGAR stopped rewarding concurrency
-#: well before this, since every worker draws on the one rate limiter.
-_MAX_CONCURRENCY: Final = 15
 
 #: 128 + SIGINT: what a shell reports for a process Ctrl-C stopped, so that a
 #: wrapper can tell "interrupted, resume me" from "something failed, look".
@@ -1392,7 +1211,7 @@ def backfill_command(
             "--concurrency",
             metavar="N",
             min=1,
-            max=_MAX_CONCURRENCY,
+            max=MAX_CONCURRENCY,
             help="Filings in flight at once. All of them share one EDGAR rate limit.",
         ),
     ] = 5,
@@ -1472,16 +1291,7 @@ async def _backfill(
     force: bool,
     refresh: bool,
 ) -> int:
-    """Plan from the database, work through the plan, summarise, refresh. Returns the exit code.
-
-    One engine, one raw store and one EDGAR client for the whole run, shared by
-    every worker. The client is opened even for a run that will only reprocess,
-    because opening it sends nothing; the plan is what keeps such a run off
-    the network, by giving the workers nothing to fetch.
-
-    The run is ``partial`` whenever this exits non-zero without raising: a
-    filing failed, EDGAR blocked the run, or Ctrl-C stopped it short. Each
-    failed filing is a line of ``ingestion_run.error``, as on its queue row.
+    """The job, its progress and summary, then the refresh. Returns the exit code.
 
     The views are refreshed after the run is recorded, as a ``refresh-views``
     run of its own, whenever a filing loaded, however the backfill ended. A
@@ -1491,133 +1301,39 @@ async def _backfill(
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
     started = time.monotonic()
+    total = 0
 
-    async with track_run(
-        settings,
-        "backfill_13f",
-        filer=slug,
-        since=since,
-        concurrency=concurrency,
-        limit=limit,
-        force=force,
-        refresh_views=refresh,
-    ) as run:
-        engine = create_engine(settings)
-        sessions = create_session_factory(engine)
-        backfilled = BackfillRun(results=(), rate_limited=None)
-        try:
-            async with sessions.begin() as session:
-                plan = await plan_backfill(
-                    session, slug=slug, since=since, force=force, limit=limit
-                )
-            _echo_plan(plan, slug=slug, since=since, concurrency=concurrency)
-            run.items_seen = len(plan.work)
+    def planned(plan: BackfillPlan) -> None:
+        nonlocal total
+        total = len(plan.work)
+        _echo_plan(plan, slug=slug, since=since, concurrency=concurrency)
 
-            if plan.work:
-                async with open_raw_store(settings) as store, EdgarClient(settings) as edgar:
-                    shared = _Shared(sessions=sessions, store=store, edgar=edgar)
-                    with stop_on_interrupt(notify=_echo_stopping) as stop:
-                        backfilled = await run_backfill(
-                            plan.work,
-                            process=partial(_backfill_filing, shared),
-                            on_failure=partial(record_attempt, sessions),
-                            on_result=_progress(len(plan.work)),
-                            concurrency=concurrency,
-                            stop=stop,
-                        )
-        finally:
-            await engine.dispose()
-
-        run.items_written = backfilled.count(Outcome.OK) + backfilled.count(Outcome.SUSPECT)
-        run.errors.extend(
-            f"{result.filing.accession_no}: {result.error}"
-            for result in backfilled.results
-            if result.outcome is Outcome.FAILED
-        )
-        not_started = backfilled.count(Outcome.NOT_STARTED)
-        if not_started:
-            run.errors.append(f"stopped with {not_started} not started; re-run to resume")
-        if run.items_written:
-            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
-
-    _echo_backfill_summary(plan, backfilled, elapsed=time.monotonic() - started)
-    if refresh and run.items_written:
-        await _refresh(settings, after=run.id)
-    if backfilled.rate_limited is not None or backfilled.count(Outcome.FAILED):
-        return 1
-    return _INTERRUPTED if backfilled.count(Outcome.NOT_STARTED) else 0
-
-
-@dataclass(frozen=True, slots=True)
-class _Shared:
-    """What every worker in a run shares."""
-
-    sessions: async_sessionmaker[AsyncSession]
-    store: RawStore
-    edgar: EdgarClient
-
-
-async def _backfill_filing(shared: _Shared, filing: PlannedFiling) -> FilingResult:
-    """One filing, archived before it is parsed and parsed before it is loaded.
-
-    A filing the plan has as loaded is in the work only because of ``--force``,
-    and is reprocessed: its archived documents, parsed again with the
-    ``filed_at`` its row already holds. That branch makes no EDGAR request. The
-    other is ``ingest-filing``'s, except that it never overwrites an archived
-    document — backfill does not replace what it has with what EDGAR serves
-    today, and ``ingest-filing --force`` is there for the filing that should.
-    """
-    accession = filing.accession_no
-    if filing.loaded is None:
-        submission, documents = await _fetch(shared.edgar, accession, cik=filing.cik)
-        raw_prefix = await archive_13f_documents(
-            shared.store, documents, cik=filing.cik, accession_no=accession
-        )
-        filed_at = submission.filed_at
-    else:
-        if filing.loaded.raw_key is None:
-            raise CommandError(
-                f"{accession} was loaded before its documents were archived, so there is "
-                f"nothing to reprocess: ingest-filing {accession} --force fetches them again"
-            )
-        raw_prefix = filing.loaded.raw_key
-        documents = await read_13f_documents(
-            shared.store, raw_prefix, directory_url=_directory_url(filing)
-        )
-        filed_at = filing.loaded.filed_at
-
-    parsed = _parse(documents, filed_at=filed_at)
-    async with shared.sessions.begin() as session:
-        result, published = await _write(
-            session,
-            accession=accession,
-            filed_at=filed_at,
-            parsed=parsed,
-            raw_prefix=raw_prefix,
-            source_url=documents.primary_doc_url,
-        )
-    _log_ingested(parsed, result, published)
-
-    return FilingResult(
-        filing=filing,
-        outcome=(
-            Outcome.SUSPECT if parsed.normalised.parse_status is ParseStatus.SUSPECT else Outcome.OK
-        ),
-        period=parsed.cover.period_of_report,
-        rows=_positions(parsed.table, result),
-        deferred=result.holdings_deferred,
+    progress = Progress(
+        planned=planned,
+        finished=_progress(lambda: total),
+        stopping=_echo_stopping,
     )
+    try:
+        ran = await ingest_pending_filings(
+            settings,
+            filer=slug,
+            since=since,
+            concurrency=concurrency,
+            limit=limit,
+            force=force,
+            progress=progress,
+        )
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return 0
+    backfilled = ran.value
 
-
-def _directory_url(filing: PlannedFiling) -> str:
-    """The EDGAR directory an archived filing was fetched from.
-
-    Taken from the URL recorded when it was, rather than rebuilt from today's
-    archive convention, which is the reason ``filing.source_url`` is kept.
-    """
-    if filing.loaded is not None and filing.loaded.source_url is not None:
-        return filing.loaded.source_url.rsplit("/", 1)[0]
-    return EdgarClient.filing_index_url(filing.cik, filing.accession_no).rsplit("/", 1)[0]
+    _echo_backfill_summary(backfilled.plan, backfilled.ran, elapsed=time.monotonic() - started)
+    if refresh and ran.run.items_written:
+        await _refresh_after(settings, ran.run.id)
+    if backfilled.failed:
+        return 1
+    return _INTERRUPTED if backfilled.not_started else 0
 
 
 def _echo_plan(
@@ -1642,19 +1358,20 @@ def _echo_plan(
         _line("hint", "nothing is queued or loaded; discover-filings finds the work")
 
 
-def _progress(total: int) -> Callable[[FilingResult], None]:
+def _progress(total: Callable[[], int]) -> Callable[[FilingResult], None]:
     """A printer for ``[347/2103] berkshire-hathaway 2022Q3 · 41 rows · ok``.
 
     Numbered in the order filings finish, which with several in flight is not
     quite the order they started, so the count always reads as how far along
-    the run is.
+    the run is. ``total`` is asked as each prints, since the plan that knows
+    it is made inside the job.
     """
     finished = 0
 
     def echo(result: FilingResult) -> None:
         nonlocal finished
         finished += 1
-        typer.echo(f"[{finished}/{total}] {_describe(result)}")
+        typer.echo(f"[{finished}/{total()}] {_describe(result)}")
 
     return echo
 
@@ -1738,7 +1455,7 @@ def ingest_form4_command(
             "--concurrency",
             metavar="N",
             min=1,
-            max=_MAX_CONCURRENCY,
+            max=MAX_CONCURRENCY,
             help="Filings in flight at once. All of them share one EDGAR rate limit.",
         ),
     ] = 5,
@@ -1794,137 +1511,40 @@ def ingest_form4_command(
 
 
 async def _ingest_form4(*, concurrency: int, limit: int | None, force: bool) -> int:
-    """Plan, load, summarise. Returns the exit code.
-
-    No snapshot or view reads these tables, so there is nothing to refresh.
-    ``insider_cluster`` is derived from them, so a run that loaded anything
-    rebuilds it, in a transaction of its own after the loads, and then drops
-    the API's cache: the insider feed reads the lines live.
-    """
+    """The job, its progress and summary. Returns the exit code."""
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
     started = time.monotonic()
-    loaded: dict[str, _Form4Loaded] = {}
+    total = 0
 
-    async with track_run(
-        settings, "ingest-form4", concurrency=concurrency, limit=limit, force=force
-    ) as run:
-        engine = create_engine(settings)
-        sessions = create_session_factory(engine)
-        ran = BackfillRun(results=(), rate_limited=None)
-        try:
-            # A transaction of its own: creating a partition blocks reads of
-            # the table until it commits, so it is not held through the run.
-            async with sessions.begin() as session:
-                created = await ensure_partitions(session, through=next_year())
-            if created:
-                run.metrics["partitions_created"] = _partition_metrics(created)
-                _echo_partitions(created)
-            async with sessions.begin() as session:
-                plan = await plan_form4(session, force=force, limit=limit)
-            _echo_form4_plan(plan, concurrency=concurrency)
-            run.items_seen = len(plan.work)
+    def planned(plan: BackfillPlan) -> None:
+        nonlocal total
+        total = len(plan.work)
+        _echo_form4_plan(plan, concurrency=concurrency)
 
-            if plan.work:
-                async with open_raw_store(settings) as store, EdgarClient(settings) as edgar:
-                    shared = _Shared(sessions=sessions, store=store, edgar=edgar)
-                    with stop_on_interrupt(notify=_echo_stopping) as stop:
-                        ran = await run_backfill(
-                            plan.work,
-                            process=partial(_ingest_form4_filing, shared, loaded),
-                            on_failure=partial(record_attempt, sessions),
-                            on_result=_form4_progress(len(plan.work), loaded),
-                            concurrency=concurrency,
-                            stop=stop,
-                        )
-        finally:
-            await engine.dispose()
-
-        run.items_written = ran.count(Outcome.OK)
-        run.errors.extend(
-            f"{result.filing.accession_no}: {result.error}"
-            for result in ran.results
-            if result.outcome is Outcome.FAILED
-        )
-        not_started = ran.count(Outcome.NOT_STARTED)
-        if not_started:
-            run.errors.append(f"stopped with {not_started} not started; re-run to resume")
-        results = [entry.result for entry in loaded.values()]
-        run.metrics |= {
-            "lines_written": sum(result.lines_written for result in results),
-            "lines_superseded": sum(result.lines_superseded for result in results),
-            "security_links": dict(Counter(result.security_link.value for result in results)),
-            "amendments": dict(
-                Counter(result.amendment.value for result in results if result.amendment)
-            ),
-        }
-        clusters = None
-        if loaded:
-            clusters = await _rebuild_clusters(settings)
-            run.metrics["clusters"] = _cluster_metrics(clusters)
-            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
-
-    _echo_form4_summary(plan, ran, loaded, elapsed=time.monotonic() - started)
-    if clusters is not None:
-        _echo_clusters(clusters)
-    if ran.rate_limited is not None or ran.count(Outcome.FAILED):
-        return 1
-    return _INTERRUPTED if not_started else 0
-
-
-@dataclass(frozen=True, slots=True)
-class _Form4Loaded:
-    """What one filing's load did, for its progress line and the summary."""
-
-    document: Form4Document
-    result: Form4LoadResult
-
-
-async def _ingest_form4_filing(
-    shared: _Shared, loaded: dict[str, _Form4Loaded], filing: PlannedFiling
-) -> FilingResult:
-    """One Form 4: fetched and archived, or read back from the archive when
-    it is loaded already (``--force``), then parsed and loaded, replacing what
-    an earlier load wrote in the second case."""
-    accession = filing.accession_no
-    if filing.loaded is None:
-        documents = await fetch_form4_documents(
-            shared.edgar, cik=filing.cik, accession_no=accession
-        )
-        raw_prefix = await archive_form4_documents(
-            shared.store, documents, cik=filing.cik, accession_no=accession
-        )
-    else:
-        if filing.loaded.raw_key is None:
-            raise CommandError(f"{accession} was loaded without its documents archived")
-        raw_prefix = filing.loaded.raw_key
-        documents = await read_form4_documents(
-            shared.store, raw_prefix, directory_url=_directory_url(filing)
-        )
-
-    document = parse_form4(documents.document)
-    async with shared.sessions.begin() as session:
-        result = await load_form4(
-            session,
-            accession_no=accession,
-            filed_at=documents.filed_at,
-            document=document,
-            raw_key=raw_prefix,
-            source_url=documents.document_url,
-            replace=filing.loaded is not None,
-        )
-        await mark_ingested(session, accession)
-    logger.info(
-        "form4.ingested",
-        filing_id=result.filing_id,
-        issuer_cik=document.issuer.cik,
-        lines=result.lines,
-        lines_written=result.lines_written,
-        security_link=result.security_link.value,
-        superseded_by=result.superseded_by,
+    progress = Form4Progress(
+        partitions_created=_echo_partitions,
+        planned=planned,
+        finished=_form4_progress(lambda: total),
+        stopping=_echo_stopping,
     )
-    loaded[accession] = _Form4Loaded(document=document, result=result)
-    return FilingResult(filing=filing, outcome=Outcome.OK, period=None, rows=result.lines)
+    try:
+        ran = await ingest_form4(
+            settings, concurrency=concurrency, limit=limit, force=force, progress=progress
+        )
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return 0
+    ingested = ran.value
+
+    _echo_form4_summary(
+        ingested.plan, ingested.ran, ingested.loaded, elapsed=time.monotonic() - started
+    )
+    if ingested.clusters is not None:
+        _echo_clusters(ingested.clusters)
+    if ingested.failed:
+        return 1
+    return _INTERRUPTED if ingested.not_started else 0
 
 
 def _echo_form4_plan(plan: BackfillPlan, *, concurrency: int) -> None:
@@ -1945,26 +1565,27 @@ def _echo_form4_plan(plan: BackfillPlan, *, concurrency: int) -> None:
         _line("hint", "nothing is queued or loaded; crawl-form4 finds the work")
 
 
-def _form4_progress(total: int, loaded: dict[str, _Form4Loaded]) -> Callable[[FilingResult], None]:
+def _form4_progress(
+    total: Callable[[], int],
+) -> Callable[[FilingResult, Form4Loaded | None], None]:
     """``[12/280] 0001062993-26-000001 4/A  Elastic N.V. · ABBASI SOHAIB · 3 lines · ESTC``."""
     finished = 0
 
-    def echo(result: FilingResult) -> None:
+    def echo(result: FilingResult, entry: Form4Loaded | None) -> None:
         nonlocal finished
         finished += 1
         accession = result.filing.accession_no
-        entry = loaded.get(accession)
         if entry is None:
             typer.echo(
-                f"[{finished}/{total}] {accession} · {result.outcome.value} · {result.error}"
+                f"[{finished}/{total()}] {accession} · {result.outcome.value} · {result.error}"
             )
             return
-        typer.echo(f"[{finished}/{total}] {accession} {_form4_line(entry)}")
+        typer.echo(f"[{finished}/{total()}] {accession} {_form4_line(entry)}")
 
     return echo
 
 
-def _form4_line(entry: _Form4Loaded) -> str:
+def _form4_line(entry: Form4Loaded) -> str:
     document, result = entry.document, entry.result
     parts = [
         document.issuer.name,
@@ -1985,7 +1606,7 @@ def _form4_line(entry: _Form4Loaded) -> str:
 
 
 def _echo_form4_summary(
-    plan: BackfillPlan, run: BackfillRun, loaded: dict[str, _Form4Loaded], *, elapsed: float
+    plan: BackfillPlan, run: BackfillRun, loaded: dict[str, Form4Loaded], *, elapsed: float
 ) -> None:
     not_started = run.count(Outcome.NOT_STARTED)
     counts = [
@@ -2064,15 +1685,11 @@ async def _create_partitions(through: int) -> None:
         async with session_scope(settings) as session:
             created = await ensure_partitions(session, through=through)
         run.items_written = len(created)
-        run.metrics["partitions_created"] = _partition_metrics(created)
+        run.metrics["partitions_created"] = partition_metrics(created)
     if not created:
         typer.echo(f"create-partitions  every year through {through} has a partition")
     else:
         _echo_partitions(created)
-
-
-def _partition_metrics(created: list[CreatedPartition]) -> dict[str, int]:
-    return {partition.name: partition.rows_moved for partition in created}
 
 
 def _echo_partitions(created: list[CreatedPartition]) -> None:
@@ -2115,34 +1732,12 @@ async def _detect_clusters() -> None:
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
     async with track_run(settings, "detect-clusters") as run:
-        clusters = await _rebuild_clusters(settings)
+        clusters = await rebuild_clusters(settings)
         run.items_seen = clusters.lines.total()
         run.items_written = sum(clusters.written.values())
-        run.metrics["clusters"] = _cluster_metrics(clusters)
-        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+        run.metrics["clusters"] = cluster_metrics(clusters)
+        run.metrics["cache_invalidated"] = await invalidate_cache(settings)
     _echo_clusters(clusters)
-
-
-async def _rebuild_clusters(settings: Settings) -> ClusterRebuild:
-    async with session_scope(settings) as session:
-        clusters = await detect_clusters(session)
-    logger.info(
-        "insider_cluster.detected",
-        episodes=clusters.episodes,
-        added=len(clusters.added),
-        removed=len(clusters.removed),
-        lines=dict(clusters.lines),
-    )
-    return clusters
-
-
-def _cluster_metrics(clusters: ClusterRebuild) -> dict[str, object]:
-    return {
-        "episodes": clusters.episodes,
-        "added": len(clusters.added),
-        "removed": len(clusters.removed),
-        "lines": dict(clusters.lines),
-    }
 
 
 def _echo_clusters(clusters: ClusterRebuild) -> None:
@@ -2298,7 +1893,7 @@ async def _seed_investors(path: Path, *, dry_run: bool) -> None:
         # A renamed filer's old slug is in cached lists of a closed period's
         # owners, kept for a day.
         if run.items_written:
-            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+            run.metrics["cache_invalidated"] = await invalidate_cache(settings)
 
         logger.info(
             "investors.seeded",
@@ -2727,74 +2322,18 @@ async def _recompute(
     described = " ".join(
         [*([] if slug is None else [slug]), *([] if period is None else [_quarter(period)])]
     )
-
-    async with track_run(
-        settings,
-        "recompute",
-        filer=slug,
-        period=period,
-        include_suspect=include_suspect,
-        refresh_views=refresh,
-    ) as run:
-        async with session_scope(settings) as session:
-            filer_id = await _filer_id(session, slug)
-            scope = await resolve_scope(session, filer_id=filer_id, period=period)
-            rebuilt = await recompute(session, scope, include_suspect=include_suspect)
-        # Now, not only after the refresh below: portfolios are read from the
-        # rebuilt tables, not the views, and the refresh may be skipped.
-        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
-        rebuild, changes = rebuilt.snapshot, rebuilt.changes
-        # Periods, not positions, so that the gap between the two is the
-        # periods withheld for a suspect filing.
-        run.items_seen = rebuild.periods + rebuild.withheld
-        run.items_written = rebuild.periods
-
-        logger.info(
-            "position_snapshot.recomputed",
-            filer=slug,
-            period=None if period is None else _quarter(period),
-            positions=rebuild.positions,
-            periods=rebuild.periods,
-            suspect_periods=rebuild.suspect_periods,
-            include_suspect=include_suspect,
+    try:
+        ran = await recompute_positions(
+            settings, filer=slug, period=period, include_suspect=include_suspect
         )
-        logger.info(
-            "position_change.recomputed",
-            filer=slug,
-            period=None if period is None else _quarter(period),
-            following_periods=len(rebuilt.following),
-            new=changes.new,
-            add=changes.add,
-            trim=changes.trim,
-            hold=changes.hold,
-            exit=changes.exit,
-        )
-        logger.info(
-            "implied_price.recomputed",
-            filer=slug,
-            period=None if period is None else _quarter(period),
-            prices=rebuilt.prices.prices,
-            high=rebuilt.prices.high,
-            medium=rebuilt.prices.medium,
-            low=rebuilt.prices.low,
-            unpriced=rebuilt.prices.unpriced,
-        )
-        logger.info(
-            "security_split.recomputed",
-            filer=slug,
-            period=None if period is None else _quarter(period),
-            splits=len(rebuilt.splits.splits),
-            added=len(rebuilt.splits.added),
-            removed=len(rebuilt.splits.removed),
-            rerated=len(rebuilt.splits.rerated),
-            crossing_pairs=len(rebuilt.crossing),
-            split_changes=changes.split,
-        )
-    _echo_rebuild(rebuilt, scope=described or "every filer")
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
+    _echo_rebuild(ran.value, scope=described or "every filer")
     # Even after a rebuild that published nothing: it may have deleted rows
     # that the views still count.
     if refresh:
-        await _refresh(settings, after=run.id)
+        await _refresh_after(settings, ran.run.id)
 
 
 def _echo_rebuild(rebuilt: Recomputed, *, scope: str) -> None:
@@ -2951,7 +2490,7 @@ async def _detect_splits(period: date | None, *, dry_run: bool, refresh: bool) -
         run.items_seen = len(splits.splits)
         if not dry_run:
             run.items_written = len(splits.moved)
-            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+            run.metrics["cache_invalidated"] = await invalidate_cache(settings)
         run.metrics["crossing_pairs"] = len(found.crossing)
         run.metrics["outliers"] = len(splits.outliers)
 
@@ -2971,7 +2510,7 @@ async def _detect_splits(period: date | None, *, dry_run: bool, refresh: bool) -
         found, names, scope="every quarter" if period is None else _quarter(period), dry_run=dry_run
     )
     if refresh and not dry_run:
-        await _refresh(settings, after=run.id)
+        await _refresh_after(settings, run.id)
 
 
 async def _security_names(session: AsyncSession, ids: set[int]) -> dict[int, str]:
@@ -3084,6 +2623,11 @@ async def _refresh_views(view: str | None, *, concurrent: bool) -> None:
     await _refresh(settings, view=view, concurrent=concurrent)
 
 
+async def _refresh_after(settings: Settings, after: uuid.UUID) -> None:
+    """``refresh-views`` after a run that published, naming that run."""
+    await _refresh(settings, after=after)
+
+
 async def _refresh(
     settings: Settings,
     *,
@@ -3093,41 +2637,16 @@ async def _refresh(
 ) -> None:
     """One ``refresh-views`` run, by hand or after a run that published.
 
-    Always a run of its own, never part of the run before it. That one has
-    committed, and its row says how it went. A refresh that fails after it is
-    this row's failure, not a reason to report a finished rebuild as failed.
-
-    :param after: The run whose publishing this follows, kept in ``context``
-        as ``after_run_id``. ``None`` when run by hand.
+    A refresh already running is left to finish what this one would have
+    done; this one says so and does nothing.
     """
     started = time.perf_counter()
-    async with track_run(
-        settings, "refresh-views", view=view, concurrent=concurrent, after_run_id=after
-    ) as run:
-        async with session_scope(settings) as session:
-            views = await refresh_order(session, only=view)
-            run.items_seen = len(views)
-            refreshed = await refresh_views(session, views, concurrently=concurrent, run_id=run.id)
-        run.items_written = len(refreshed)
-        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
-        run.metrics["views"] = {
-            done.name: {
-                "seconds": round(done.seconds, 3),
-                "rows": done.rows,
-                "concurrently": done.concurrently,
-            }
-            for done in refreshed
-        }
-        # After the commit, so a line never reports a refresh that rolled back.
-        for done in refreshed:
-            logger.info(
-                "materialised_view.refreshed",
-                view=done.name,
-                rows=done.rows,
-                concurrently=done.concurrently,
-                seconds=round(done.seconds, 3),
-            )
-    _echo_refreshed(refreshed, elapsed=time.perf_counter() - started, concurrent=concurrent)
+    try:
+        ran = await refresh_matviews(settings, view=view, concurrent=concurrent, after_run_id=after)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
+    _echo_refreshed(ran.value.views, elapsed=time.perf_counter() - started, concurrent=concurrent)
 
 
 def _echo_refreshed(refreshed: list[Refreshed], *, elapsed: float, concurrent: bool) -> None:
@@ -3145,32 +2664,6 @@ def _echo_refreshed(refreshed: list[Refreshed], *, elapsed: float, concurrent: b
             f"  {view.name:<{width}}  {_count(view.rows, 'row'):>14}  "
             f"{_duration(view.seconds):>6}{how}"
         )
-
-
-# --- the API's cache ---------------------------------------------------------
-
-
-async def _invalidate_cache(settings: Settings) -> int | None:
-    """Drop every response the API has cached. How many, or None if Redis could not be reached.
-
-    After a commit, never before: a request between the two would cache the
-    old answer again. A Redis that cannot be reached does not fail the run,
-    whose data is committed and served; the error is logged, and until it
-    expires what was cached is served as it was — up to a day for a closed
-    period.
-    """
-    redis = create_redis(settings)
-    try:
-        deleted = await invalidate(redis)
-    except RedisError as exc:
-        # The message, not the traceback: a refused connection's says no more,
-        # and its lines would not carry the run's id.
-        logger.error("cache.invalidate_failed", error=str(exc))
-        return None
-    finally:
-        await redis.aclose()
-    logger.info("cache.invalidated", keys=deleted)
-    return deleted
 
 
 # --- reconcile ---------------------------------------------------------------
@@ -3635,7 +3128,7 @@ async def _import_13f_list(period: date, *, path: Path | None, force: bool) -> N
 
         # The API serves delisted_by, and the ticker ranges a delisting ends.
         if delistings.flagged or delistings.relisted:
-            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+            run.metrics["cache_invalidated"] = await invalidate_cache(settings)
         run.metrics |= {
             "delisted_flagged": delistings.flagged,
             "relisted": delistings.relisted,
@@ -3800,51 +3293,17 @@ async def _resolve_cusips(*, limit: int | None, force: bool) -> None:
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
     started = time.perf_counter()
-
-    async with track_run(settings, "resolve-cusips", limit=limit, force=force) as run:
-        engine = create_engine(settings)
-        sessions = create_session_factory(engine)
-        try:
-            async with OpenFIGIClient(settings, DatabaseResponseLog(sessions)) as figi:
-                report = await resolve_securities(sessions, figi, limit=limit, force=force)
-            async with sessions() as session:
-                coverage = await cusip_coverage(session, top=0)
-        finally:
-            await engine.dispose()
-        run.items_seen = report.candidates
-        run.items_written = report.changed
-        delistings = report.delistings
-        if report.changed or (delistings and (delistings.flagged or delistings.relisted)):
-            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
-        run.metrics |= {
-            "resolved": {
-                (source.value if source is not None else "none"): report.count(source)
-                for source in (*ResolutionSource, None)
-                if report.count(source)
-            },
-            "misses_retried": report.misses_retried,
-            "kept": report.kept,
-            "renamed": report.renamed,
-            "delisted_flagged": delistings.flagged if delistings else 0,
-            "relisted": delistings.relisted if delistings else 0,
-            "collisions": len(coverage.collisions),
-            "reviews_queued": report.reviews_queued,
-            "reviews_superseded": report.reviews_superseded,
-            "coverage_value_pct": _float_pct(coverage.value_pct),
-            "coverage_row_pct": _float_pct(coverage.row_pct),
-        }
-        logger.info(
-            "resolution.finished",
-            candidates=report.candidates,
-            changed=report.changed,
-            openfigi=report.count(ResolutionSource.OPENFIGI),
-            sec_13f_list=report.count(ResolutionSource.SEC_13F_LIST),
-            unnamed=report.count(None),
-            reviews_queued=report.reviews_queued,
-            coverage_value_pct=_float_pct(coverage.value_pct),
-        )
+    try:
+        ran = await resolve_cusips(settings, limit=limit, force=force)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
     _echo_resolved(
-        report, coverage, limit=limit, force=force, elapsed=time.perf_counter() - started
+        ran.value.report,
+        ran.value.coverage,
+        limit=limit,
+        force=force,
+        elapsed=time.perf_counter() - started,
     )
 
 
@@ -3967,9 +3426,9 @@ async def _cusip_coverage(*, top: int, threshold: Decimal) -> bool:
             coverage = await cusip_coverage(session, top=top)
         run.items_seen = coverage.securities
         run.metrics |= {
-            "value_pct": _float_pct(coverage.value_pct),
-            "row_pct": _float_pct(coverage.row_pct),
-            "published_value_pct": _float_pct(coverage.published_value_pct),
+            "value_pct": float_pct(coverage.value_pct),
+            "row_pct": float_pct(coverage.row_pct),
+            "published_value_pct": float_pct(coverage.published_value_pct),
             "threshold_pct": float(threshold),
             "passes": coverage.passes(threshold),
             "pending_reviews": coverage.pending_reviews,
@@ -4115,7 +3574,7 @@ async def _resolve_cusip(cusip: str, ticker: str, *, note: str | None) -> None:
                     f"no filing has reported {cusip}: there is no security to resolve"
                 ) from failure
         run.items_written = 1
-        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+        run.metrics["cache_invalidated"] = await invalidate_cache(settings)
         logger.info(
             "resolution.manual",
             cusip=cusip,
@@ -4250,7 +3709,7 @@ async def _ticker_alias(
                 ) from failure
             await flag_delistings(session)
         run.items_written = 1
-        run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
+        run.metrics["cache_invalidated"] = await invalidate_cache(settings)
     _echo_ticker_alias(entry, normalised, valid_from=valid_from, valid_to=valid_to, note=note)
 
 
@@ -4314,32 +3773,12 @@ async def _fetch_quotes(tickers: list[str] | None) -> None:
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
     started = time.perf_counter()
-
-    async with track_run(
-        settings, "fetch-quotes", provider=settings.quote_provider, tickers=tickers
-    ) as run:
-        provider = quote_provider(settings)
-        engine = create_engine(settings)
-        try:
-            report = await fetch_quotes(
-                create_session_factory(engine), provider, tickers=tickers or None
-            )
-        finally:
-            await engine.dispose()
-        run.items_seen = report.asked
-        run.items_written = report.written
-        if report.written:
-            run.metrics["cache_invalidated"] = await _invalidate_cache(settings)
-        run.metrics |= {
-            "provider": report.provider,
-            "listed": report.listed,
-            "latest": report.latest.isoformat() if report.latest else None,
-            "missing": len(report.missing),
-            "failed": len(report.failed),
-            "ambiguous": len(report.ambiguous),
-        }
-        run.errors += [f"{ticker}: {error}" for ticker, error in report.failed.items()]
-    _echo_quotes(report, tickers=tickers, elapsed=time.perf_counter() - started)
+    try:
+        ran = await fetch_prices(settings, tickers=tickers)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
+    _echo_quotes(ran.value, tickers=tickers, elapsed=time.perf_counter() - started)
 
 
 def _echo_quotes(report: QuoteReport, *, tickers: list[str] | None, elapsed: float) -> None:
@@ -4393,10 +3832,6 @@ def _held(value: Decimal) -> str:
 
 def _pct_text(pct: Decimal | None) -> str:
     return "n/a" if pct is None else f"{pct:.2f}%"
-
-
-def _float_pct(pct: Decimal | None) -> float | None:
-    return None if pct is None else round(float(pct), 4)
 
 
 if __name__ == "__main__":

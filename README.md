@@ -1289,13 +1289,54 @@ it by hand. Tasks are `shared_task`, and name their queue in the decorator.
 
 **Sync tasks, async pipeline.** Celery is not async and is not going to be. A
 task's body bridges with `asyncio.run`, one event loop per task, which is what
-`session_scope` and the EDGAR limiter are built for:
+`session_scope` and the EDGAR limiter are built for.
 
-```python
-@shared_task(bind=True, queue=INGESTION_QUEUE, max_retries=3)
-def ingest_filing_task(self, accession_no: str) -> dict:
-    return asyncio.run(_ingest_filing(accession_no))
+**One implementation, two entry points.** Each job is an `async` function
+decorated with `@tracked_task` ([app/jobs/tracking.py](app/jobs/tracking.py)),
+and its CLI verb and its Celery task both call it. The decorator does what
+neither should have to remember: it takes the job's advisory lock, runs the
+body inside `track_run`, and binds `job_name` and `run_id` on every line.
+
+| Task | Queue | CLI verb | `job_name` |
+| --- | --- | --- | --- |
+| `discover_13f_filings` | ingestion | `discover-filings` | `discover-filings` |
+| `ingest_pending_filings` | ingestion | `backfill` | `backfill_13f` |
+| `crawl_form4_daily` | ingestion | `crawl-form4 --catch-up` | `crawl-form4` |
+| `ingest_form4` | ingestion | `ingest-form4` | `ingest-form4` |
+| `resolve_cusips` | ingestion | `resolve-cusips` | `resolve-cusips` |
+| `fetch_prices` | ingestion | `fetch-quotes` | `fetch-quotes` |
+| `recompute_positions` | compute | `recompute` | `recompute` |
+| `refresh_matviews` | compute | `refresh-views` | `refresh-views` |
+
+```bash
+celery -A app.jobs.celery_app:celery_app call app.jobs.tasks.fetch_prices
+celery -A app.jobs.celery_app:celery_app call app.jobs.tasks.recompute_positions \
+    --kwargs '{"period": "2026Q1"}'
 ```
+
+**One run at a time.** A job holds
+`pg_try_advisory_lock(hashtext('job:<job_name>'))` on a connection of its own
+for as long as it runs ([app/jobs/locks.py](app/jobs/locks.py)). A run that
+finds it taken — beat firing while the last run is still going, a person
+running the verb next to the worker — does nothing and records nothing: the
+task returns `{"skipped": "locked"}` and succeeds, the verb prints
+`skipped: ...` and exits 0. A process that dies holding the lock releases it
+with its connection.
+
+**Retries, for transient failures only**
+([app/jobs/retry.py](app/jobs/retry.py)): a dropped connection, a 5xx or 429
+from EDGAR or OpenFIGI, a Postgres deadlock, serialisation failure or restart.
+Three retries, exponential backoff with full jitter from a minute, capped at
+fifteen, never sooner than a `Retry-After`. A 403 from EDGAR, a parse error, a
+bug or a soft time limit fails the task the first time. Each attempt is a run
+of its own in `ingestion_run`.
+
+**Chains.** `thirteen_f_chain()` in [app/jobs/tasks.py](app/jobs/tasks.py) is
+ingest → recompute → refresh: the recompute rebuilds the `(filer, period)`
+pairs the ingest published, and the refresh names the recompute's run in
+`after_run_id`. A link whose predecessor did nothing skips. `thirteen_f_poll()`
+puts discovery in front; `form4_chain()` is the crawl and then its ingest.
+Nothing schedules them yet.
 
 **Redelivered, not lost.** `task_acks_late` acknowledges a message when its
 task finishes, and a prefetch of one means a worker holds nothing it has not

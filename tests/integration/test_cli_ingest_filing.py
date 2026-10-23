@@ -642,7 +642,7 @@ def test_a_failed_ingest_is_counted_on_the_queue_row(
 
     [(status, attempts, last_error)] = _queue_row(migrated_engine)
     assert (status, attempts) == ("failed", 2)
-    assert last_error.startswith("CommandError: ")
+    assert last_error.startswith("JobError: ")
     assert "13F" in last_error
 
 

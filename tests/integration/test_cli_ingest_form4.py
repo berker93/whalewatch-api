@@ -119,7 +119,7 @@ def redis(monkeypatch: pytest.MonkeyPatch) -> FakeRedis:
     """The API's cache, which a run that loads something drops: the insider
     feed reads these tables live."""
     fake = FakeRedis()
-    monkeypatch.setattr("app.cli.create_redis", lambda settings: fake)
+    monkeypatch.setattr("app.jobs.cache.create_redis", lambda settings: fake)
     return fake
 
 
@@ -374,7 +374,7 @@ def test_limit_holds_back_the_rest(runner: CliRunner, migrated_engine: AsyncEngi
 def a_year_ahead(monkeypatch: pytest.MonkeyPatch, migrated_engine: AsyncEngine) -> Iterator[None]:
     """A calendar a year on from the migration's last partition, and that
     partition dropped again afterwards: the run commits it."""
-    monkeypatch.setattr("app.cli.next_year", lambda: 2028)
+    monkeypatch.setattr("app.jobs.form4.next_year", lambda: 2028)
     yield
     _execute(migrated_engine, text("DROP TABLE IF EXISTS insider_transaction_2028"))
 

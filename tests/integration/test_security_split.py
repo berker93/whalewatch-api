@@ -466,7 +466,7 @@ def committed(
 ) -> Iterator[AsyncEngine]:
     """For the command, which commits: tables truncated around the test."""
     monkeypatch.setattr("app.cli.get_settings", lambda: settings)
-    monkeypatch.setattr("app.cli.create_redis", lambda settings: FakeRedis())
+    monkeypatch.setattr("app.jobs.cache.create_redis", lambda settings: FakeRedis())
     _truncate(migrated_engine)
     yield migrated_engine
     _truncate(migrated_engine)

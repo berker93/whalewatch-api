@@ -431,7 +431,13 @@ Beat schedule in `app/jobs/schedule.py`:
 
 Everything is also a CLI verb (`app/cli.py`: `ingest-filing`, `backfill`,
 `recompute`, `refresh-views`) so that a bad quarter can be re-run by hand without
-a broker in the loop.
+a broker in the loop. A verb and its task call one `@tracked_task` job
+([app/jobs/tracking.py](../app/jobs/tracking.py)), which holds a Postgres
+advisory lock named after the job for the run, so two runs of one job never
+overlap: the second does nothing, records nothing, and succeeds. Tasks retry
+transient failures only ([app/jobs/retry.py](../app/jobs/retry.py)), and the
+13F tasks chain ingest → recompute → refresh
+([app/jobs/tasks.py](../app/jobs/tasks.py)).
 
 **Idempotency.** Every task is keyed on `accession_no` and safe to run twice.
 Re-running a filing re-parses stored bytes and upserts; it does not duplicate and

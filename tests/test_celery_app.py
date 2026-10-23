@@ -86,7 +86,21 @@ def test_tasks_are_found_by_autodiscovery_not_imported() -> None:
 
         assert "app.jobs.tasks" not in sys.modules, "imported by hand"
         celery_app.loader.import_default_modules()
-        assert "app.jobs.tasks.ping" in celery_app.tasks, sorted(celery_app.tasks)
+        expected = {
+            f"app.jobs.tasks.{name}"
+            for name in (
+                "discover_13f_filings",
+                "ingest_pending_filings",
+                "crawl_form4_daily",
+                "ingest_form4",
+                "resolve_cusips",
+                "fetch_prices",
+                "recompute_positions",
+                "refresh_matviews",
+                "ping",
+            )
+        }
+        assert expected <= set(celery_app.tasks), sorted(celery_app.tasks)
         """
     )
     # conftest has set the two required variables in this process already.
@@ -111,4 +125,3 @@ def test_ping_makes_the_round_trip_through_a_worker() -> None:
 
     assert pong["pong"] is True
     assert pong["worker"]
-

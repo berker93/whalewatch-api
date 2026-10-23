@@ -568,7 +568,6 @@ def test_a_clean_run_is_recorded_and_every_log_line_carries_its_id(
         "concurrency": 2,
         "limit": None,
         "force": False,
-        "refresh_views": True,
     }
 
     # The refresh after it is a run of its own, and its lines carry its own id.

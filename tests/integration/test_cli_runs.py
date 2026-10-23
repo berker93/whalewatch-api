@@ -205,7 +205,7 @@ def test_a_command_that_publishes_drops_the_apis_cache(
     portfolios are read from the tables it rebuilds."""
     redis = FakeRedis()
     redis.values = {f"{KEY_PREFIX}investors.list_investors:0f0f": "{}", "not-the-caches": "kept"}
-    monkeypatch.setattr("app.cli.create_redis", lambda settings: redis)
+    monkeypatch.setattr("app.jobs.cache.create_redis", lambda settings: redis)
 
     result = runner.invoke(app, args)
 
