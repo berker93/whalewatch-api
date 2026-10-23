@@ -418,16 +418,21 @@ never queues a refresh behind it. Late acks, a prefetch of one and
 `task_reject_on_worker_lost`: a task killed mid-flight is redelivered, which the
 idempotency below makes safe. Time limits 30 minutes soft, 35 hard.
 
-Beat schedule in `app/jobs/schedule.py`:
+Beat schedule in `app/jobs/schedule.py`, in code, crontabs in New York time
+(see [the README](../README.md#the-schedule)):
 
-- **Daily** — `crawl-form4 --catch-up`: every day since the watermark. Late
-  evening New York time, or the next morning, so the day's index exists. Then
-  `ingest-form4` to load what it queued.
-- **Daily during filing season** — poll tracked filers' submissions JSON for new
-  13Fs. Outside the ~three weeks after each due date this finds nothing, so it
-  drops to weekly.
-- **After a period completes** — recompute `position_change`, then
-  `refresh-views`. Triggered by ingestion finishing, not by a clock.
+- **13F poll** — discover → ingest → recompute → refresh. Roughly 60% of a
+  year's 13Fs arrive in the days before each 45-day deadline, so every 30
+  minutes inside the filing windows (1–20 February, May, August, November;
+  `in_filing_window` in `app/core/periods.py`) and once a day, at 06:00,
+  outside them. One half-hourly entry whose task decides
+  (`should_poll_now`), not two entries.
+- **Form 4** — weekdays 22:00: `crawl-form4 --catch-up`, every day since the
+  watermark, then `ingest-form4` to load what it queued. A day whose index is
+  not published yet is picked up on the next run.
+- **Enrichment** — `fetch-quotes` weekdays 21:30, `resolve-cusips` daily 03:00.
+- **Views** — `refresh-views` nightly at 04:00, and after every 13F ingest
+  that published, as the last link of its chain.
 
 Everything is also a CLI verb (`app/cli.py`: `ingest-filing`, `backfill`,
 `recompute`, `refresh-views`) so that a bad quarter can be re-run by hand without

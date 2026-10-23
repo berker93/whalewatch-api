@@ -1,11 +1,12 @@
 """Quarters: the one parser every ``?period=`` goes through, and the arithmetic beside it."""
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from app.core.periods import (
     filing_deadline,
+    in_filing_window,
     is_quarter_end,
     parse_period,
     quarter_end,
@@ -202,3 +203,39 @@ def test_a_deadline_is_45_calendar_days_after_the_quarter(period: date, deadline
 def test_a_day_that_is_not_a_quarter_end_has_no_deadline() -> None:
     with pytest.raises(ValueError, match="not a quarter end"):
         filing_deadline(date(2026, 3, 30))
+
+
+# --- in_filing_window --------------------------------------------------------
+
+
+@pytest.mark.parametrize("month", [2, 5, 8, 11])
+def test_a_filing_window_is_the_first_to_the_twentieth(month: int) -> None:
+    assert not in_filing_window(date(2026, month, 1) - timedelta(days=1))
+    assert in_filing_window(date(2026, month, 1))
+    assert in_filing_window(date(2026, month, 20))
+    assert not in_filing_window(date(2026, month, 21))
+
+
+@pytest.mark.parametrize("month", [1, 3, 4, 6, 7, 9, 10, 12])
+def test_other_months_have_no_window(month: int) -> None:
+    assert not any(in_filing_window(date(2026, month, day)) for day in range(1, 29))
+
+
+def test_2025q4s_window_is_in_february_2026() -> None:
+    """Across the year boundary: the quarter ends in 2025 and is due in 2026."""
+    deadline = filing_deadline(date(2025, 12, 31))
+
+    assert deadline == date(2026, 2, 14)
+    assert in_filing_window(deadline)
+    assert not in_filing_window(date(2025, 12, 31))
+    assert not in_filing_window(date(2026, 1, 31))
+    assert in_filing_window(date(2026, 2, 1))
+
+
+@pytest.mark.parametrize("period", quarters_between(date(2015, 3, 31), date(2035, 12, 31)), ids=str)
+def test_every_deadline_has_two_weeks_before_it_and_its_roll_forward_after(period: date) -> None:
+    """filing_deadline() can be up to three days early: the real one, rolled
+    over a weekend and a holiday, is in the window too."""
+    deadline = filing_deadline(period)
+
+    assert all(in_filing_window(deadline + timedelta(days=d)) for d in range(-13, 4))

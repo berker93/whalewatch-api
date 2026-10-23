@@ -97,6 +97,8 @@ def test_tasks_are_found_by_autodiscovery_not_imported() -> None:
                 "fetch_prices",
                 "recompute_positions",
                 "refresh_matviews",
+                "poll_13f",
+                "daily_form4",
                 "ping",
             )
         }

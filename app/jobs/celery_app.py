@@ -65,7 +65,7 @@ from kombu import Exchange, Queue
 import app
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
-from app.jobs.schedule import BEAT_SCHEDULE
+from app.jobs.schedule import BEAT_SCHEDULE, TIMEZONE
 
 INGESTION_QUEUE: Final = "ingestion"
 COMPUTE_QUEUE: Final = "compute"
@@ -119,8 +119,10 @@ def create_celery(settings: Settings) -> Celery:
         # "started" in Flower and in AsyncResult.state, rather than "pending"
         # for the whole half hour a backfill takes.
         task_track_started=True,
-        # The beat schedule's crontabs are New York times: EDGAR's day.
-        timezone="America/New_York",
+        # The beat schedule's crontabs are New York times: EDGAR's day. What
+        # Celery stores and sends (ETAs, expiry, result dates) stays UTC.
+        timezone=TIMEZONE,
+        enable_utc=True,
         beat_schedule=BEAT_SCHEDULE,
         # Celery 6 stops retrying the broker connection at startup unless asked;
         # a worker that starts before Redis is healthy should wait for it.

@@ -38,6 +38,10 @@ follows. A link whose predecessor did nothing does nothing too, and says so.
 :func:`thirteen_f_poll` puts discovery in front of that, and
 :func:`form4_chain` is the daily crawl and then its ingest.
 
+Beat sends a task, not a chain, so :func:`poll_13f` and :func:`daily_form4`
+apply them (app/jobs/schedule.py). They are not jobs: no lock and no row of
+their own, since each link takes its own job's lock and writes its own row.
+
 The exception is :func:`ping`, which checks the broker and the worker and
 nothing else: a row every five minutes from the heartbeat would bury the runs
 worth reading, and a ping that needed Postgres would fail for the wrong reason.
@@ -65,6 +69,7 @@ from app.ingestion.insider_discovery import new_york_today
 from app.jobs import derived, enrichment, form4, thirteen_f
 from app.jobs.celery_app import COMPUTE_QUEUE, INGESTION_QUEUE
 from app.jobs.retry import MAX_RETRIES, is_transient, retry_countdown
+from app.jobs.schedule import should_poll_now
 from app.jobs.tracking import JobLocked, Ran
 
 logger = get_logger(__name__)
@@ -296,6 +301,45 @@ def thirteen_f_poll(**ingest: Any) -> chain:
 def form4_chain() -> chain:
     """Crawl the daily index since the watermark, then load what it queued."""
     return chain(crawl_form4_daily.si(), ingest_form4.si())
+
+
+# --- beat triggers -----------------------------------------------------------
+
+
+def _now() -> datetime:
+    """The moment a trigger decides by; replaced in tests."""
+    return datetime.now(UTC)
+
+
+def _enqueued(name: str, signature: chain) -> Summary:
+    """Apply ``signature`` and return at once, naming where its last link went.
+
+    Never ``.get()`` on the result: waiting on a subtask inside a task can
+    deadlock the worker, and Celery refuses it.
+    """
+    result = signature.apply_async()
+    logger.info("task.chain_enqueued", chain=name, chain_task_id=result.id)
+    return {"chain": name, "task_id": result.id}
+
+
+@shared_task(bind=True, queue=COMPUTE_QUEUE)
+def poll_13f(self: Task[Any, Any]) -> Summary:
+    """Beat's ``poll-13f``: :func:`thirteen_f_poll`, when
+    :func:`~app.jobs.schedule.should_poll_now` says so.
+
+    Sent every half hour; polls each time in a filing window and once a day
+    outside one, and otherwise returns having enqueued nothing.
+    """
+    if not should_poll_now(_now()):
+        return {"chain": "13f-poll", "skipped": "outside the filing window"}
+    return _enqueued("13f-poll", thirteen_f_poll())
+
+
+@shared_task(bind=True, queue=COMPUTE_QUEUE)
+def daily_form4(self: Task[Any, Any]) -> Summary:
+    """Beat's ``daily-form4``: :func:`form4_chain`, the crawl since the
+    watermark and then its ingest."""
+    return _enqueued("form4", form4_chain())
 
 
 # --- health ------------------------------------------------------------------

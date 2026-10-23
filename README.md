@@ -1272,7 +1272,7 @@ services from it:
 | --- | --- |
 | `worker-ingestion` | Consumes `ingestion`: long work against EDGAR. One task at a time, because the EDGAR limiter is per process and two pool children would be two 8/s budgets against one IP |
 | `worker-compute` | Consumes `compute`: short work against Postgres. Two at a time. A task that names no queue lands here |
-| `beat` | Sends what [app/jobs/schedule.py](app/jobs/schedule.py) says, when it says. So far only a `heartbeat` ping every five minutes. Exactly one, ever: two beats send everything twice |
+| `beat` | Sends what [app/jobs/schedule.py](app/jobs/schedule.py) says, when it says — see [the schedule](#the-schedule). Exactly one, ever: two beats send everything twice |
 | `flower` | Queue and worker inspection at <http://localhost:5555>. Development only, published on 127.0.0.1 only, since it can revoke tasks and has no login |
 
 ```bash
@@ -1336,7 +1336,43 @@ ingest → recompute → refresh: the recompute rebuilds the `(filer, period)`
 pairs the ingest published, and the refresh names the recompute's run in
 `after_run_id`. A link whose predecessor did nothing skips. `thirteen_f_poll()`
 puts discovery in front; `form4_chain()` is the crawl and then its ingest.
-Nothing schedules them yet.
+
+### The schedule
+
+Defined in [app/jobs/schedule.py](app/jobs/schedule.py), in code: beat runs
+its default scheduler, whose file holds only when each entry last ran. Times
+are New York's (the app's `timezone`), daylight saving included; what Celery
+stores and sends is UTC (`enable_utc`), as every `timestamptz` is.
+
+| Entry | Sends | When (New York) |
+| --- | --- | --- |
+| `heartbeat` | `ping` | every 5 minutes |
+| `poll-13f` | `poll_13f` → discover → ingest → recompute → refresh | every 30 minutes in a filing window (1–20 Feb, May, Aug, Nov), at 06:00 otherwise |
+| `daily-form4` | `daily_form4` → `crawl_form4_daily` → `ingest_form4` | weekdays 22:00 |
+| `fetch-prices` | `fetch_prices` | weekdays 21:30 |
+| `resolve-cusips` | `resolve_cusips` | daily 03:00 |
+| `refresh-matviews` | `refresh_matviews` | daily 04:00, and after every 13F ingest that published |
+
+Beat sends a task, not a chain, so `poll_13f` and `daily_form4` are triggers:
+on `compute`, they apply their chain and return `{"chain": ..., "task_id":
+<last link>}` at once, with no lock or run row of their own. `poll-13f` fires
+every half hour all year and the task decides whether to poll
+(`should_poll_now`); out of a window, the sends it declines return
+`{"chain": "13f-poll", "skipped": "outside the filing window"}`. Every entry
+expires before its next send, so a stopped worker does not come back to a
+pile of them. A double fire is a non-event: the links that overlap a running
+one return `{"skipped": "locked"}`, and everything after them skips.
+
+To fire one by hand, without waiting for the clock:
+
+```bash
+celery -A app.jobs.celery_app:celery_app call app.jobs.tasks.daily_form4
+celery -A app.jobs.celery_app:celery_app call app.jobs.tasks.poll_13f   # skips outside a window, except 06:00–06:29
+```
+
+`poll_13f` goes by the clock even when sent by hand. To poll now, outside a
+window, run the verbs: `discover-filings`, `backfill`, `recompute`,
+`refresh-views`.
 
 **Redelivered, not lost.** `task_acks_late` acknowledges a message when its
 task finishes, and a prefetch of one means a worker holds nothing it has not

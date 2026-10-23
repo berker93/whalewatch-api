@@ -7,6 +7,7 @@ needs Postgres; tests/integration/test_jobs.py runs the real ones.
 """
 
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -316,6 +317,75 @@ def test_the_form4_chain_is_the_crawl_then_its_ingest() -> None:
     ]
 
 
+# --- beat triggers -----------------------------------------------------------
+
+
+class _Applied:
+    """What a patched ``apply_async`` returns: a result nobody may wait on."""
+
+    id = "last-link"
+
+    def get(self, *_: Any, **__: Any) -> Any:
+        raise AssertionError("a trigger waited on the chain it enqueued")
+
+
+def _capture_chains(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    applied: list[Any] = []
+
+    def apply_async(self: Any, *_: Any, **__: Any) -> _Applied:
+        applied.append(self)
+        return _Applied()
+
+    monkeypatch.setattr(type(tasks.form4_chain()), "apply_async", apply_async)
+    return applied
+
+
+def _links(chain: Any) -> list[str]:
+    return [str(link.task).rsplit(".", 1)[1] for link in chain.tasks]
+
+
+def test_the_daily_form4_trigger_enqueues_the_crawl_then_its_ingest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    applied = _capture_chains(monkeypatch)
+
+    assert tasks.daily_form4() == {"chain": "form4", "task_id": "last-link"}
+    assert [_links(chain) for chain in applied] == [["crawl_form4_daily", "ingest_form4"]]
+
+
+def test_in_a_filing_window_the_poll_trigger_enqueues_the_four_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    applied = _capture_chains(monkeypatch)
+    monkeypatch.setattr(tasks, "_now", lambda: datetime(2026, 2, 10, 15, 30, tzinfo=UTC))
+
+    assert tasks.poll_13f() == {"chain": "13f-poll", "task_id": "last-link"}
+    assert [_links(chain) for chain in applied] == [
+        [
+            "discover_13f_filings",
+            "ingest_pending_filings",
+            "recompute_positions",
+            "refresh_matviews",
+        ]
+    ]
+
+
+def test_outside_a_window_the_poll_trigger_enqueues_only_at_six(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    applied = _capture_chains(monkeypatch)
+    # 24 October 2026, daylight saving: 06:00 New York is 10:00 UTC.
+    monkeypatch.setattr(tasks, "_now", lambda: datetime(2026, 10, 24, 15, 30, tzinfo=UTC))
+
+    assert tasks.poll_13f() == {"chain": "13f-poll", "skipped": "outside the filing window"}
+    assert applied == []
+
+    monkeypatch.setattr(tasks, "_now", lambda: datetime(2026, 10, 24, 10, 0, tzinfo=UTC))
+
+    assert tasks.poll_13f()["task_id"] == "last-link"
+    assert len(applied) == 1
+
+
 def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -> None:
     queues = {
         name: task.queue
@@ -332,5 +402,7 @@ def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -
         "fetch_prices": INGESTION_QUEUE,
         "recompute_positions": COMPUTE_QUEUE,
         "refresh_matviews": COMPUTE_QUEUE,
+        "poll_13f": COMPUTE_QUEUE,
+        "daily_form4": COMPUTE_QUEUE,
         "ping": COMPUTE_QUEUE,
     }

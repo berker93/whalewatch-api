@@ -22,6 +22,14 @@ _QUARTER_END_DAY: Final = {3: 31, 6: 30, 9: 30, 12: 31}
 #: A 13F is due this many calendar days after the quarter it reports on.
 FILING_DEADLINE_DAYS: Final = 45
 
+#: The months a quarter's 13Fs are due in, and the days of them that are its
+#: filing window. Every deadline falls between the 14th and the 15th, so the
+#: window is two weeks before it, when most 13F-HRs arrive, and five days
+#: after, wide enough for a deadline rolled forward over a weekend and a
+#: holiday (2025Q4's was the 17th).
+FILING_WINDOW_MONTHS: Final = frozenset({2, 5, 8, 11})
+FILING_WINDOW_LAST_DAY: Final = 20
+
 # Four-digit years, both spellings. Matched in full, so nothing either side of
 # the period (whitespace included) is quietly ignored. The quarter's letter in
 # either case: "2026q1" is unambiguous, and refusing it helps no one.
@@ -101,6 +109,16 @@ def filing_deadline(period: date) -> date:
     if not is_quarter_end(period):
         raise ValueError(f"{period} is not a quarter end")
     return period + timedelta(days=FILING_DEADLINE_DAYS)
+
+
+def in_filing_window(day: date) -> bool:
+    """Whether ``day`` is in a quarter's filing window: 1 to 20 February, May,
+    August or November, the days most of a year's 13Fs arrive in.
+
+    A day, not a moment: whose day it is, New York's or UTC's, is the caller's
+    to decide (app/jobs/schedule.py decides New York's, as EDGAR does).
+    """
+    return day.month in FILING_WINDOW_MONTHS and day.day <= FILING_WINDOW_LAST_DAY
 
 
 def quarters_ending(period: date, count: int) -> list[date]:
