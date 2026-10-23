@@ -69,12 +69,13 @@ Then `make test`, and read the specs above.
 
 | Command | |
 | --- | --- |
-| `make up` / `make down` | start / stop the stack |
-| `make build` | rebuild the api image — only needed when `pyproject.toml` or `uv.lock` change |
+| `make up` / `make down` | start / stop the stack: db, redis, the api, the Celery workers, beat and Flower |
+| `make build` | rebuild the images — only needed when `pyproject.toml` or `uv.lock` change |
 | `make ps` | container status and health |
 | `make logs` | follow every service; `make logs s=db` for one |
 | `make shell` | a shell inside the api container |
 | `make psql` | psql on the dev database |
+| `make ping` | send a ping through Celery and wait for the pong — see [Scheduled jobs](#scheduled-jobs-celery) |
 | `make explain a="--only stock_holders"` | the API's queries, timed and under `EXPLAIN (ANALYZE, BUFFERS)` — see [Query performance](docs/query-performance.md) |
 | `make cli c="ingest-filing ..."` | run a CLI verb in the api container — see [The CLI](#the-cli) |
 | `make reconcile` | check the published tables add up, on the dev database — see [`reconcile`](#reconcile---include-suspect---sample-n) |
@@ -1258,6 +1259,63 @@ workflow's history is its record. A test fails if a new verb is neither tracked
 nor one of these. Jobs written later do the same, through
 [`track_run`](app/jobs/tracking.py).
 
+## Scheduled jobs: Celery
+
+The CLI is how the pipeline runs when somebody is watching; Celery is how it
+runs when nobody is, and survives a restart while doing it. Redis is the broker
+and the result backend, on its own database (`CELERY_REDIS_URL`, `/1`) so the
+queues never share a keyspace with the cache. The app is
+[app/jobs/celery_app.py](app/jobs/celery_app.py); `make up` starts four
+services from it:
+
+| Service | What it does |
+| --- | --- |
+| `worker-ingestion` | Consumes `ingestion`: long work against EDGAR. One task at a time, because the EDGAR limiter is per process and two pool children would be two 8/s budgets against one IP |
+| `worker-compute` | Consumes `compute`: short work against Postgres. Two at a time. A task that names no queue lands here |
+| `beat` | Sends what [app/jobs/schedule.py](app/jobs/schedule.py) says, when it says. So far only a `heartbeat` ping every five minutes. Exactly one, ever: two beats send everything twice |
+| `flower` | Queue and worker inspection at <http://localhost:5555>. Development only, published on 127.0.0.1 only, since it can revoke tasks and has no login |
+
+```bash
+make ping                    # api → broker → worker-compute → result backend → api
+make logs s=worker-ingestion
+```
+
+The workers and beat restart when a `.py` file under `app/` changes, as the
+api does under `--reload`.
+
+**Tasks are found, not imported.** A `tasks.py` in any package under `app/`
+registers itself when a worker starts (`autodiscover_tasks`); nothing imports
+it by hand. Tasks are `shared_task`, and name their queue in the decorator.
+
+**Sync tasks, async pipeline.** Celery is not async and is not going to be. A
+task's body bridges with `asyncio.run`, one event loop per task, which is what
+`session_scope` and the EDGAR limiter are built for:
+
+```python
+@shared_task(bind=True, queue=INGESTION_QUEUE, max_retries=3)
+def ingest_filing_task(self, accession_no: str) -> dict:
+    return asyncio.run(_ingest_filing(accession_no))
+```
+
+**Redelivered, not lost.** `task_acks_late` acknowledges a message when its
+task finishes, and a prefetch of one means a worker holds nothing it has not
+started. `task_reject_on_worker_lost` covers the pool child killed outright,
+which `acks_late` alone acknowledges as failed. So:
+
+| What happened | What becomes of the task |
+| --- | --- |
+| It raised, or overran the hard limit | Failed and acknowledged; not run again unless it retries itself |
+| Its pool child was killed (`kill -9`, the OOM killer) | Requeued at once; the worker's next child runs it |
+| The whole worker died (a `docker compose down` that outlasted the grace period, a host restart) | Left unacknowledged; Redis hands it to a worker again once the visibility timeout (an hour) has passed |
+
+That is at-least-once delivery, and it is safe only because the loaders are
+idempotent on `accession_no`. The cost is that a task which reliably kills its
+worker comes back for ever. Time limits are 30 minutes soft
+(`SoftTimeLimitExceeded` inside the task, which `track_run` records as the
+run's failure) and 35 hard (the child is killed and replaced). The visibility
+timeout is longer than both, so a task still running is never handed to a
+second worker.
+
 ## The API
 
 One filing, which everything else gets debugged through, the investors, the
@@ -1948,6 +2006,8 @@ second way — no `accession`, no `accessionNumber`:
 | `job_name` | Name of the batch job, e.g. `backfill_13f` |
 | `run_id` | One execution of a job; every line from that run shares it. The `id` of its `ingestion_run` row |
 | `request_id` | One HTTP request; bound by the middleware |
+| `task_id` | One Celery task execution; bound for the task's duration, and the id Flower shows |
+| `task_name` | The task's registered name, e.g. `app.jobs.tasks.ping` |
 
 **One stream.** uvicorn, SQLAlchemy and Alembic log through the standard library
 and know nothing about structlog. Their records are routed through the same
@@ -2171,6 +2231,7 @@ via `.env`:
 | `DB_PORT`    | `5433`            | `localhost:5433`         |
 | `REDIS_PORT` | `6379`            | `localhost:6379`         |
 | `API_PORT`   | `8000`            | `http://localhost:8000`  |
+| `FLOWER_PORT` | `5555`           | `http://localhost:5555` (127.0.0.1 only) |
 
 `DB_PORT` ships as **5433** because the `predictor-api` stack publishes its
 Postgres on host 5432. If that stack is stopped, `DB_PORT=5432` works fine. Note

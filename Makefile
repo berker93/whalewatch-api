@@ -21,20 +21,20 @@ COMPOSE := docker compose
 s ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down build ps logs shell psql cli explain reconcile verify-investors test lint fmt check openapi fixtures fixtures-fetch migrate revision reset-db
+.PHONY: help up down build ps logs shell psql ping cli explain reconcile verify-investors test lint fmt check openapi fixtures fixtures-fetch migrate revision reset-db
 
 help:  ## List the targets in this file
 	@grep -hE '^[a-z][a-z-]*:.*## ' $(MAKEFILE_LIST) | sed -E 's/:[^#]*## /|/' | awk -F'|' '{printf "  %-9s %s\n", $$1, $$2}'
 
 # --- stack -------------------------------------------------------------------
 
-up:  ## Start db, redis and the API in the background
+up:  ## Start db, redis, the API, the Celery workers, beat and Flower in the background
 	$(COMPOSE) up -d
 
 down:  ## Stop the stack, keeping the pgdata volume
 	$(COMPOSE) down
 
-build:  ## Rebuild the api image — only needed when pyproject.toml or uv.lock change
+build:  ## Rebuild the images — only needed when pyproject.toml or uv.lock change
 	$(COMPOSE) up -d --build
 
 ps:  ## Show container status and health
@@ -48,6 +48,13 @@ shell:  ## Open a shell in the api container
 
 psql:  ## Open psql on the dev database
 	$(COMPOSE) exec db psql -U $(POSTGRES_USER) $(POSTGRES_DB)
+
+# The Celery round trip, end to end: the api container sends a ping through the
+# broker, worker-compute runs it, and the pong comes back through the result
+# backend. By name, so the caller imports no task module. A timeout means no
+# compute worker is consuming: `make ps`, then `make logs s=worker-compute`.
+ping:  ## Send a ping through Celery and wait for a worker's pong
+	$(COMPOSE) exec api uv run python -c "from app.jobs.celery_app import celery_app; print(celery_app.send_task('app.jobs.tasks.ping').get(timeout=10))"
 
 # Inside compose for the same reason migrate is: the CLI writes to the database,
 # and POSTGRES_HOST is a name only the compose network resolves. Quote the whole

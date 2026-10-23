@@ -410,7 +410,15 @@ become one by accident.
 
 ## Orchestration
 
-Celery, with Redis as the broker. Beat schedule in `app/jobs/schedule.py`:
+Celery, with Redis as the broker and result backend
+([app/jobs/celery_app.py](../app/jobs/celery_app.py)). Two queues, each with its
+own worker: `ingestion` for long EDGAR work, one task at a time while the EDGAR
+limiter is per process, and `compute` for short Postgres work, so a backfill
+never queues a refresh behind it. Late acks, a prefetch of one and
+`task_reject_on_worker_lost`: a task killed mid-flight is redelivered, which the
+idempotency below makes safe. Time limits 30 minutes soft, 35 hard.
+
+Beat schedule in `app/jobs/schedule.py`:
 
 - **Daily** — `crawl-form4 --catch-up`: every day since the watermark. Late
   evening New York time, or the next morning, so the day's index exists. Then

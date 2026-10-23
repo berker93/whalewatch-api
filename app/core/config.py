@@ -78,6 +78,12 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://redis:6379/0"
 
+    # Celery's broker and result backend (app/jobs/celery_app.py). The same
+    # server as redis_url, but its own database: the cache and rate-limit keys
+    # and the task queues never share a keyspace, so a FLUSHDB of the cache's,
+    # or a `redis-cli KEYS` on it, cannot reach a queued ingestion.
+    celery_redis_url: str = "redis://redis:6379/1"
+
     # --- the public edge -----------------------------------------------------
     # The origins a browser may call this API from, comma-separated:
     # CORS_ORIGINS=https://whalewatch.io,https://www.whalewatch.io. Never "*":

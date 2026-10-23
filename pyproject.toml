@@ -12,6 +12,7 @@ dependencies = [
     "aiobotocore>=2.15",
     "alembic>=1.14",
     "asyncpg>=0.30",
+    "celery[redis]>=5.5",
     "fastapi>=0.115",
     # Runtime, not dev: the EDGAR client is application code. It was already
     # here as a test dependency for httpx.AsyncClient against the ASGI app.
@@ -77,6 +78,8 @@ markers = [
 
 [dependency-groups]
 dev = [
+    "celery-types>=0.26.0",
+    "flower>=2.2.0",
     "httpx>=0.28",
     "lxml-stubs>=0.5",
     # Stands in for S3 in tests/test_raw_store_s3.py. The server flavour, not the

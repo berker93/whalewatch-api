@@ -25,3 +25,7 @@ data/raw/
 docs/06-epic-securities-and-insiders*.md
 docs/06c-price-tickets-slotted*.md
 docs/06d-epic-6-how-to-proceed.md
+
+# Celery beat's schedule state, if beat is ever run from the host. Compose
+# keeps it in the container's /tmp.
+celerybeat-schedule*

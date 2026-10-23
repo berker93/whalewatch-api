@@ -12,7 +12,9 @@ from app.core.config import Settings
 
 def create_redis(settings: Settings) -> Redis:
     """Build the async Redis client for caching and rate-limit state."""
-    return Redis.from_url(
+    # Annotated because redis-py 6.x, which kombu caps us at, types from_url
+    # as returning Any.
+    client: Redis = Redis.from_url(
         settings.redis_url,
         # Bytes out of Redis are a paper cut in every call site downstream; this
         # codebase only ever stores text and JSON.
@@ -24,3 +26,4 @@ def create_redis(settings: Settings) -> Redis:
         socket_timeout=2,
         health_check_interval=30,
     )
+    return client

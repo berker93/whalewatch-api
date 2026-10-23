@@ -5,6 +5,29 @@
 # here can never reach across and delete theirs.
 name: whalewatch
 
+# Shared by the four Celery services below: the api's image and bind mount,
+# so a worker runs the code in the working tree. Anchors are defined before
+# they are used, which is why these sit above `services`.
+x-celery: &celery
+  build:
+    context: .
+    target: dev
+  restart: unless-stopped
+  volumes:
+    - .:/src
+  env_file: .env
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+x-celery-healthcheck: &celery-healthcheck
+  interval: 30s
+  timeout: 15s
+  retries: 3
+  start_period: 30s
+
 services:
   db:
     image: postgres:16-alpine
@@ -88,6 +111,54 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # --- Celery (app/jobs/celery_app.py) ----------------------------------------
+  # One worker per queue, so a half-hour ingestion never queues a short compute
+  # task behind it. Each runs under watchfiles, which restarts it when a .py
+  # file changes: the worker's equivalent of the api's --reload. A restart
+  # mid-task is a dead worker as far as the broker knows, and the task comes
+  # back after the visibility timeout (an hour), so leave a long backfill alone.
+
+  # One task at a time. The EDGAR limiter is per process (app/core/rate_limit.py),
+  # and two pool children would each pace themselves to 8/s against one IP.
+  worker-ingestion:
+    <<: *celery
+    command: >-
+      uv run watchfiles --filter python
+      "celery -A app.jobs.celery_app:celery_app worker -Q ingestion --concurrency 1 --hostname ingestion@%h"
+      app
+    healthcheck:
+      <<: *celery-healthcheck
+      test: ["CMD-SHELL", "celery -A app.jobs.celery_app:celery_app inspect ping --destination ingestion@$$HOSTNAME --timeout 5"]
+
+  worker-compute:
+    <<: *celery
+    command: >-
+      uv run watchfiles --filter python
+      "celery -A app.jobs.celery_app:celery_app worker -Q compute --concurrency 2 --hostname compute@%h"
+      app
+    healthcheck:
+      <<: *celery-healthcheck
+      test: ["CMD-SHELL", "celery -A app.jobs.celery_app:celery_app inspect ping --destination compute@$$HOSTNAME --timeout 5"]
+
+  # Exactly one, ever: two beats send every scheduled task twice. Its schedule
+  # state goes to /tmp rather than the bind-mounted /src, where it would land in
+  # the working tree; losing it on a restart costs at most one early heartbeat.
+  beat:
+    <<: *celery
+    command: >-
+      uv run watchfiles --filter python
+      "celery -A app.jobs.celery_app:celery_app beat --schedule /tmp/celerybeat-schedule"
+      app
+
+  # Queue inspection: http://localhost:5555. Development only, and published on
+  # 127.0.0.1 only, unlike the ports above: Flower can revoke tasks and shut
+  # workers down, and has no login.
+  flower:
+    <<: *celery
+    command: uv run celery -A app.jobs.celery_app:celery_app flower --port=5555
+    ports:
+      - "127.0.0.1:${FLOWER_PORT:-5555}:5555"
 
 volumes:
   pgdata:
