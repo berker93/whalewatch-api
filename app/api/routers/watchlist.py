@@ -23,10 +23,10 @@ from sqlalchemy import Select, delete, func, select, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import UNAUTHORIZED, NoStoreDep, ViewerDep
+from app.accounts.plans import entitlements_for
+from app.api.auth import UNAUTHORIZED, UNVERIFIED, NoStoreDep, VerifiedViewerDep, ViewerDep
 from app.api.deps import SessionDep
-from app.api.errors import INVALID, Responses, invalid, not_found
-from app.api.schemas.error import Problem
+from app.api.errors import INVALID, invalid, not_found
 from app.api.schemas.insider import Role
 from app.api.schemas.search import InvestorMatch, StockMatch
 from app.api.schemas.watchlist import (
@@ -49,18 +49,8 @@ from app.db.models import (
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"], dependencies=[NoStoreDep])
 
-#: Items one user may follow, all kinds together. Far past what a person reads
-#: in a timeline, and a bound on what one GET builds.
-MAX_ITEMS: Final = 500
-
 _DISPLAY_NAME: Final = func.coalesce(Filer.display_name, Filer.name)
 
-_FORBIDDEN_ORIGIN: Final[Responses] = {
-    status.HTTP_403_FORBIDDEN: {
-        "model": Problem,
-        "description": "`forbidden_origin`: a write from a site not allowed to call.",
-    }
-}
 _NOT_FOUND = not_found(
     "No stock with that CUSIP, investor with that slug, or insider with that CIK."
 )
@@ -259,20 +249,23 @@ async def read_watchlist(viewer: ViewerDep, session: SessionDep) -> Watchlist:
     operation_id="addWatchlistItem",
     response_model=Watchlist,
     summary="Follow a stock, an investor or an insider",
-    responses={**UNAUTHORIZED, **_FORBIDDEN_ORIGIN, **_NOT_FOUND, **INVALID},
+    responses={**UNAUTHORIZED, **UNVERIFIED, **_NOT_FOUND, **INVALID},
 )
 async def add_watchlist_item(
-    body: WatchlistItemRequest, viewer: ViewerDep, session: SessionDep
+    body: WatchlistItemRequest, viewer: VerifiedViewerDep, session: SessionDep
 ) -> Watchlist:
     """Adds `ref` at the end of its list. Already followed is no change. A ref
-    that names nothing is a 404; a full watchlist (500 items) a 422."""
+    that names nothing is a 404; a full watchlist (the plan's
+    `watchlist_max_items`, 500 on Free) a 422; an account whose email is not
+    verified a 403 `email_unverified`."""
     target = await resolve_ref(session, body.ref.root)
     user_id = viewer.user.id
+    most = entitlements_for(viewer.user).watchlist_max_items
     count = await session.scalar(
         select(func.count()).select_from(WatchlistItem).where(WatchlistItem.user_id == user_id)
     )
-    if (count or 0) >= MAX_ITEMS:
-        raise invalid("ref", f"the watchlist is full: at most {MAX_ITEMS} items", where="body")
+    if (count or 0) >= most:
+        raise invalid("ref", f"the watchlist is full: at most {most} items", where="body")
     # Any of the three partial unique indexes: already followed is no change.
     await session.execute(
         insert(WatchlistItem).values(user_id=user_id, **target).on_conflict_do_nothing()
@@ -286,12 +279,13 @@ async def add_watchlist_item(
     operation_id="removeWatchlistItem",
     response_model=Watchlist,
     summary="Unfollow a stock, an investor or an insider",
-    responses={**UNAUTHORIZED, **_FORBIDDEN_ORIGIN, **_NOT_FOUND, **INVALID},
+    responses={**UNAUTHORIZED, **UNVERIFIED, **_NOT_FOUND, **INVALID},
 )
 async def remove_watchlist_item(
-    body: WatchlistItemRequest, viewer: ViewerDep, session: SessionDep
+    body: WatchlistItemRequest, viewer: VerifiedViewerDep, session: SessionDep
 ) -> Watchlist:
-    """Removes `ref`. Not followed is no change. A ref that names nothing is a 404."""
+    """Removes `ref`. Not followed is no change. A ref that names nothing is a
+    404; an account whose email is not verified a 403 `email_unverified`."""
     target = await resolve_ref(session, body.ref.root)
     [(column, target_id)] = target.items()
     user_id = viewer.user.id

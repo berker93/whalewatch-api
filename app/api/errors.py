@@ -28,6 +28,9 @@ from app.api.schemas.error import (
     ValidationDetail,
     ValidationProblem,
 )
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 #: A route's ``responses=``: status to OpenAPI response object, plus ``model``.
 Responses = dict[int | str, dict[str, Any]]
@@ -153,6 +156,22 @@ async def validation_error(request: Request, exc: Exception) -> JSONResponse:
         message,
         scope=request.scope,
         detail=ValidationDetail(errors=errors),
+    )
+
+
+async def sessions_unavailable(request: Request, exc: Exception) -> JSONResponse:
+    """The 503 for a route that needed a session while Redis could not be reached.
+
+    Not a 401: the session may well be live, and a 401 would have the frontend
+    sign the user out over an outage. ``Retry-After`` because it is transient.
+    """
+    logger.error("sessions.unavailable", error=repr(exc.__cause__ or exc))
+    return problem(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.UNAVAILABLE,
+        "Sign-in is unavailable for a moment. Try again shortly.",
+        scope=request.scope,
+        headers={"retry-after": "5"},
     )
 
 

@@ -126,7 +126,7 @@ from typing import Annotated, Final, NoReturn, TextIO
 import httpx
 import structlog
 import typer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts import rules as account_rules
@@ -1798,7 +1798,8 @@ def create_user_command(
 
     The password is prompted for, twice and hidden, or read from stdin with
     --password-stdin: never an option, which would put it in the shell's
-    history and the process list. The same rules as registration apply.
+    history and the process list. The same rules as registration apply. The
+    email counts as verified: whoever runs this vouches for it.
     Untracked: a run row would put the account's email in the operations log.
     """
     if password_stdin:
@@ -1826,7 +1827,10 @@ async def _create_user(email: str, name: str, time_zone: str, password: str) -> 
     async with session_scope(settings) as session:
         if problem := await account_rules.time_zone_problem(session, time_zone):
             raise CommandError(f"--time-zone: {problem}")
-        if await session.scalar(select(AppUser.id).where(AppUser.email == email)) is not None:
+        taken = await session.scalar(
+            select(AppUser.id).where(AppUser.email == email, AppUser.deleted_at.is_(None))
+        )
+        if taken is not None:
             raise CommandError(f"{email} already has an account")
         session.add(
             AppUser(
@@ -1834,6 +1838,7 @@ async def _create_user(email: str, name: str, time_zone: str, password: str) -> 
                 name=name,
                 password_hash=await hash_password(password),
                 time_zone=time_zone,
+                email_verified_at=func.now(),
             )
         )
     typer.echo(f"create-user  {email}  ({name}, {time_zone})")

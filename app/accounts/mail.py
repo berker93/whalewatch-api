@@ -1,4 +1,5 @@
-"""Account emails: confirm an email change, tell the old address, reset a password.
+"""Account emails: verify an address, confirm an email change, tell the old address,
+reset a password.
 
 Two backends, by ``EMAIL_BACKEND``. ``log`` writes each message to the log,
 link included, and sends nothing: in development the link is in the API's log
@@ -85,8 +86,22 @@ def link(settings: Settings, path: str, token: str) -> str:
 # --- the messages ---------------------------------------------------------------
 
 #: The pages of whalewatch-web each link opens. They post the token back.
+VERIFY_EMAIL_PATH = "/verify-email"
 CONFIRM_EMAIL_PATH = "/account/confirm-email"
 RESET_PASSWORD_PATH = "/reset-password"
+
+
+def email_verification(settings: Settings, *, to: str, token: str, hours: int) -> Message:
+    return Message(
+        to=to,
+        subject="Verify your WhaleWatch email",
+        body=(
+            "Welcome to WhaleWatch. Verify this address to start saving stocks, "
+            f"investors and insiders to your watchlist, within {hours} hours:\n"
+            f"{link(settings, VERIFY_EMAIL_PATH, token)}\n\n"
+            "If you didn't make an account, ignore this message."
+        ),
+    )
 
 
 def email_change_confirmation(settings: Settings, *, to: str, token: str, hours: int) -> Message:

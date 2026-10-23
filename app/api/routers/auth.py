@@ -9,61 +9,80 @@
     session that has ended is a 401 ``session_expired``, so the frontend can say
     so rather than quietly showing a signed-out page.
 ``POST /v1/auth/register``
-    A new account, while ``SIGNUPS_OPEN``. Closed, the request is recorded and
-    no session starts.
+    A new account, while ``SIGNUPS_OPEN``, signed in but unverified: a link to
+    verify the address is emailed, and until it is followed the account reads
+    everything and saves nothing. Closed, the request is recorded and no
+    session starts.
+``POST /v1/auth/verify-email`` and ``.../resend``
+    Verify the address from its link; email another link, signed in.
 ``POST /v1/auth/password``
     Change the password, signed in. Signs out every other session.
 ``POST /v1/auth/password-reset`` and ``.../confirm``
-    Email a reset link; set a new password from one. The first answers the same
-    whether or not the address has an account.
+    Email a reset link, good for an hour and once; set a new password from one.
+    The first answers the same whether or not the address has an account, and
+    as fast: the email is sent after the answer.
+
+Logins, registrations and reset requests are limited per client IP and per
+email address (:func:`app.api.auth.limit_attempts`). A login for an address
+with no account does the same argon2 work as one with a wrong password, and
+fails with the same answer, so neither the answer nor its timing says which
+addresses have accounts.
 
 Failures
 --------
 The frontend branches on ``code``, so the codes are the contract:
 ``invalid_credentials`` is 403, never 401, which means only that the session is
 gone; ``weak_password``, ``invalid_email`` and ``invalid_name`` are 422s naming
-the field in ``detail.errors``, as a validation error does. Every route that
-checks a password or sends an email is behind the stricter per-IP limit
+the field in ``detail.errors``, as a validation error does. The routes
+:func:`~app.api.auth.limit_attempts` does not cover, but that check a password
+or a token, are behind the stricter per-IP limit
 (:func:`app.api.auth.auth_rate_limited`).
 """
 
 from datetime import datetime
 from typing import Annotated, Final
 
-from fastapi import APIRouter, Body, Request, Response, status
-from sqlalchemy import select, update
+from fastapi import APIRouter, BackgroundTasks, Body, Request, Response, status
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts import rules
-from app.accounts.mail import deliver, mailer_for, password_reset
+from app.accounts.mail import (
+    Message,
+    deliver,
+    email_verification,
+    mailer_for,
+    password_reset,
+)
 from app.accounts.passwords import DUMMY_HASH, hash_password, needs_rehash, verify_password
 from app.accounts.sessions import (
+    EMAIL_VERIFY_TTL,
     PASSWORD_RESET_TTL,
-    end_other_sessions,
-    end_session,
     find_session,
     issue_token,
     now,
     redeem_token,
     revoke_tokens,
-    start_session,
 )
 from app.api.auth import (
     UNAUTHORIZED,
     AuthRateLimitDep,
     NoStoreDep,
+    SessionStoreDep,
     ViewerDep,
     clear_session_cookie,
     cleared_cookie_header,
+    limit_attempts,
     session_token,
     set_session_cookie,
 )
 from app.api.deps import SessionDep, SettingsDep
-from app.api.errors import INVALID, ApiError, Responses
+from app.api.errors import INVALID, RATE_LIMITED, ApiError, Responses
 from app.api.schemas.auth import (
     Authed,
+    EmailVerifyRequest,
     LoginRequest,
     PasswordChangeRequest,
     PasswordResetConfirm,
@@ -82,6 +101,7 @@ from app.api.schemas.error import (
     ValidationDetail,
     ValidationProblem,
 )
+from app.core.config import Settings
 from app.db.models import AppUser, SignupRequest, TokenPurpose
 
 router = APIRouter(prefix="/auth", tags=["auth"], dependencies=[NoStoreDep])
@@ -126,8 +146,27 @@ def _invalid_credentials() -> ApiError:
     return ApiError(403, ErrorCode.INVALID_CREDENTIALS, "Wrong email or password.")
 
 
+def _invalid_token(what: str) -> ApiError:
+    return refused(ErrorCode.INVALID_TOKEN, "token", f"the link is not valid any more: {what}")
+
+
 def _session(user: AppUser, expires_at: datetime) -> Session:
-    return Session(user=SessionUser(email=user.email), expires_at=expires_at)
+    return Session(
+        user=SessionUser(email=user.email, email_verified=user.email_verified_at is not None),
+        expires_at=expires_at,
+    )
+
+
+def _live_user(email: str) -> Select[tuple[AppUser]]:
+    """The account ``email`` logs in to, compared without case by the column."""
+    return select(AppUser).where(AppUser.email == email, AppUser.deleted_at.is_(None))
+
+
+def _send_later(background: BackgroundTasks, settings: Settings, message: Message) -> None:
+    """Send ``message`` once the answer has gone: SMTP takes seconds, and an
+    answer that waited for it would take longer when an address has an
+    account than when it has none."""
+    background.add_task(deliver, mailer_for(settings), message)
 
 
 @router.post(
@@ -135,24 +174,33 @@ def _session(user: AppUser, expires_at: datetime) -> Session:
     operation_id="login",
     response_model=Session,
     summary="Sign in with an email and a password",
-    responses={**_FORBIDDEN, **INVALID},
-    dependencies=[AuthRateLimitDep],
+    responses={**_FORBIDDEN, **INVALID, **RATE_LIMITED},
 )
 async def login(
-    body: LoginRequest, response: Response, session: SessionDep, settings: SettingsDep
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    store: SessionStoreDep,
+    settings: SettingsDep,
 ) -> Session:
     """Sets the session cookie. A wrong email and a wrong password are the same
     403 `invalid_credentials`, and take as long, so neither says which addresses
-    have accounts."""
+    have accounts. An unverified account signs in; it reads but saves nothing.
+    At most 5 attempts in 15 minutes from one address, and for one email: then
+    a 429 with `Retry-After`."""
     email = rules.normalise_email(body.email)
-    user = await session.scalar(select(AppUser).where(AppUser.email == email))
+    await limit_attempts(request, "login", email)
+    user = await session.scalar(_live_user(email))
+    # The same argon2 work whether or not there is an account.
     matches = await verify_password(body.password, user.password_hash if user else DUMMY_HASH)
     if user is None or not matches:
         raise _invalid_credentials()
     if needs_rehash(user.password_hash):
         user.password_hash = await hash_password(body.password)
-    started = await start_session(session, user.id, remember=body.remember)
+    user.last_seen_at = now()
     await session.commit()
+    started = await store.start(user.id, remember=body.remember)
     set_session_cookie(response, settings, started)
     return _session(user, started.expires_at)
 
@@ -165,13 +213,13 @@ async def login(
     responses=_FORBIDDEN,
 )
 async def logout(
-    request: Request, response: Response, session: SessionDep, settings: SettingsDep
+    request: Request, response: Response, store: SessionStoreDep, settings: SettingsDep
 ) -> None:
     """Ends the session the cookie names and clears the cookie. A 204 with no
-    cookie, or one already ended, too: signing out twice is signed out."""
+    cookie, or one already ended, too: signing out twice is signed out. The
+    session is gone at once: the cookie, copied elsewhere, no longer works."""
     if (token := session_token(request, settings)) is not None:
-        await end_session(session, token)
-        await session.commit()
+        await store.end(token)
     clear_session_cookie(response, settings)
 
 
@@ -183,7 +231,7 @@ async def logout(
     responses=UNAUTHORIZED,
 )
 async def read_session(
-    request: Request, session: SessionDep, settings: SettingsDep
+    request: Request, session: SessionDep, store: SessionStoreDep, settings: SettingsDep
 ) -> SessionState:
     """`session: null` when the request carried no cookie. A 401
     `session_expired` when it carried one for a session that has ended, ran out
@@ -191,7 +239,7 @@ async def read_session(
     token = session_token(request, settings)
     if token is None:
         return SessionState(session=None)
-    viewer = await find_session(session, token)
+    viewer = await find_session(session, store, token)
     if viewer is None:
         raise ApiError(
             401,
@@ -214,16 +262,24 @@ async def read_session(
             "description": "`email_taken`: the address already has an account.",
         },
         **_FORBIDDEN,
+        **RATE_LIMITED,
     },
-    dependencies=[AuthRateLimitDep],
 )
 async def register(
-    body: RegisterRequest, response: Response, session: SessionDep, settings: SettingsDep
+    body: RegisterRequest,
+    request: Request,
+    response: Response,
+    background: BackgroundTasks,
+    session: SessionDep,
+    store: SessionStoreDep,
+    settings: SettingsDep,
 ) -> RegisterResult:
     """While signups are closed, `status: recorded`: the request is kept and no
-    session starts. Open, `status: authed`, with the session cookie set. Either
-    way the fields are checked first: `invalid_name`, `invalid_email` and
-    `weak_password`, in that order."""
+    session starts. Open, `status: authed`, with the session cookie set and a
+    link to verify the address emailed; until it is followed the account reads
+    everything and saves nothing. Either way the fields are checked first:
+    `invalid_name`, `invalid_email` and `weak_password`, in that order. Then at
+    most 5 attempts in 15 minutes from one address, and for one email."""
     name = rules.normalise_name(body.name)
     email = rules.normalise_email(body.email)
     if problem := rules.name_problem(name):
@@ -235,8 +291,9 @@ async def register(
     time_zone = body.time_zone or rules.DEFAULT_TIME_ZONE
     if problem := await rules.time_zone_problem(session, time_zone):
         raise refused(ErrorCode.VALIDATION_ERROR, "time_zone", problem)
+    # After the fields, which the form checks too: a typo is not an attempt.
+    await limit_attempts(request, "register", email)
 
-    taken = await session.scalar(select(AppUser.id).where(AppUser.email == email))
     if not settings.signups_open:
         await session.execute(
             insert(SignupRequest)
@@ -246,13 +303,14 @@ async def register(
         await session.commit()
         return RegisterResult(Recorded(status="recorded"))
 
-    if taken is not None:
+    if await session.scalar(_live_user(email).with_only_columns(AppUser.id)) is not None:
         raise _email_taken()
     user = AppUser(
         email=email,
         name=name,
         password_hash=await hash_password(body.password),
         time_zone=time_zone,
+        last_seen_at=now(),
     )
     session.add(user)
     try:
@@ -261,10 +319,65 @@ async def register(
         # Registered by a request that raced this one.
         await session.rollback()
         raise _email_taken() from None
-    started = await start_session(session, user.id, remember=True)
+    token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
     await session.commit()
+    started = await store.start(user.id, remember=True)
     set_session_cookie(response, settings, started)
+    hours = int(EMAIL_VERIFY_TTL.total_seconds() // 3600)
+    _send_later(
+        background, settings, email_verification(settings, to=email, token=token, hours=hours)
+    )
     return RegisterResult(Authed(status="authed", session=_session(user, started.expires_at)))
+
+
+@router.post(
+    "/verify-email",
+    operation_id="verifyEmail",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Verify the account's email from its link",
+    responses={**_FORBIDDEN, **_REFUSED},
+    dependencies=[AuthRateLimitDep],
+)
+async def verify_email(body: EmailVerifyRequest, session: SessionDep) -> None:
+    """From then on the account saves. Needs no session: the link may be
+    opened on another device, and the token is the proof. A token that is
+    unknown, used, replaced by a later one, or past its 24 hours is a 422
+    `invalid_token`. Following a second link once verified is no change."""
+    token = await redeem_token(session, body.token, TokenPurpose.EMAIL_VERIFY)
+    user = None if token is None else await session.get(AppUser, token.user_id)
+    if user is None or user.deleted_at is not None:
+        raise _invalid_token("ask for a new one from your account page")
+    if user.email_verified_at is None:
+        user.email_verified_at = now()
+    await session.commit()
+
+
+@router.post(
+    "/verify-email/resend",
+    operation_id="resendVerificationEmail",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Email another link to verify the account's email",
+    responses={**UNAUTHORIZED, **_FORBIDDEN, **RATE_LIMITED},
+)
+async def resend_verification(
+    request: Request,
+    background: BackgroundTasks,
+    viewer: ViewerDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> None:
+    """A fresh link, valid for 24 hours, replacing any sent before. Already
+    verified: no change, and nothing sent. At most 5 in 15 minutes."""
+    user = viewer.user
+    if user.email_verified_at is not None:
+        return
+    await limit_attempts(request, "verify_email", user.email)
+    token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
+    await session.commit()
+    hours = int(EMAIL_VERIFY_TTL.total_seconds() // 3600)
+    _send_later(
+        background, settings, email_verification(settings, to=user.email, token=token, hours=hours)
+    )
 
 
 @router.post(
@@ -276,7 +389,7 @@ async def register(
     dependencies=[AuthRateLimitDep],
 )
 async def change_password(
-    body: PasswordChangeRequest, viewer: ViewerDep, session: SessionDep
+    body: PasswordChangeRequest, viewer: ViewerDep, session: SessionDep, store: SessionStoreDep
 ) -> None:
     """A wrong `current_password` is a 403 `invalid_credentials`, never a 401,
     which would mean the session is gone. A `new_password` shorter than the
@@ -293,7 +406,9 @@ async def change_password(
             ErrorCode.WEAK_PASSWORD, "new_password", "must differ from the current password"
         )
     await _set_password(session, user.id, body.new_password)
-    await end_other_sessions(session, user.id, keep=viewer.session_id)
+    # Before the commit: a Redis that cannot be reached leaves the old
+    # password in place, rather than a new one with the old sessions still in.
+    await store.end_all(user.id, keep=viewer.session_id)
     await session.commit()
 
 
@@ -302,24 +417,31 @@ async def change_password(
     operation_id="requestPasswordReset",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Email a password reset link",
-    responses={**_FORBIDDEN, **INVALID},
-    dependencies=[AuthRateLimitDep],
+    responses={**_FORBIDDEN, **INVALID, **RATE_LIMITED},
 )
 async def request_password_reset(
-    body: PasswordResetRequest, session: SessionDep, settings: SettingsDep
+    body: PasswordResetRequest,
+    request: Request,
+    background: BackgroundTasks,
+    session: SessionDep,
+    settings: SettingsDep,
 ) -> None:
     """A 204 whether or not the address has an account, so the answer reveals
-    none. When it has one, a link valid for an hour goes to it, replacing any
-    sent before."""
+    none, and as fast: the email goes after the answer. When it has one, a link
+    valid for an hour and for one use goes to it, replacing any sent before.
+    At most 5 in 15 minutes from one address, and for one email."""
     email = rules.normalise_email(body.email)
-    user = await session.scalar(select(AppUser).where(AppUser.email == email))
+    await limit_attempts(request, "password_reset", email)
+    user = await session.scalar(_live_user(email))
     if user is None:
         return
     token = await issue_token(session, user.id, TokenPurpose.PASSWORD_RESET, PASSWORD_RESET_TTL)
     await session.commit()
     minutes = int(PASSWORD_RESET_TTL.total_seconds() // 60)
-    await deliver(
-        mailer_for(settings), password_reset(settings, to=user.email, token=token, minutes=minutes)
+    _send_later(
+        background,
+        settings,
+        password_reset(settings, to=user.email, token=token, minutes=minutes),
     )
 
 
@@ -332,20 +454,25 @@ async def request_password_reset(
     dependencies=[AuthRateLimitDep],
 )
 async def confirm_password_reset(
-    body: Annotated[PasswordResetConfirm, Body()], session: SessionDep
+    body: Annotated[PasswordResetConfirm, Body()], session: SessionDep, store: SessionStoreDep
 ) -> None:
     """A token that is unknown, used, replaced or past its hour is a 422
     `invalid_token`. On success every session of the account is signed out:
-    whoever had the old password is no longer in."""
+    whoever had the old password is no longer in. The link reached the
+    account's inbox, so an unverified email is verified too."""
     if problem := rules.password_problem(body.new_password):
         raise refused(ErrorCode.WEAK_PASSWORD, "new_password", problem)
     token = await redeem_token(session, body.token, TokenPurpose.PASSWORD_RESET)
-    if token is None:
-        raise refused(
-            ErrorCode.INVALID_TOKEN, "token", "the link is not valid any more: ask for a new one"
-        )
-    await _set_password(session, token.user_id, body.new_password)
-    await end_other_sessions(session, token.user_id, keep=None)
+    user = None if token is None else await session.get(AppUser, token.user_id)
+    if user is None or user.deleted_at is not None:
+        raise _invalid_token("ask for a new one")
+    await _set_password(session, user.id, body.new_password)
+    await session.execute(
+        update(AppUser)
+        .where(AppUser.id == user.id)
+        .values(email_verified_at=func.coalesce(AppUser.email_verified_at, now()))
+    )
+    await store.end_all(user.id, keep=None)
     await session.commit()
 
 

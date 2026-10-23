@@ -447,6 +447,7 @@ def test_every_public_read_is_cached() -> None:
         # One person's: a shared cache must never hold them (app.api.auth).
         "/v1/account",
         "/v1/auth/session",
+        "/v1/me",
         "/v1/watchlist",
         # With no `tz`, the answer is in the signed-in user's zone.
         "/v1/timeline",

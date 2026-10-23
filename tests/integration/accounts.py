@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from httpx import AsyncClient
-from sqlalchemy import insert
+from sqlalchemy import func, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.mail import Message
@@ -24,7 +24,10 @@ async def make_user(
     name: str = "Ada Lovelace",
     password: str = PASSWORD,
     time_zone: str = "America/New_York",
+    verified: bool = True,
 ) -> int:
+    """An account, verified unless ``verified=False``: most tests are about
+    what a verified account does."""
     user_id = await session.scalar(
         insert(AppUser)
         .values(
@@ -32,6 +35,7 @@ async def make_user(
             name=name,
             password_hash=hash_password_sync(password),
             time_zone=time_zone,
+            email_verified_at=func.now() if verified else None,
         )
         .returning(AppUser.id)
     )

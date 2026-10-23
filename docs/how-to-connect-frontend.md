@@ -8,7 +8,7 @@ What each endpoint takes and returns, and the adapter code, is in [frontend-inte
 
 ## 0 · The one thing to understand first: the cookie
 
-The session is an **httpOnly cookie** that the API sets on login (`ww_session`, `SameSite=Lax`). The frontend never sees or stores a token. That means:
+The session is an **httpOnly cookie** that the API sets on login (`ww_session`, `SameSite=Lax`, and `Secure` in staging and production). The frontend never sees or stores a token: the cookie is an opaque id for a session the API keeps in Redis, so logging out ends it at once. That means:
 
 1. **Every request must send cookies**: `credentials: 'include'` on the openapi-fetch client (step 6).
 2. **The page and the API must be the same *site*.** Ports don't matter; host names do. `localhost:5173` → `localhost:8000` is same-site, and the cookie flows. But `app.localhost:5173` → `localhost:8000` is **cross-site** (browsers treat `app.localhost` as its own site), so the browser won't send a `SameSite=Lax` cookie. `127.0.0.1` and `localhost` are different sites too.
@@ -33,10 +33,10 @@ In production all of this holds by design: `whalewatch.com`, `app.whalewatch.com
 ```bash
 cd whalewatch-api
 make up          # db, redis, api on http://localhost:8000 (hot reload)
-make migrate     # applies 0034_accounts: app_user, user_session, account_token, signup_request, watchlist_item
+make migrate     # applies through 0035_account_identity: app_user (citext email), account_token, signup_request, watchlist_item
 ```
 
-No image rebuild is needed: the account code uses only the standard library (password hashing is `hashlib.scrypt`).
+If your images predate 0035, rebuild them first (`docker compose build`, then `make up`): passwords are hashed with argon2id, from the `argon2-cffi` package. Sessions are kept in Redis, so `make up` must have Redis running; restarting it keeps them (append-only file on the `redisdata` volume).
 
 Check it's up: `curl -s localhost:8000/health` should answer `{"status":"ok",…}`.
 

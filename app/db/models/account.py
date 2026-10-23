@@ -5,14 +5,17 @@ same for everyone. These tables are the only ones about the site's own users,
 and the only ones a request writes to.
 
 ``app_user``
-    One account. The email is its login and is stored lowercased, so that
-    ``Ada@Example.com`` and ``ada@example.com`` are one account.
-``user_session``
-    One signed-in browser. The cookie carries a random token; the table holds
-    only its SHA-256, so a copy of the table is not a set of live sessions.
+    One account. The email is its login, a ``citext``, so that
+    ``Ada@Example.com`` and ``ada@example.com`` are one account however either
+    was typed. Deleting an account marks it (``deleted_at``) rather than
+    removing the row, and frees its address for a new account.
 ``account_token``
-    A one-time link sent by email: confirm an email change, reset a password.
-    Hashed for the same reason as a session.
+    A one-time link sent by email: verify an address, confirm an email change,
+    reset a password. The table holds only the token's SHA-256, so a copy of it
+    is not a set of working links.
+
+Sessions are not here: they are in Redis (:mod:`app.accounts.sessions`), where
+ending one is deleting a key.
 ``signup_request``
     Who asked for an account while signups were closed.
 ``watchlist_item``
@@ -27,21 +30,20 @@ from enum import StrEnum
 from sqlalchemy import (
     CHAR,
     BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Text,
-    false,
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import CITEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
 
-#: SHA-256, hex: what a session or a token is stored as.
+#: SHA-256, hex: what a one-time token is stored as.
 TOKEN_HASH = CHAR(64)
 
 
@@ -52,14 +54,15 @@ class AppUser(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
-    email: Mapped[str] = mapped_column(Text, unique=True)
-    """The login, trimmed and lowercased, as login and registration read it."""
+    email: Mapped[str] = mapped_column(CITEXT)
+    """The login, trimmed, as typed. Compared without case, by the type: unique
+    without case among accounts not deleted (``uq_app_user_email``)."""
 
     name: Mapped[str] = mapped_column(Text)
     """The name on the account, trimmed. What the header's initials are from."""
 
     password_hash: Mapped[str] = mapped_column(Text)
-    """``scrypt$n$r$p$salt$hash``, from :func:`app.accounts.passwords.hash_password`."""
+    """An argon2id PHC string, from :func:`app.accounts.passwords.hash_password`."""
 
     time_zone: Mapped[str] = mapped_column(Text)
     """An IANA zone: what the timeline's days and Form 4 times are shown in."""
@@ -71,45 +74,33 @@ class AppUser(Base):
     )
     """The last password change, or signup when it never changed."""
 
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When the address was shown to be the user's, by a link sent to it. Null
+    until then, and while null the account reads but saves nothing."""
+
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """The last signed-in request, to within :data:`app.accounts.sessions.LAST_SEEN_EVERY`."""
+
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When the account was deleted. A deleted account signs nobody in and
+    holds no address: its email may make a new account."""
+
     __table_args__ = (
-        CheckConstraint("email = lower(btrim(email))", name="email_is_normalised"),
+        CheckConstraint("email = btrim(email)", name="email_is_trimmed"),
         CheckConstraint("length(btrim(name)) >= 2", name="name_is_named"),
-    )
-
-
-class UserSession(Base):
-    """One signed-in browser."""
-
-    __tablename__ = "user_session"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-
-    user_id: Mapped[int] = mapped_column(
-        BigInteger,
-        # A deleted account takes its sessions with it.
-        ForeignKey("app_user.id", ondelete="CASCADE"),
-    )
-
-    token_hash: Mapped[str] = mapped_column(TOKEN_HASH, unique=True)
-    """SHA-256 of the cookie's token. The token itself is never stored."""
-
-    remember: Mapped[bool] = mapped_column(Boolean, server_default=false())
-    """Whether the cookie outlives the browser session (it has a max-age)."""
-
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    """After this the token is refused, whatever the browser still holds."""
-
-    __table_args__ = (
-        # Signing out every other session, on a password change.
-        Index("ix_user_session_user_id", "user_id"),
+        Index(
+            "uq_app_user_email",
+            "email",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
 
 class TokenPurpose(StrEnum):
     """What a one-time link does."""
 
+    EMAIL_VERIFY = "email_verify"
     EMAIL_CHANGE = "email_change"
     PASSWORD_RESET = "password_reset"
 
@@ -131,7 +122,7 @@ class AccountToken(Base):
 
     token_hash: Mapped[str] = mapped_column(TOKEN_HASH, unique=True)
 
-    new_email: Mapped[str | None] = mapped_column(Text)
+    new_email: Mapped[str | None] = mapped_column(CITEXT)
     """For an email change, the address it changes to: the pending email."""
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -153,7 +144,7 @@ class SignupRequest(Base):
 
     __tablename__ = "signup_request"
 
-    email: Mapped[str] = mapped_column(Text, primary_key=True)
+    email: Mapped[str] = mapped_column(CITEXT, primary_key=True)
     name: Mapped[str] = mapped_column(Text)
     requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -84,6 +84,12 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # Sessions live here (app/accounts/sessions.py), so a Redis that forgot
+    # everything on restart would sign everyone out. The append-only file, on a
+    # volume, keeps them across a restart and a recreated container.
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
     ports:
       - "${REDIS_PORT:-6379}:6379"
     healthcheck:
@@ -162,3 +168,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

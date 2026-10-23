@@ -11,6 +11,10 @@ dependencies = [
     # archiving is part of every ingest, not a developer convenience.
     "aiobotocore>=2.15",
     "alembic>=1.14",
+    # Password hashing (app/accounts/passwords.py): argon2id, the winner of
+    # the Password Hashing Competition and OWASP's first choice. Wheels for
+    # every platform the image builds on, so no compiler in the container.
+    "argon2-cffi>=23.1",
     "asyncpg>=0.30",
     "celery[redis]>=5.5",
     "fastapi>=0.115",

@@ -1,12 +1,12 @@
-"""Password hashing: scrypt, from the standard library.
+"""Password hashing: argon2id, from argon2-cffi.
 
-scrypt rather than bcrypt or argon2 because it is in ``hashlib`` and is a
-memory-hard KDF of the same class as argon2: nothing to install, nothing to pin,
-and nothing for a C extension to fail to build on the next base image. The
-parameters (n=2^14, r=8, p=1, 16 MiB of memory) are the ones Python's own docs
-and OWASP's cheat sheet give as the interactive-login minimum.
+argon2id because it is memory-hard: guessing one password costs 64 MiB of
+memory as well as time, which takes away most of what a GPU farm gains over the
+server that checks it. The parameters are argon2-cffi's defaults, RFC 9106's
+"low memory" profile (t=3, m=64 MiB, p=4), which is OWASP's recommended
+setting or stronger.
 
-A hash is stored as ``scrypt$n$r$p$salt$hash``, the salt and hash base64. The
+A hash is a PHC string, ``$argon2id$v=19$m=65536,t=3,p=4$salt$hash``. The
 parameters travel with it, so raising them later re-hashes each password on its
 owner's next login (:func:`needs_rehash`) rather than locking anyone out.
 
@@ -16,57 +16,43 @@ request in the process for as long.
 """
 
 import asyncio
-import base64
-import hashlib
-import hmac
+import contextlib
 import secrets
 from typing import Final
 
-N: Final = 2**14
-R: Final = 8
-P: Final = 1
-_SALT_BYTES: Final = 16
-_KEY_BYTES: Final = 32
-# scrypt needs 128 * n * r bytes; OpenSSL refuses anything over maxmem.
-_MAXMEM: Final = 64 * 1024 * 1024
-_SCHEME: Final = "scrypt"
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError
 
-
-def _derive(password: str, salt: bytes, n: int, r: int, p: int) -> bytes:
-    return hashlib.scrypt(
-        password.encode(), salt=salt, n=n, r=r, p=p, maxmem=_MAXMEM, dklen=_KEY_BYTES
-    )
-
-
-def _b64(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
+_HASHER: Final = PasswordHasher()
 
 
 def hash_password_sync(password: str) -> str:
-    salt = secrets.token_bytes(_SALT_BYTES)
-    key = _derive(password, salt, N, R, P)
-    return f"{_SCHEME}${N}${R}${P}${_b64(salt)}${_b64(key)}"
+    return _HASHER.hash(password)
 
 
 def verify_password_sync(password: str, stored: str) -> bool:
     """Whether ``password`` is the one ``stored`` was made from. False for a
     hash this cannot read, rather than an exception: it is a wrong password as
-    far as the caller is concerned."""
+    far as the caller is concerned. The comparison is constant time inside
+    argon2, so how long it takes says nothing about how much matched."""
     try:
-        scheme, n, r, p, salt, key = stored.split("$")
-        if scheme != _SCHEME:
-            return False
-        derived = _derive(password, base64.b64decode(salt), int(n), int(r), int(p))
-    except (ValueError, TypeError):
+        return _HASHER.verify(stored, password)
+    except VerificationError:
         return False
-    # Constant time, so how long a comparison takes says nothing about how
-    # much of the hash matched.
-    return hmac.compare_digest(derived, base64.b64decode(key))
+    except InvalidHashError:
+        # Refused without hashing, a hash argon2 cannot read would answer
+        # faster than a wrong password, and say which accounts have one.
+        with contextlib.suppress(VerificationError):
+            _HASHER.verify(DUMMY_HASH, password)
+        return False
 
 
 def needs_rehash(stored: str) -> bool:
     """Whether ``stored`` was made with other parameters than today's."""
-    return not stored.startswith(f"{_SCHEME}${N}${R}${P}$")
+    try:
+        return _HASHER.check_needs_rehash(stored)
+    except InvalidHashError:
+        return True
 
 
 async def hash_password(password: str) -> str:
@@ -78,6 +64,7 @@ async def verify_password(password: str, stored: str) -> bool:
 
 
 #: Verified against when the email names no account, so that a login for an
-#: unknown address takes as long as one with a wrong password, and the time
-#: an answer takes does not say which addresses have accounts.
+#: unknown address does the same argon2 work as one with a wrong password, and
+#: the time an answer takes does not say which addresses have accounts. Made
+#: with today's parameters, as every real hash is after its owner's next login.
 DUMMY_HASH: Final = hash_password_sync(secrets.token_urlsafe(16))

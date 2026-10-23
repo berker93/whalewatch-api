@@ -1,40 +1,68 @@
-"""Sessions and one-time tokens: random secrets the client holds and the database hashes.
+"""Sessions and one-time tokens: random secrets the client holds and the server hashes.
 
-A session's cookie and an emailed link both carry 32 random bytes. The table
-keeps only their SHA-256, so a leaked copy of it, a backup or a replica, is not
-a way in. A plain hash rather than a slow one is enough: the secret has 256
-bits, so there is nothing to guess, unlike a password.
+A session's cookie and an emailed link both carry 32 random bytes. The server
+keeps only their SHA-256, so a leaked copy of where they are kept, a Redis
+snapshot or a database backup, is not a way in. A plain hash rather than a slow
+one is enough: the secret has 256 bits, so there is nothing to guess, unlike a
+password.
 
-Sessions
---------
+Sessions, in Redis
+------------------
+A session is one Redis key, ``ww:session:<sha256 of the cookie>``, holding the
+user's id, and set to expire when the session does. Ending a session deletes
+the key, and the next request with that cookie is refused: revocation is
+instant, which a signed token (a JWT) cannot give without a lookup of its own.
+``ww:user-sessions:<user id>`` is the set of a user's session keys, so that a
+password change or reset can end every session the user has.
+
+Both are outside ``ww:v1:``, which cache invalidation deletes wholesale, and
+``ww:rl:``, the rate limiter's. Redis must keep them across a restart (the
+append-only file, as docker-compose.yml runs it) and must not evict them under
+memory pressure (``maxmemory-policy noeviction``), or a restart or a busy
+cache signs everyone out.
+
 ``remember`` (the login form's "keep me signed in") is a cookie with a max-age
 of :data:`REMEMBERED` and a session of that length; without it, the cookie
 ends with the browser and the session after :data:`UNREMEMBERED` whatever the
 browser does. Neither slides: a session ends when it was set to.
 
-One-time tokens
----------------
-Used once: confirming deletes the token. An email change keeps at most one
-pending per user, so a second change replaces the first and its link stops
-working.
+A Redis that cannot be reached raises :class:`SessionStoreError`: a
+request that needs to know who it is from is a 503, never a guess.
+
+One-time tokens, in Postgres
+----------------------------
+Used once: redeeming deletes the token. A user has at most one live token per
+purpose, so a second email change, reset or verification replaces the first
+and its link stops working.
 """
 
 import hashlib
+import json
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
-from sqlalchemy import delete, select
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AccountToken, AppUser, TokenPurpose, UserSession
+from app.db.models import AccountToken, AppUser, TokenPurpose
 
 REMEMBERED: Final = timedelta(days=30)
 UNREMEMBERED: Final = timedelta(hours=12)
 
 EMAIL_CHANGE_TTL: Final = timedelta(hours=24)
+EMAIL_VERIFY_TTL: Final = timedelta(hours=24)
 PASSWORD_RESET_TTL: Final = timedelta(hours=1)
+
+#: How stale ``app_user.last_seen_at`` may get before a request writes it: a
+#: write on every request would be a write on every page view.
+LAST_SEEN_EVERY: Final = timedelta(minutes=5)
+
+SESSION_KEY_PREFIX: Final = "ww:session:"
+USER_SESSIONS_PREFIX: Final = "ww:user-sessions:"
 
 
 def new_secret() -> str:
@@ -52,6 +80,10 @@ def now() -> datetime:
 # --- sessions -----------------------------------------------------------------
 
 
+class SessionStoreError(Exception):
+    """Redis could not be reached, so nobody can be told who they are."""
+
+
 @dataclass(frozen=True, slots=True)
 class StartedSession:
     token: str
@@ -60,16 +92,93 @@ class StartedSession:
     remember: bool
 
 
-async def start_session(session: AsyncSession, user_id: int, *, remember: bool) -> StartedSession:
-    token = new_secret()
-    expires_at = now() + (REMEMBERED if remember else UNREMEMBERED)
-    session.add(
-        UserSession(
-            user_id=user_id, token_hash=digest(token), remember=remember, expires_at=expires_at
+@dataclass(frozen=True, slots=True)
+class SessionRecord:
+    """What Redis keeps for one session."""
+
+    id: str
+    """The cookie's SHA-256: names the session without being a way in."""
+    user_id: int
+    remember: bool
+    expires_at: datetime
+
+
+class SessionStore:
+    """The live sessions, in Redis, by the hash of their cookie."""
+
+    def __init__(self, redis: Redis) -> None:
+        self._redis = redis
+
+    async def start(self, user_id: int, *, remember: bool) -> StartedSession:
+        token = new_secret()
+        session_id = digest(token)
+        expires_at = now() + (REMEMBERED if remember else UNREMEMBERED)
+        value = json.dumps(
+            {"user_id": user_id, "remember": remember, "expires_at": expires_at.isoformat()}
         )
-    )
-    await session.flush()
-    return StartedSession(token=token, expires_at=expires_at, remember=remember)
+        index = f"{USER_SESSIONS_PREFIX}{user_id}"
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                pipe.set(SESSION_KEY_PREFIX + session_id, value, exat=int(expires_at.timestamp()))
+                pipe.sadd(index, session_id)
+                # As long as the longest a session can be, from now: never
+                # shorter than any member's remaining life.
+                pipe.expire(index, int(REMEMBERED.total_seconds()))
+                await pipe.execute()
+        except (RedisError, OSError) as exc:
+            raise SessionStoreError from exc
+        return StartedSession(token=token, expires_at=expires_at, remember=remember)
+
+    async def find(self, token: str) -> SessionRecord | None:
+        """The live session ``token`` is the cookie of, or None: unknown, ended or expired."""
+        session_id = digest(token)
+        try:
+            value = await self._redis.get(SESSION_KEY_PREFIX + session_id)
+        except (RedisError, OSError) as exc:
+            raise SessionStoreError from exc
+        if value is None:
+            return None
+        stored = json.loads(value)
+        expires_at = datetime.fromisoformat(stored["expires_at"])
+        # Redis expires the key at the same second; this is for the second itself.
+        if expires_at <= now():
+            return None
+        return SessionRecord(
+            id=session_id,
+            user_id=int(stored["user_id"]),
+            remember=bool(stored["remember"]),
+            expires_at=expires_at,
+        )
+
+    async def end(self, token: str) -> None:
+        """End the session ``token`` is the cookie of. Nothing when there is none."""
+        record = await self.find(token)
+        if record is None:
+            return
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                pipe.delete(SESSION_KEY_PREFIX + record.id)
+                pipe.srem(f"{USER_SESSIONS_PREFIX}{record.user_id}", record.id)
+                await pipe.execute()
+        except (RedisError, OSError) as exc:
+            raise SessionStoreError from exc
+
+    async def end_all(self, user_id: int, *, keep: str | None) -> None:
+        """Sign the user out everywhere, but for session ``keep`` when given."""
+        index = f"{USER_SESSIONS_PREFIX}{user_id}"
+        try:
+            # redis-py types the set commands as sync-or-async; on the asyncio
+            # client they are always awaitable.
+            members: set[str] = await self._redis.smembers(index)  # type: ignore[misc]
+            ending = [member for member in members if member != keep]
+            if not ending:
+                return
+            async with self._redis.pipeline(transaction=True) as pipe:
+                pipe.delete(*(SESSION_KEY_PREFIX + member for member in ending))
+                pipe.srem(index, *ending)
+                await pipe.execute()
+        except (RedisError, OSError) as exc:
+            raise SessionStoreError from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,35 +186,38 @@ class Viewer:
     """Who a request is from: the signed-in user, and which of their sessions."""
 
     user: AppUser
-    session_id: int
+    session_id: str
     expires_at: datetime
 
 
-async def find_session(session: AsyncSession, token: str) -> Viewer | None:
-    """The live session ``token`` is the cookie of, or None: unknown, ended or expired."""
-    row = (
-        await session.execute(
-            select(AppUser, UserSession.id, UserSession.expires_at)
-            .join(UserSession, UserSession.user_id == AppUser.id)
-            .where(UserSession.token_hash == digest(token), UserSession.expires_at > now())
-        )
-    ).first()
-    if row is None:
+async def find_session(session: AsyncSession, store: SessionStore, token: str) -> Viewer | None:
+    """The live session ``token`` is the cookie of and its user, or None: the
+    session is unknown, ended or expired, or its account was deleted.
+
+    :raises SessionStoreError: when Redis cannot be reached.
+    """
+    record = await store.find(token)
+    if record is None:
         return None
-    user, session_id, expires_at = row
-    return Viewer(user=user, session_id=session_id, expires_at=expires_at)
+    user = await session.scalar(
+        select(AppUser).where(AppUser.id == record.user_id, AppUser.deleted_at.is_(None))
+    )
+    if user is None:
+        # Deleted since it signed in: the session goes with it.
+        await store.end(token)
+        return None
+    return Viewer(user=user, session_id=record.id, expires_at=record.expires_at)
 
 
-async def end_session(session: AsyncSession, token: str) -> None:
-    await session.execute(delete(UserSession).where(UserSession.token_hash == digest(token)))
-
-
-async def end_other_sessions(session: AsyncSession, user_id: int, *, keep: int | None) -> None:
-    """Sign the user out everywhere, but for session ``keep`` when given."""
-    statement = delete(UserSession).where(UserSession.user_id == user_id)
-    if keep is not None:
-        statement = statement.where(UserSession.id != keep)
-    await session.execute(statement)
+async def touch(session: AsyncSession, user: AppUser) -> None:
+    """Mark ``user`` seen now, when :data:`LAST_SEEN_EVERY` has passed since
+    the last time. Commits: the request may be a read that commits nothing."""
+    seen = now()
+    if user.last_seen_at is not None and seen - user.last_seen_at < LAST_SEEN_EVERY:
+        return
+    await session.execute(update(AppUser).where(AppUser.id == user.id).values(last_seen_at=seen))
+    await session.commit()
+    user.last_seen_at = seen
 
 
 # --- one-time tokens ------------------------------------------------------------
@@ -147,7 +259,10 @@ async def redeem_token(
     session: AsyncSession, token: str, purpose: TokenPurpose
 ) -> AccountToken | None:
     """The live token ``token`` is, deleted so it cannot be used again; None
-    when it is unknown, used, replaced or expired."""
+    when it is unknown, used, replaced or expired.
+
+    The DELETE ... RETURNING is the single use: of two requests racing with one
+    token, one deletes the row and the other finds nothing."""
     found = await session.scalar(
         delete(AccountToken)
         .where(

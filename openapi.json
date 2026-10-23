@@ -3055,7 +3055,7 @@
           "auth"
         ],
         "summary": "Sign in with an email and a password",
-        "description": "Sets the session cookie. A wrong email and a wrong password are the same\n403 `invalid_credentials`, and take as long, so neither says which addresses\nhave accounts.",
+        "description": "Sets the session cookie. A wrong email and a wrong password are the same\n403 `invalid_credentials`, and take as long, so neither says which addresses\nhave accounts. An unverified account signs in; it reads but saves nothing.\nAt most 5 attempts in 15 minutes from one address, and for one email: then\na 429 with `Retry-After`.",
         "operationId": "login",
         "requestBody": {
           "content": {
@@ -3125,7 +3125,7 @@
           "auth"
         ],
         "summary": "Sign out",
-        "description": "Ends the session the cookie names and clears the cookie. A 204 with no\ncookie, or one already ended, too: signing out twice is signed out.",
+        "description": "Ends the session the cookie names and clears the cookie. A 204 with no\ncookie, or one already ended, too: signing out twice is signed out. The\nsession is gone at once: the cookie, copied elsewhere, no longer works.",
         "operationId": "logout",
         "responses": {
           "204": {
@@ -3218,7 +3218,7 @@
           "auth"
         ],
         "summary": "Make an account, or ask for one while signups are closed",
-        "description": "While signups are closed, `status: recorded`: the request is kept and no\nsession starts. Open, `status: authed`, with the session cookie set. Either\nway the fields are checked first: `invalid_name`, `invalid_email` and\n`weak_password`, in that order.",
+        "description": "While signups are closed, `status: recorded`: the request is kept and no\nsession starts. Open, `status: authed`, with the session cookie set and a\nlink to verify the address emailed; until it is followed the account reads\neverything and saves nothing. Either way the fields are checked first:\n`invalid_name`, `invalid_email` and `weak_password`, in that order. Then at\nmost 5 attempts in 15 minutes from one address, and for one email.",
         "operationId": "register",
         "requestBody": {
           "content": {
@@ -3271,6 +3271,122 @@
           },
           "409": {
             "description": "`email_taken`: the address already has an account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`, or `forbidden_origin` for a write from elsewhere.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/verify-email": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Verify the account's email from its link",
+        "description": "From then on the account saves. Needs no session: the link may be\nopened on another device, and the token is the proof. A token that is\nunknown, used, replaced by a later one, or past its 24 hours is a 422\n`invalid_token`. Following a second link once verified is no change.",
+        "operationId": "verifyEmail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`, or `forbidden_origin` for a write from elsewhere.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/verify-email/resend": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Email another link to verify the account's email",
+        "description": "A fresh link, valid for 24 hours, replacing any sent before. Already\nverified: no change, and nothing sent. At most 5 in 15 minutes.",
+        "operationId": "resendVerificationEmail",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3371,7 +3487,7 @@
           "auth"
         ],
         "summary": "Email a password reset link",
-        "description": "A 204 whether or not the address has an account, so the answer reveals\nnone. When it has one, a link valid for an hour goes to it, replacing any\nsent before.",
+        "description": "A 204 whether or not the address has an account, so the answer reveals\nnone, and as fast: the email goes after the answer. When it has one, a link\nvalid for an hour and for one use goes to it, replacing any sent before.\nAt most 5 in 15 minutes from one address, and for one email.",
         "operationId": "requestPasswordReset",
         "requestBody": {
           "content": {
@@ -3434,7 +3550,7 @@
           "auth"
         ],
         "summary": "Set a new password from a reset link",
-        "description": "A token that is unknown, used, replaced or past its hour is a 422\n`invalid_token`. On success every session of the account is signed out:\nwhoever had the old password is no longer in.",
+        "description": "A token that is unknown, used, replaced or past its hour is a 422\n`invalid_token`. On success every session of the account is signed out:\nwhoever had the old password is no longer in. The link reached the\naccount's inbox, so an unverified email is verified too.",
         "operationId": "confirmPasswordReset",
         "requestBody": {
           "content": {
@@ -3484,6 +3600,56 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "The signed-in user, their plan and what it lets them do",
+        "description": "A 401 `unauthenticated` signed out, `session_expired` when the session\nhas ended. `entitlements.save` is false until the email is verified: the\naccount reads everything and saves nothing.",
+        "operationId": "getMe",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -3545,7 +3711,7 @@
           "account"
         ],
         "summary": "Change the name, the time zone, or (once confirmed) the email",
-        "description": "Fields left out, or null, stay as they are. `name` is stored trimmed and\n`time_zone` must be an IANA zone; both apply at once. A new `email` is\nstored lowercased and waits: `profile.email` keeps the current one,\n`pending_email` names the new one, a link goes to it and a notice to the\ncurrent address. A second change replaces the first. The current address\nsent again is no change, and cancels one waiting. One refused field and none\nis applied.",
+        "description": "Fields left out, or null, stay as they are. `name` is stored trimmed and\n`time_zone` must be an IANA zone; both apply at once. A new `email` is\nstored as typed and waits: `profile.email` keeps the current one,\n`pending_email` names the new one, a link goes to it and a notice to the\ncurrent address. A second change replaces the first. The current address\nsent again is no change, and cancels one waiting. One refused field and none\nis applied.",
         "operationId": "updateAccount",
         "requestBody": {
           "content": {
@@ -3625,7 +3791,7 @@
           "account"
         ],
         "summary": "Confirm an email change from its link",
-        "description": "Swaps the login to the new address and clears `pending_email`. From\nthen on the old address no longer logs in, and every session reports the\nnew one. A token that is unknown, used, replaced by a later change, or past\nits 24 hours is a 422 `invalid_token`; an address another account took in\nthe meantime, a 422 `invalid_email`. Needs no session.",
+        "description": "Swaps the login to the new address and clears `pending_email`. From\nthen on the old address no longer logs in, and every session reports the\nnew one. The link reached the new address, so the account's email is\nverified, whether or not the old one was. A token that is unknown, used,\nreplaced by a later change, or past its 24 hours is a 422 `invalid_token`;\nan address another account took in the meantime, a 422 `invalid_email`.\nNeeds no session.",
         "operationId": "confirmEmailChange",
         "requestBody": {
           "content": {
@@ -3738,7 +3904,7 @@
           "watchlist"
         ],
         "summary": "Follow a stock, an investor or an insider",
-        "description": "Adds `ref` at the end of its list. Already followed is no change. A ref\nthat names nothing is a 404; a full watchlist (500 items) a 422.",
+        "description": "Adds `ref` at the end of its list. Already followed is no change. A ref\nthat names nothing is a 404; a full watchlist (the plan's\n`watchlist_max_items`, 500 on Free) a 422; an account whose email is not\nverified a 403 `email_unverified`.",
         "operationId": "addWatchlistItem",
         "requestBody": {
           "content": {
@@ -3790,7 +3956,7 @@
             }
           },
           "403": {
-            "description": "`forbidden_origin`: a write from a site not allowed to call.",
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3826,7 +3992,7 @@
           "watchlist"
         ],
         "summary": "Unfollow a stock, an investor or an insider",
-        "description": "Removes `ref`. Not followed is no change. A ref that names nothing is a 404.",
+        "description": "Removes `ref`. Not followed is no change. A ref that names nothing is a\n404; an account whose email is not verified a 403 `email_unverified`.",
         "operationId": "removeWatchlistItem",
         "requestBody": {
           "content": {
@@ -3878,7 +4044,7 @@
             }
           },
           "403": {
-            "description": "`forbidden_origin`: a write from a site not allowed to call.",
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4656,7 +4822,7 @@
           "session"
         ],
         "title": "Authed",
-        "description": "Signups are open: the account exists and the response set its session cookie."
+        "description": "Signups are open: the account exists and the response set its session cookie.\nA link to verify the address has been emailed; until it is followed,\n`session.user.email_verified` is false and the account saves nothing."
       },
       "ChangeAction": {
         "type": "string",
@@ -5006,6 +5172,25 @@
         "title": "EmailConfirm",
         "description": "The token from an email change's confirmation link."
       },
+      "EmailVerifyRequest": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token",
+            "description": "The `token` query parameter of the emailed link.",
+            "examples": [
+              "Zq3c9V0yJmL2x5r8u1N4a7D6b0E3f9H2k5M8p1S4t7W"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "EmailVerifyRequest",
+        "description": "The token from a verification link."
+      },
       "ErrorCode": {
         "type": "string",
         "enum": [
@@ -5026,6 +5211,8 @@
           "email_taken",
           "invalid_token",
           "forbidden_origin",
+          "email_unverified",
+          "unavailable",
           "http_error"
         ],
         "title": "ErrorCode",
@@ -8563,6 +8750,173 @@
         "title": "MarketHoldingEnvelope",
         "description": "The most widely or heavily held stocks."
       },
+      "Me": {
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/MeUser",
+            "description": "Who is signed in."
+          },
+          "plan": {
+            "$ref": "#/components/schemas/MePlan",
+            "description": "Which plan the account is on: Free, for everyone today."
+          },
+          "entitlements": {
+            "$ref": "#/components/schemas/MeEntitlements",
+            "description": "What the account may do now."
+          }
+        },
+        "type": "object",
+        "required": [
+          "user",
+          "plan",
+          "entitlements"
+        ],
+        "title": "Me",
+        "description": "The signed-in user, their plan and their entitlements."
+      },
+      "MeEntitlements": {
+        "properties": {
+          "save": {
+            "type": "boolean",
+            "title": "Save",
+            "description": "Whether the account may save anything: follow and unfollow. False until its email is verified; a save then is a 403 `email_unverified`.",
+            "examples": [
+              true
+            ]
+          },
+          "watchlist_max_items": {
+            "type": "integer",
+            "title": "Watchlist Max Items",
+            "description": "The most things the watchlist holds.",
+            "examples": [
+              500
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "save",
+          "watchlist_max_items"
+        ],
+        "title": "MeEntitlements",
+        "description": "What the account may do now: its plan's allowance, narrowed by its state."
+      },
+      "MePlan": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Stable, for a program to branch on.",
+            "examples": [
+              "free"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "For a person.",
+            "examples": [
+              "Free"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "MePlan",
+        "description": "The plan the account is on."
+      },
+      "MeUser": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The login, as typed.",
+            "examples": [
+              "ada@example.com"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name on the account.",
+            "examples": [
+              "Ada Lovelace"
+            ]
+          },
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone",
+            "description": "The IANA zone times are shown in.",
+            "examples": [
+              "America/New_York"
+            ]
+          },
+          "email_verified": {
+            "type": "boolean",
+            "title": "Email Verified",
+            "description": "Whether the address has been verified. False: reads, saves nothing.",
+            "examples": [
+              true
+            ]
+          },
+          "email_verified_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email Verified At",
+            "description": "When it was verified. Null while it is not.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When the account was made.",
+            "examples": [
+              "2026-10-18T10:00:00Z"
+            ]
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At",
+            "description": "The last signed-in request, to within five minutes. This one, usually.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "name",
+          "time_zone",
+          "email_verified",
+          "email_verified_at",
+          "created_at",
+          "last_seen_at"
+        ],
+        "title": "MeUser",
+        "description": "The signed-in account."
+      },
       "Meta": {
         "properties": {
           "period": {
@@ -9570,7 +9924,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
             "examples": [
               "not_found"
             ]
@@ -9685,7 +10039,7 @@
           "email": {
             "type": "string",
             "title": "Email",
-            "description": "The login. Stored trimmed and lowercased.",
+            "description": "The login. Stored trimmed, as typed, and compared without case: `Ada@example.com` and `ada@example.com` are one account.",
             "examples": [
               "ada@example.com"
             ]
@@ -9844,11 +10198,20 @@
             "examples": [
               "ada@example.com"
             ]
+          },
+          "email_verified": {
+            "type": "boolean",
+            "title": "Email Verified",
+            "description": "Whether the address has been verified by its emailed link. Until it is, the account reads everything and saves nothing (`email_unverified`).",
+            "examples": [
+              true
+            ]
           }
         },
         "type": "object",
         "required": [
-          "email"
+          "email",
+          "email_verified"
         ],
         "title": "SessionUser",
         "description": "Who a session is for."
@@ -10440,7 +10803,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
             "examples": [
               "not_found"
             ]
@@ -11559,7 +11922,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
             "examples": [
               "not_found"
             ]

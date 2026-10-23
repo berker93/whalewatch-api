@@ -76,12 +76,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts.plans import MAX_WATCHLIST_ITEMS
 from app.accounts.rules import DEFAULT_TIME_ZONE, time_zone_problem
 from app.api.auth import OptionalViewerDep
 from app.api.deps import SessionDep
 from app.api.errors import INVALID, invalid
 from app.api.routers.insiders import _codes_condition, _transaction
-from app.api.routers.watchlist import MAX_ITEMS, normalise_cik, normalise_cusip
+from app.api.routers.watchlist import normalise_cik, normalise_cusip
 from app.api.schemas.envelope import Coverage
 from app.api.schemas.market import LargestChange
 from app.api.schemas.timeline import (
@@ -178,8 +179,8 @@ def parse_refs(values: Sequence[str] | None) -> Refs:
             if (kind, ident) not in seen:
                 seen.add((kind, ident))
                 ordered.append(ref)
-    if len(ordered) > MAX_ITEMS:
-        raise invalid("ref", f"at most {MAX_ITEMS} refs, as many as a watchlist holds")
+    if len(ordered) > MAX_WATCHLIST_ITEMS:
+        raise invalid("ref", f"at most {MAX_WATCHLIST_ITEMS} refs, as many as a watchlist holds")
     return Refs(
         ordered=tuple(ordered),
         stocks=frozenset(r.cusip for r in ordered if isinstance(r, WatchStock)),

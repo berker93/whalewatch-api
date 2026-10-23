@@ -73,11 +73,14 @@ Errors keep the existing shape, `{ error: { code, message, detail, request_id } 
 | 401 | `session_expired` | any signed-in route, `GET /v1/auth/session` | The cookie named a session that ended, ran out or was signed out. The response also clears the cookie |
 | 403 | `invalid_credentials` | login, change password | Wrong email or password, or wrong current password. **Never a 401** |
 | 403 | `forbidden_origin` | any write | The `Origin` isn't on the API's allow-list. A config error, not a user error |
+| 403 | `email_unverified` | watchlist `PUT` / `DELETE` | The account's email isn't verified yet: it reads everything and saves nothing. Offer "resend the link" (§5) |
 | 409 | `email_taken` | register | The address already has an account (only while signups are open) |
 | 422 | `validation_error` | everywhere | `detail.errors[].loc` is `["body", "<wire field>"]` or `["query", "<param>"]` |
 | 422 | `weak_password` / `invalid_email` / `invalid_name` | register, change password, reset | Same `detail.errors` shape, with its own code |
 | 422 | `invalid_token` | email confirm, reset confirm | The link is unknown, used, replaced or expired |
-| 429 | `rate_limited` | login, register, password calls, confirm links | 10 per minute per IP by default. `Retry-After` is set |
+| 429 | `rate_limited` | login, register, reset request, resend verification | 5 attempts per 15 minutes, per IP **and** per email, each action on its own. Every attempt counts, successful ones too. `Retry-After` is set |
+| 429 | `rate_limited` | change password, the emailed links' confirm calls | 10 per minute per IP. `Retry-After` is set |
+| 503 | `unavailable` | any signed-in route, login | Sessions can't be read right now (Redis is down). **Not** a sign-out: keep the user where they are and retry after `Retry-After` |
 
 `isUnauthorized()` (status 401) stays correct: a 401 always means "send them to log in".
 
@@ -104,9 +107,9 @@ Errors keep the existing shape, `{ error: { code, message, detail, request_id } 
 
 - **All or nothing.** Every field is checked before any is applied, and every refusal comes back in one 422, one `detail.errors` entry per field: `["body","name"]`, `["body","email"]`, `["body","time_zone"]`. `refusedFields()` already reads these.
 - **An email on another account is a 422 on `email`**, not a 409, as TA-11 asked.
-- **Rules are the FE's or looser:** name ≥ 2 characters once trimmed (≤ 200), email matches `EMAIL_PATTERN` (≤ 254), any IANA zone Postgres knows. `name` is stored trimmed, `email` lowercased.
+- **Rules are the FE's or looser:** name ≥ 2 characters once trimmed (≤ 200), email matches `EMAIL_PATTERN` (≤ 254), any IANA zone Postgres knows. `name` is stored trimmed; `email` is stored as typed and compared without case (`Ada@` and `ada@` are one account). A change of case alone is no change.
 - **A new email waits.** `profile.email` keeps the old one, `pending_email` names the new one, a link goes to the new address and a notice to the old. Sending the current email again is "no change" and cancels a waiting change. A second change replaces the first, and the first link stops working.
-- **Confirming changes the login.** After `POST /v1/account/email/confirm`, `GET /v1/auth/session` reports the new address and the old one no longer logs in.
+- **Confirming changes the login.** After `POST /v1/account/email/confirm`, `GET /v1/auth/session` reports the new address and the old one no longer logs in. It also verifies the account's email: the link reached the new address.
 
 ### `apiSource`
 
@@ -311,8 +314,13 @@ The current quarter is the one that ended most recently in `tz`; `meta.period` a
 | `POST /v1/auth/password` | `{ current_password, new_password }` | `204` |
 | `POST /v1/auth/password-reset` | `{ email }` | `204`, always |
 | `POST /v1/auth/password-reset/confirm` | `{ token, new_password }` | `204` |
+| `POST /v1/auth/verify-email` | `{ token }` | `204`. No session needed |
+| `POST /v1/auth/verify-email/resend` | none, signed in | `204`. Nothing is sent once verified |
+| `GET /v1/me` | none, signed in | `{ user, plan, entitlements }` (below) |
 
-`Session` is `{ user: { email }, expires_at }`. The FE's `Session` only needs `user`.
+`Session` is `{ user: { email, email_verified }, expires_at }`. The FE's `Session` only needs `user`.
+
+`GET /v1/me` is the one call an app page needs before it renders: `user` (`email`, `name`, `time_zone`, `email_verified`, `email_verified_at`, `created_at`, `last_seen_at`), `plan` (`{ id: 'free', name: 'Free' }` for everyone today) and `entitlements` (`save`, `watchlist_max_items`). Gate the follow buttons on `entitlements.save`, not on `email_verified`, so a paid plan later changes nothing on the page.
 
 `remember: false` gives a cookie without `Max-Age`, which ends with the browser, and a server-side session of 12 hours. `remember: true` gives 30 days.
 
@@ -323,7 +331,8 @@ The current quarter is the one that ended most recently in `tz`; `meta.period` a
 | `invalid_credentials`, `invalid_email`, `invalid_name`, `weak_password`, `session_expired` | same |
 | `unauthenticated` (from `changePassword`) | `session_expired`. TA-12: a 401 reads as "Your session ended" |
 | `email_taken` | No FE code yet. Add `'email_taken'` to `AuthErrorCode` with copy like "That address already has an account. Log in instead.", or map it to `invalid_email` for now |
-| `rate_limited`, anything else, network failure | `unavailable` (TA-12: a `rate_limited` code can come later) |
+| `email_unverified` | No FE code yet. Show a "verify your email" banner with a resend button rather than an error |
+| `rate_limited`, `unavailable`, anything else, network failure | `unavailable` (TA-12: a `rate_limited` code can come later) |
 
 ### The adapter
 
@@ -404,18 +413,20 @@ export const apiAuth: AuthAdapter = {
 - **Password rule:** at least 10 characters (≤ 1000), the FE's `PASSWORD_MIN_LENGTH`. A new password equal to the current one is `422 weak_password`.
 - **A password change** stamps `password_changed_at` (a `GET /v1/account` right after the `204` has it) and signs out every other session. The current one survives.
 - **A password reset** signs out every session of the account. A weak `new_password` is refused before the token is spent, so the user can retry with the same link.
-- **Login takes the same time for a wrong email and a wrong password**, and both answer `403 invalid_credentials`.
-- **Signups:** `SIGNUPS_OPEN=false` by default, matching `FEATURES.signupsOpen`. Registration validates the fields, records the request and answers `recorded`. Accounts are made with the `create-user` CLI verb.
+- **Login takes the same time for a wrong email and a wrong password**, and both answer `403 invalid_credentials`. A password reset request answers `204` as fast whether or not the address has an account: the email goes after the answer.
+- **Signups:** `SIGNUPS_OPEN=false` by default, matching `FEATURES.signupsOpen`. Registration validates the fields, records the request and answers `recorded`. Accounts are made with the `create-user` CLI verb, and count as verified.
+- **Open signups start unverified.** `status: 'authed'` with `session.user.email_verified: false`, and a verification link (24 hours, one use) goes to the address. The account can browse, and its watchlist writes are `403 email_unverified` until the link is followed. A password reset link verifies the address too.
 
 ---
 
-## 6 · Two pages the FE doesn't have yet
+## 6 · Three pages the FE doesn't have yet
 
 Both links are built as `WEB_URL + path + ?token=<token>`. `WEB_URL` is the app surface (`https://app.whalewatch.com`; `http://app.localhost:5173` in dev). The paths are constants in `app/accounts/mail.py`. Say if you want different ones.
 
 | Page | Path | What it does |
 |---|---|---|
 | Confirm email change | `/account/confirm-email?token=…` | `POST /v1/account/email/confirm { token }`. `204` → "Email changed", then invalidate the account and session queries. `422 invalid_token` → "This link has expired. Change your email again." `422 invalid_email` → the address was taken in the meantime. **Works signed out**: the link may be opened on another device |
+| Verify email | `/verify-email?token=…` | `POST /v1/auth/verify-email { token }`. `204` → "Email verified", then invalidate the `me` and session queries. `422 invalid_token` → offer a new link (`POST /v1/auth/verify-email/resend`, signed in). **Works signed out** |
 | Reset password | `/reset-password?token=…` | A new-password form → `POST /v1/auth/password-reset/confirm { token, new_password }`. `204` → "Password changed. Log in." (every session was signed out). `422 invalid_token` → offer to send a new link. `422 weak_password` → under the field |
 
 `AuthAdapter` needs one more method for the second, for example `confirmPasswordReset(token, next)`, and `DataSource` (or the account module) one for the first, for example `confirmEmailChange(token)`.
@@ -445,6 +456,8 @@ Both links are built as `WEB_URL + path + ?token=<token>`. `WEB_URL` is the app 
 - [ ] `apiAuth`: every method (§5)
 - [ ] `AuthErrorCode`: decide on `email_taken`
 - [ ] Optional: `pendingEmail` on the FE `AccountProfile`, read from `GET /v1/account`
-- [ ] Pages: confirm email, reset password (§6)
+- [ ] Pages: verify email, confirm email change, reset password (§6)
+- [ ] `GET /v1/me` for the app shell; gate saving on `entitlements.save`, with a resend-link banner for `email_unverified`
+- [ ] Treat `503 unavailable` as "try again", never as signed out
 - [ ] First-sign-in watchlist migration (§4)
 - [ ] Remove the `501` stubs for these methods. Saved filters and recents still have no endpoints

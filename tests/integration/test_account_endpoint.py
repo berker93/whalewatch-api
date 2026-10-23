@@ -138,12 +138,12 @@ async def test_a_new_email_waits_for_its_link_and_tells_the_old_address(
     update_ = response.json()
     assert update_["profile"]["email"] == "ada@example.com"
     assert (
-        update_["pending_email"] == update_["profile"]["pending_email"] == "ada@analytical.engine"
+        update_["pending_email"] == update_["profile"]["pending_email"] == "Ada@Analytical.Engine"
     )
-    assert [m.to for m in outbox.sent] == ["ada@analytical.engine", "ada@example.com"]
+    assert [m.to for m in outbox.sent] == ["Ada@Analytical.Engine", "ada@example.com"]
     assert "http://app.localhost:5173/account/confirm-email?token=" in outbox.sent[0].body
     # A reload still shows it.
-    assert (await client.get("/v1/account")).json()["pending_email"] == "ada@analytical.engine"
+    assert (await client.get("/v1/account")).json()["pending_email"] == "Ada@Analytical.Engine"
 
 
 async def test_confirming_swaps_the_login_everywhere(
@@ -162,7 +162,8 @@ async def test_confirming_swaps_the_login_everywhere(
     account = (await client.get("/v1/account")).json()
     assert (account["email"], account["pending_email"]) == ("ada@analytical.engine", None)
     assert (await client.get("/v1/auth/session")).json()["session"]["user"] == {
-        "email": "ada@analytical.engine"
+        "email": "ada@analytical.engine",
+        "email_verified": True,
     }
     old = await client.post(
         "/v1/auth/login", json={"email": "ada@example.com", "password": PASSWORD}, headers=FRONTEND
@@ -264,3 +265,33 @@ async def test_an_address_taken_before_confirming_is_refused(
     assert response.json()["error"]["code"] == "invalid_email"
     emails = (await db_session.scalars(select(AppUser.email).order_by(AppUser.id))).all()
     assert emails == ["ada@example.com", "new@example.com"]
+
+
+async def test_confirming_a_new_email_verifies_the_account(
+    client: AsyncClient, db_session: AsyncSession, outbox: Outbox
+) -> None:
+    """The link reached the new address, which is all a verification shows."""
+    await make_user(db_session, verified=False)
+    await sign_in(client)
+    await _patch(client, email="ada@analytical.engine")
+
+    await client.post(
+        "/v1/account/email/confirm",
+        json={"token": outbox.token_for("ada@analytical.engine")},
+        headers=FRONTEND,
+    )
+
+    me = (await client.get("/v1/me")).json()
+    assert (me["user"]["email"], me["entitlements"]["save"]) == ("ada@analytical.engine", True)
+
+
+async def test_a_change_of_case_alone_is_no_change(
+    client: AsyncClient, db_session: AsyncSession, outbox: Outbox
+) -> None:
+    await make_user(db_session)
+    await sign_in(client)
+
+    response = await _patch(client, email="ADA@Example.com")
+
+    assert response.json()["pending_email"] is None
+    assert outbox.sent == []

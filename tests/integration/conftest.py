@@ -52,6 +52,7 @@ from sqlalchemy.pool import NullPool
 from testcontainers.community.postgres import PostgresContainer
 
 from alembic import command
+from app.accounts.sessions import SessionStore
 from app.api.deps import get_redis, get_session
 from app.core.config import Settings
 from app.db.session import create_session_factory
@@ -250,8 +251,15 @@ def settings(pg_container: PostgresContainer, tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
+def session_redis() -> FakeRedis:
+    """Where the test's sessions are kept: one fake for the whole test, unlike
+    the cache's, so a cookie set by one request is known to the next."""
+    return FakeRedis()
+
+
+@pytest.fixture
 async def client(
-    app: FastAPI, migrated_engine: AsyncEngine, db_session: AsyncSession
+    app: FastAPI, migrated_engine: AsyncEngine, db_session: AsyncSession, session_redis: FakeRedis
 ) -> AsyncIterator[AsyncClient]:
     """An HTTP client whose requests read and write the test's transaction.
 
@@ -275,6 +283,7 @@ async def client(
     """
     app.state.engine = migrated_engine
     app.state.session_factory = create_session_factory(migrated_engine)
+    app.state.sessions = SessionStore(session_redis)  # type: ignore[arg-type]
     app.dependency_overrides[get_session] = lambda: db_session
     app.dependency_overrides.setdefault(get_redis, lambda: FakeRedis())
 

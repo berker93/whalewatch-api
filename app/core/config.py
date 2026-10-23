@@ -114,8 +114,15 @@ class Settings(BaseSettings):
     session_cookie_name: str = "ww_session"
     session_cookie_domain: str | None = None
 
-    # Logins, registrations and password calls per client IP per minute, on top
-    # of rate_limit_per_minute: a password is guessed one request at a time.
+    # Logins, registrations and password reset requests: this many attempts in
+    # this many seconds, counted per client IP and per email address, each
+    # action on its own. A password is guessed one request at a time, from one
+    # address against many accounts or from many addresses against one.
+    auth_attempt_limit: int = Field(default=5, ge=1)
+    auth_attempt_window_seconds: int = Field(default=15 * 60, ge=1)
+
+    # The other credential calls (a password change, the emailed links' tokens)
+    # per client IP per minute, on top of rate_limit_per_minute.
     auth_rate_limit_per_minute: int = Field(default=10, ge=1)
 
     # Whether POST /v1/auth/register makes an account. Closed, it records the

@@ -38,7 +38,11 @@ class RegisterRequest(_Request):
 
     name: str = Field(description="At least 2 characters once trimmed.", examples=["Ada Lovelace"])
     email: str = Field(
-        description="The login. Stored trimmed and lowercased.", examples=["ada@example.com"]
+        description=(
+            "The login. Stored trimmed, as typed, and compared without case: "
+            "`Ada@example.com` and `ada@example.com` are one account."
+        ),
+        examples=["ada@example.com"],
     )
     password: str = Field(description="At least 10 characters.", examples=["correct horse 42"])
     time_zone: str | None = Field(
@@ -55,6 +59,13 @@ class SessionUser(BaseModel):
     """Who a session is for."""
 
     email: str = Field(description="The account's login.", examples=["ada@example.com"])
+    email_verified: bool = Field(
+        description=(
+            "Whether the address has been verified by its emailed link. Until it is, "
+            "the account reads everything and saves nothing (`email_unverified`)."
+        ),
+        examples=[True],
+    )
 
 
 class Session(BaseModel):
@@ -84,7 +95,9 @@ class Recorded(BaseModel):
 
 
 class Authed(BaseModel):
-    """Signups are open: the account exists and the response set its session cookie."""
+    """Signups are open: the account exists and the response set its session cookie.
+    A link to verify the address has been emailed; until it is followed,
+    `session.user.email_verified` is false and the account saves nothing."""
 
     status: Literal["authed"] = Field(description="Signed in.", examples=["authed"])
     session: Session = Field(description="The new session.")
@@ -122,4 +135,13 @@ class PasswordResetConfirm(_Request):
     )
     new_password: str = Field(
         description="At least 10 characters.", examples=["battery staple 1999"]
+    )
+
+
+class EmailVerifyRequest(_Request):
+    """The token from a verification link."""
+
+    token: str = Field(
+        description="The `token` query parameter of the emailed link.",
+        examples=["Zq3c9V0yJmL2x5r8u1N4a7D6b0E3f9H2k5M8p1S4t7W"],
     )

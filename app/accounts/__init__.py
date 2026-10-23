@@ -1,9 +1,11 @@
 """Accounts: who is signed in, and the rules their names, emails and passwords follow.
 
 ``passwords``
-    scrypt hashing, in a thread.
+    argon2id hashing, in a thread.
 ``sessions``
-    The session cookie's token and the emailed links' tokens, hashed at rest.
+    Sessions in Redis and the emailed links' tokens in Postgres, both hashed.
+``plans``
+    What each plan lets an account do: what ``GET /v1/me`` calls entitlements.
 ``rules``
     What a name, an email, a password and a time zone must be: the frontend's
     rules or looser.

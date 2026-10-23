@@ -59,8 +59,10 @@ logger = get_logger(__name__)
 
 #: Outside ``ww:v1:``, which cache invalidation deletes wholesale.
 KEY_PREFIX: Final = "ww:rl:"
-#: The stricter limit on sign-ins and password calls (app.api.auth).
+#: The stricter limit on password changes and emailed tokens (app.api.auth).
 AUTH_KEY_PREFIX: Final = "ww:rl:auth:"
+#: Logins, registrations and resets, per IP and per email (app.api.auth.limit_attempts).
+ATTEMPTS_KEY_PREFIX: Final = "ww:rl:attempts:"
 
 #: The load balancer's and the orchestrator's probes, which come from a few
 #: addresses many times a minute and would spend those addresses' budgets.

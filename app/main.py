@@ -19,7 +19,8 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 from starlette.middleware.cors import CORSMiddleware
 
-from app.api.errors import RATE_LIMITED, http_error, validation_error
+from app.accounts.sessions import SessionStore, SessionStoreError
+from app.api.errors import RATE_LIMITED, http_error, sessions_unavailable, validation_error
 from app.api.middleware import (
     REQUEST_ID_HEADER,
     BodySizeLimitMiddleware,
@@ -30,7 +31,12 @@ from app.api.middleware import (
     UnhandledErrorMiddleware,
     request_id_on_server_error,
 )
-from app.api.rate_limit import AUTH_KEY_PREFIX, RateLimitMiddleware, SlidingWindowLimiter
+from app.api.rate_limit import (
+    ATTEMPTS_KEY_PREFIX,
+    AUTH_KEY_PREFIX,
+    RateLimitMiddleware,
+    SlidingWindowLimiter,
+)
 from app.api.routers import (
     account,
     auth,
@@ -39,6 +45,7 @@ from app.api.routers import (
     insiders,
     investors,
     market,
+    me,
     meta,
     portfolio,
     search,
@@ -78,6 +85,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.auth_rate_limiter = SlidingWindowLimiter(
         app.state.redis, settings.auth_rate_limit_per_minute, prefix=AUTH_KEY_PREFIX
     )
+    app.state.attempt_limiter = SlidingWindowLimiter(
+        app.state.redis,
+        settings.auth_attempt_limit,
+        settings.auth_attempt_window_seconds,
+        prefix=ATTEMPTS_KEY_PREFIX,
+    )
+    app.state.sessions = SessionStore(app.state.redis)
     try:
         yield
     finally:
@@ -165,6 +179,7 @@ def create_app(settings: Settings) -> FastAPI:
     # path and the 405 that routing raises are rendered here too.
     app.add_exception_handler(HTTPException, http_error)
     app.add_exception_handler(RequestValidationError, validation_error)
+    app.add_exception_handler(SessionStoreError, sessions_unavailable)
 
     # The probes are not rate limited; everything else documents its 429.
     app.include_router(health.router)
@@ -178,6 +193,7 @@ def create_app(settings: Settings) -> FastAPI:
         search,
         meta,
         auth,
+        me,
         account,
         watchlist,
         timeline,

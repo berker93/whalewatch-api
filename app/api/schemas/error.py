@@ -45,6 +45,8 @@ class ErrorCode(StrEnum):
     EMAIL_TAKEN = "email_taken"
     INVALID_TOKEN = "invalid_token"
     FORBIDDEN_ORIGIN = "forbidden_origin"
+    EMAIL_UNVERIFIED = "email_unverified"
+    UNAVAILABLE = "unavailable"
     #: Any other status. Nothing in this API raises one on purpose; it is here
     #: so that an exception from a dependency still answers in this shape.
     HTTP_ERROR = "http_error"
@@ -59,8 +61,9 @@ class ProblemError(BaseModel):
             "malformed, or belongs to a different listing or sort. `not_found`: no such "
             "thing, or nothing published for the period asked for. `validation_error`: "
             "a parameter is missing or malformed; `detail.errors` says which. "
-            "`rate_limited`: too many requests from this address; wait `Retry-After` "
-            "seconds. `payload_too_large`: the request body is over the limit. "
+            "`rate_limited`: too many requests from this address, or too many sign-in "
+            "attempts for this email; wait `Retry-After` seconds. "
+            "`payload_too_large`: the request body is over the limit. "
             "`timeout`: the answer took too long to build. `internal_error`: a fault "
             "on our side; quote `request_id` when reporting it. Accounts: "
             "`unauthenticated` (401): no session; `session_expired` (401): the "
@@ -70,7 +73,10 @@ class ProblemError(BaseModel):
             "refused field, named in `detail.errors`; `email_taken` (409): "
             "registration for an address that has an account; `invalid_token` (422): "
             "an emailed link that is unknown, used, replaced or expired; "
-            "`forbidden_origin` (403): a write from a site not allowed to call."
+            "`forbidden_origin` (403): a write from a site not allowed to call; "
+            "`email_unverified` (403): a save by an account whose email is not "
+            "verified yet; `unavailable` (503): sessions cannot be read right now, "
+            "try again shortly."
         ),
         examples=["not_found"],
     )

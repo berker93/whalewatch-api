@@ -32,6 +32,7 @@ from app.accounts.mail import deliver, email_change_confirmation, email_change_n
 from app.accounts.sessions import (
     EMAIL_CHANGE_TTL,
     issue_token,
+    now,
     pending_email,
     redeem_token,
     revoke_tokens,
@@ -78,7 +79,7 @@ async def _email_taken(session: AsyncSession, email: str, *, by_other_than: int)
     found = await session.scalar(
         select(func.count())
         .select_from(AppUser)
-        .where(AppUser.email == email, AppUser.id != by_other_than)
+        .where(AppUser.email == email, AppUser.id != by_other_than, AppUser.deleted_at.is_(None))
     )
     return bool(found)
 
@@ -108,7 +109,7 @@ async def update_account(
 ) -> AccountUpdate:
     """Fields left out, or null, stay as they are. `name` is stored trimmed and
     `time_zone` must be an IANA zone; both apply at once. A new `email` is
-    stored lowercased and waits: `profile.email` keeps the current one,
+    stored as typed and waits: `profile.email` keeps the current one,
     `pending_email` names the new one, a link goes to it and a notice to the
     current address. A second change replaces the first. The current address
     sent again is no change, and cancels one waiting. One refused field and none
@@ -121,7 +122,10 @@ async def update_account(
         errors.append(_error("name", problem))
 
     email = None if body.email is None else rules.normalise_email(body.email)
-    if email is not None and email != user.email:
+    # Compared as the citext column compares: a change of case alone is the
+    # same login, and no change.
+    same_email = email is not None and email.lower() == user.email.lower()
+    if email is not None and not same_email:
         if problem := rules.email_problem(email):
             errors.append(_error("email", problem))
         elif await _email_taken(session, email, by_other_than=user.id):
@@ -140,7 +144,7 @@ async def update_account(
         user.time_zone = zone
 
     token: str | None = None
-    if email == user.email:
+    if same_email:
         await revoke_tokens(session, user.id, TokenPurpose.EMAIL_CHANGE)
     elif email is not None:
         token = await issue_token(
@@ -175,9 +179,11 @@ def _error(field: str, message: str) -> dict[str, object]:
 async def confirm_email_change(body: EmailConfirm, session: SessionDep) -> None:
     """Swaps the login to the new address and clears `pending_email`. From
     then on the old address no longer logs in, and every session reports the
-    new one. A token that is unknown, used, replaced by a later change, or past
-    its 24 hours is a 422 `invalid_token`; an address another account took in
-    the meantime, a 422 `invalid_email`. Needs no session."""
+    new one. The link reached the new address, so the account's email is
+    verified, whether or not the old one was. A token that is unknown, used,
+    replaced by a later change, or past its 24 hours is a 422 `invalid_token`;
+    an address another account took in the meantime, a 422 `invalid_email`.
+    Needs no session."""
     token = await redeem_token(session, body.token, TokenPurpose.EMAIL_CHANGE)
     if token is None or token.new_email is None:
         raise refused(
@@ -191,5 +197,13 @@ async def confirm_email_change(body: EmailConfirm, session: SessionDep) -> None:
         raise refused(ErrorCode.INVALID_EMAIL, "email", "is already on another account")
     user = await session.get(AppUser, token.user_id)
     assert user is not None  # the token's foreign key cascades
+    if user.deleted_at is not None:
+        await session.commit()
+        raise refused(
+            ErrorCode.INVALID_TOKEN, "token", "the link is not valid any more: the account is gone"
+        )
     user.email = token.new_email
+    user.email_verified_at = now()
+    # A verification link for the old address would verify the new one.
+    await revoke_tokens(session, user.id, TokenPurpose.EMAIL_VERIFY)
     await session.commit()

@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
+from app.accounts.sessions import SessionStore
 from app.api.deps import get_redis
 from app.core.config import Settings
 from app.main import create_app
@@ -75,6 +76,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     ``get_redis`` first, so a cached endpoint builds its answer every time.
     """
     app.dependency_overrides.setdefault(get_redis, lambda: FakeRedis())
+    app.state.sessions = SessionStore(FakeRedis())  # type: ignore[arg-type]
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http_client:
         yield http_client

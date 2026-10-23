@@ -1,11 +1,15 @@
 """The account rules that need no database: hashing, the field rules, the links, the settings."""
 
+import time
+
 import pytest
+from argon2 import PasswordHasher
 from pydantic import ValidationError
 
 from app.accounts import rules
 from app.accounts.mail import CONFIRM_EMAIL_PATH, email_change_confirmation, link
 from app.accounts.passwords import (
+    DUMMY_HASH,
     hash_password_sync,
     needs_rehash,
     verify_password_sync,
@@ -19,7 +23,7 @@ from tests.conftest import make_settings
 def test_a_password_verifies_against_its_hash_and_nothing_else() -> None:
     stored = hash_password_sync("correct horse 42")
 
-    assert stored.startswith("scrypt$16384$8$1$")
+    assert stored.startswith("$argon2id$v=19$m=65536,t=3,p=4$")
     assert verify_password_sync("correct horse 42", stored)
     assert not verify_password_sync("correct horse 43", stored)
     assert not needs_rehash(stored)
@@ -29,13 +33,36 @@ def test_the_same_password_hashes_differently_each_time() -> None:
     assert hash_password_sync("same") != hash_password_sync("same")
 
 
-@pytest.mark.parametrize("stored", ["", "plain", "bcrypt$x$y", "scrypt$a$b$c$d$e"])
+@pytest.mark.parametrize(
+    "stored", ["", "plain", "bcrypt$x$y", "scrypt$16384$8$1$c2FsdA==$a2V5", "$argon2id$v=19$m=1"]
+)
 def test_an_unreadable_hash_is_a_wrong_password_not_an_error(stored: str) -> None:
     assert not verify_password_sync("anything", stored)
 
 
 def test_a_hash_with_other_parameters_is_rehashed() -> None:
-    assert needs_rehash("scrypt$1024$8$1$c2FsdA==$a2V5")
+    weaker = PasswordHasher(time_cost=1, memory_cost=8192, parallelism=1).hash("x")
+
+    assert needs_rehash(weaker)
+    # And one argon2 cannot read, as a scrypt hash from before argon2.
+    assert needs_rehash("scrypt$16384$8$1$c2FsdA==$a2V5")
+
+
+def test_an_unreadable_hash_does_the_same_work_as_a_wrong_password() -> None:
+    """Or an account with one would be told apart from a wrong password by
+    how fast the 403 comes back."""
+
+    def best_of_five(stored: str) -> float:
+        times = []
+        for _ in range(5):
+            start = time.perf_counter()
+            verify_password_sync("anything", stored)
+            times.append(time.perf_counter() - start)
+        return min(times)
+
+    wrong, unreadable = best_of_five(DUMMY_HASH), best_of_five("scrypt$1$2$3$4$5")
+
+    assert unreadable > wrong / 2
 
 
 # --- secrets --------------------------------------------------------------------
@@ -79,8 +106,10 @@ def test_an_email_is_the_frontends_pattern(email: str, ok: bool) -> None:
     assert (rules.email_problem(email) is None) == ok
 
 
-def test_an_email_is_trimmed_and_lowercased() -> None:
-    assert rules.normalise_email("  Ada@Example.COM ") == "ada@example.com"
+def test_an_email_is_trimmed_and_kept_as_typed() -> None:
+    """The column is a citext: case is for the database to ignore, not for
+    the address to lose."""
+    assert rules.normalise_email("  Ada@Example.COM ") == "Ada@Example.COM"
 
 
 @pytest.mark.parametrize(("password", "ok"), [("1234567890", True), ("123456789", False)])

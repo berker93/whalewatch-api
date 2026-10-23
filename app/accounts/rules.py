@@ -26,7 +26,7 @@ EMAIL_PATTERN: Final = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 EMAIL_MAX_LENGTH: Final = 254
 
 PASSWORD_MIN_LENGTH: Final = 10
-#: Bounds the work one login asks of scrypt, and nothing a person would hit.
+#: Bounds what one login makes the server read and hash, and nothing a person would hit.
 PASSWORD_MAX_LENGTH: Final = 1000
 
 #: Every new account's zone: the market's clock (Q2, settled), not the
@@ -40,8 +40,10 @@ def normalise_name(name: str) -> str:
 
 
 def normalise_email(email: str) -> str:
-    """Trimmed and lowercased, as login and registration read an address."""
-    return email.strip().lower()
+    """Trimmed, as login and registration read an address. Not lowercased:
+    the column is a ``citext``, which compares without case, so the address is
+    kept as its owner typed it."""
+    return email.strip()
 
 
 def name_problem(name: str) -> str | None:

@@ -12,7 +12,6 @@ from app.db.models.account import (
     AppUser,
     SignupRequest,
     TokenPurpose,
-    UserSession,
     WatchlistItem,
 )
 from app.db.models.base import NAMING_CONVENTION, Base
@@ -150,6 +149,5 @@ __all__ = [
     "SignupRequest",
     "SplitConfidence",
     "TokenPurpose",
-    "UserSession",
     "WatchlistItem",
 ]
