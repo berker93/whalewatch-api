@@ -64,6 +64,18 @@ from app.db.models.position_change import (
     PositionChange,
 )
 from app.db.models.position_snapshot import WEIGHT_PCT, PositionSnapshot
+from app.db.models.privacy import (
+    BASES,
+    PURPOSE_BASIS_CHECK,
+    REQUESTED_BY_CHECK,
+    SOURCE_CHECK,
+    AccountDeletion,
+    Basis,
+    ConsentRecord,
+    ConsentSource,
+    DeletionRequester,
+    Purpose,
+)
 from app.db.models.sec_13f_security import STATUS_CHECK, ListStatus, Sec13FSecurity
 from app.db.models.sec_company_ticker import SecCompanyTicker
 from app.db.models.security import RESOLUTION_SOURCE_CHECK, ResolutionSource, Security
@@ -78,6 +90,7 @@ from app.db.models.security_split import (
 
 __all__ = [
     "ACTION_CHECK",
+    "BASES",
     "CATEGORY_CHECK",
     "CHANGE_PCT",
     "CONFIDENCE_CHECK",
@@ -93,13 +106,16 @@ __all__ = [
     "PENDING_STATUS_CHECK",
     "PRICE",
     "PRICED_CHECK",
+    "PURPOSE_BASIS_CHECK",
     "PURPOSE_CHECK",
     "QUANTITY",
     "QUARTER_EXPRESSION",
     "QUOTE_SOURCE_CHECK",
+    "REQUESTED_BY_CHECK",
     "RESOLUTION_SOURCE_CHECK",
     "REVIEW_STATUS_CHECK",
     "RUN_STATUS_CHECK",
+    "SOURCE_CHECK",
     "SPLIT_CHECK",
     "SPLIT_CONFIDENCE_CHECK",
     "SPLIT_RATIO",
@@ -107,12 +123,17 @@ __all__ = [
     "STATUS_CHECK",
     "SUSPECT_HAS_NOTES_CHECK",
     "WEIGHT_PCT",
+    "AccountDeletion",
     "AccountToken",
     "AmendmentKind",
     "AppUser",
     "Base",
+    "Basis",
     "ChangeAction",
+    "ConsentRecord",
+    "ConsentSource",
     "CrawlWatermark",
+    "DeletionRequester",
     "FIGIOutcome",
     "FigiResponseLog",
     "Filer",
@@ -135,6 +156,7 @@ __all__ = [
     "PositionChange",
     "PositionSnapshot",
     "PriceConfidence",
+    "Purpose",
     "QuoteSource",
     "ReportingOwner",
     "ResolutionSource",

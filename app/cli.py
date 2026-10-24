@@ -1,7 +1,8 @@
 """Typer CLI: discover-filings, ingest-filing, seed-investors, verify-investors, audit-overlaps,
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
-fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user.
+fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user,
+delete-user, restore-user, purge-accounts.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -44,6 +45,9 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli create-partitions --through 2028
     uv run python -m app.cli detect-clusters
     uv run python -m app.cli create-user --email ada@example.com --name "Ada Lovelace"
+    uv run python -m app.cli delete-user --email ada@example.com
+    uv run python -m app.cli restore-user --email ada@example.com
+    uv run python -m app.cli purge-accounts
 
 Every run is recorded
 ---------------------
@@ -52,7 +56,8 @@ Every verb that touches the database runs its body inside
 it starts and its outcome as it ends, and binds the row's id as ``run_id`` on
 every log line in between. ``runs`` lists them. The exceptions are ``runs``
 itself, which reads the record, ``verify-investors``, which has no database
-to write it to, and ``create-user``, whose row would hold a person's email. A
+to write it to, and ``create-user``, ``delete-user`` and ``restore-user``,
+whose rows would hold a person's email. A
 test fails if a new verb is neither tracked nor one of those.
 A verb that publishes (``recompute``, ``detect-splits``, and ``ingest-filing``
 or ``backfill`` when they load something) then runs ``refresh-views`` as a
@@ -129,18 +134,23 @@ import typer
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts import privacy
 from app.accounts import rules as account_rules
+from app.accounts.mail import account_deleted, deliver, mailer_for
 from app.accounts.passwords import hash_password
 from app.accounts.rules import DEFAULT_TIME_ZONE
+from app.accounts.sessions import SessionStore, SessionStoreError
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.periods import quarter_label
+from app.core.redis import create_redis
 from app.core.tickers import normalise_ticker
 from app.db.models.account import AppUser
 from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing
 from app.db.models.pending_filing import PendingStatus
+from app.db.models.privacy import ConsentSource, DeletionRequester
 from app.db.models.sec_13f_security import ListStatus
 from app.db.models.security import ResolutionSource, Security
 from app.db.partitions import CreatedPartition, ensure_partitions, next_year
@@ -262,6 +272,7 @@ from app.ingestion.parsers.thirteen_f_list import (
     parse_13f_list,
 )
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
+from app.jobs.accounts import purge_accounts
 from app.jobs.cache import invalidate_cache
 from app.jobs.derived import recompute_positions, refresh_matviews
 from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
@@ -1832,16 +1843,130 @@ async def _create_user(email: str, name: str, time_zone: str, password: str) -> 
         )
         if taken is not None:
             raise CommandError(f"{email} already has an account")
-        session.add(
-            AppUser(
-                email=email,
-                name=name,
-                password_hash=await hash_password(password),
-                time_zone=time_zone,
-                email_verified_at=func.now(),
-            )
+        user = AppUser(
+            email=email,
+            name=name,
+            password_hash=await hash_password(password),
+            time_zone=time_zone,
+            email_verified_at=func.now(),
+        )
+        session.add(user)
+        await session.flush()
+        request = await privacy.forget_signup_request(session, email)
+        privacy.record_signup(
+            session,
+            user.id,
+            marketing_email=request.marketing_email if request else False,
+            source=ConsentSource.CREATE_USER,
+            terms_version=request.terms_version if request else None,
+            privacy_version=request.privacy_version if request else None,
         )
     typer.echo(f"create-user  {email}  ({name}, {time_zone})")
+    if request is None or request.terms_version is None:
+        typer.echo(
+            "  no terms accepted on file: no signup request from the form had this address",
+            err=True,
+        )
+
+
+# --- delete-user, restore-user, purge-accounts ---------------------------------
+
+
+@app.command("delete-user")
+def delete_user_command(
+    email: Annotated[str, typer.Option("--email", help="The account's login.")],
+) -> None:
+    """Delete an account on its owner's request, made other than signed in.
+
+    What DELETE /v1/account does: signed out everywhere, the login freed, a
+    notice emailed, and every row erased by purge-accounts thirty days on.
+    Until then restore-user undoes it. Untracked, as create-user is.
+    """
+    try:
+        asyncio.run(_delete_user(email))
+    except CommandError as exc:
+        typer.echo(f"delete-user: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
+async def _delete_user(email: str) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    email = account_rules.normalise_email(email)
+    redis = create_redis(settings)
+    try:
+        async with session_scope(settings) as session:
+            user = await session.scalar(
+                select(AppUser).where(AppUser.email == email, AppUser.deleted_at.is_(None))
+            )
+            if user is None:
+                raise CommandError(f"no account has the login {email}")
+            try:
+                deletion = await privacy.delete_account(
+                    session, SessionStore(redis), user, requested_by=DeletionRequester.OPERATOR
+                )
+            except SessionStoreError:
+                raise CommandError(
+                    "Redis cannot be reached, so the account's sessions cannot be ended: "
+                    "nothing was deleted"
+                ) from None
+            purge_after = deletion.purge_after
+    finally:
+        await redis.aclose()
+    await deliver(mailer_for(settings), account_deleted(to=email, purge_after=purge_after.date()))
+    typer.echo(f"delete-user  {email}  erased after {_instant(purge_after)}")
+
+
+@app.command("restore-user")
+def restore_user_command(
+    email: Annotated[str, typer.Option("--email", help="The login the account had.")],
+) -> None:
+    """Undo an account's deletion, before purge-accounts has erased it.
+
+    The account comes back as it was: watchlist, consents, verified or not.
+    Its sessions do not: its owner logs in again. Refused when a new account
+    has taken the address since. Untracked, as create-user is.
+    """
+    try:
+        asyncio.run(_restore_user(email))
+    except CommandError as exc:
+        typer.echo(f"restore-user: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
+async def _restore_user(email: str) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    email = account_rules.normalise_email(email)
+    async with session_scope(settings) as session:
+        try:
+            user = await privacy.restore_account(session, email)
+        except privacy.RestoreError as exc:
+            raise CommandError(str(exc)) from None
+        name = user.name
+    typer.echo(f"restore-user  {email}  ({name})")
+
+
+@app.command("purge-accounts")
+def purge_accounts_command() -> None:
+    """Erase every deleted account whose thirty days have run out.
+
+    The account, its watchlist, its consent records and its links, in one
+    transaction; each account's account_deletion row records the purge and
+    how many rows of each table went. Beat runs this daily at 05:00.
+    """
+    asyncio.run(_purge_accounts())
+
+
+async def _purge_accounts() -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    try:
+        ran = await purge_accounts(settings)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
+    typer.echo(f"purge-accounts  {_count(len(ran.value), 'account')} erased")
 
 
 @app.command("seed-investors")

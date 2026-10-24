@@ -3218,7 +3218,7 @@
           "auth"
         ],
         "summary": "Make an account, or ask for one while signups are closed",
-        "description": "While signups are closed, `status: recorded`: the request is kept and no\nsession starts. Open, `status: authed`, with the session cookie set and a\nlink to verify the address emailed; until it is followed the account reads\neverything and saves nothing. Either way the fields are checked first:\n`invalid_name`, `invalid_email` and `weak_password`, in that order. Then at\nmost 5 attempts in 15 minutes from one address, and for one email.",
+        "description": "While signups are closed, `status: recorded`: the request is kept and no\nsession starts. Open, `status: authed`, with the session cookie set and a\nlink to verify the address emailed; until it is followed the account reads\neverything and saves nothing. Either way the fields are checked first:\n`invalid_name`, `invalid_email`, `weak_password` and `terms_not_accepted`,\nin that order. Then at most 5 attempts in 15 minutes from one address, and\nfor one email.\n\nThe terms and privacy policy in force are recorded as accepted, product\nemail as on (legitimate interest, objectable later), and marketing email\nas `marketing_email` says: off unless the user ticked its own box.",
         "operationId": "register",
         "requestBody": {
           "content": {
@@ -3260,7 +3260,7 @@
             }
           },
           "422": {
-            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
+            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `terms_not_accepted`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3343,7 +3343,7 @@
             }
           },
           "422": {
-            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
+            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `terms_not_accepted`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3469,7 +3469,7 @@
             }
           },
           "422": {
-            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
+            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `terms_not_accepted`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3595,7 +3595,7 @@
             }
           },
           "422": {
-            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
+            "description": "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, `terms_not_accepted`, `invalid_token`, or `validation_error` for a malformed body. `detail.errors` names the field.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3622,6 +3622,174 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/privacy": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "What the account's data is used for, on what basis, and the user's choices",
+        "description": "Each purpose with its lawful basis and whether it applies, and the\nterms accepted against those in force. A `terms.accepted_version` behind\n`terms.current_version` is an account to ask to accept the new terms.",
+        "operationId": "getPrivacy",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Privacy"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Consent to or withdraw marketing email; object to product email or stop objecting",
+        "description": "Fields left out or null stay as they are. Takes effect at once and is\nrecorded with its time, as withdrawing must be as easy as consenting.\nWorks unverified: withdrawing is not saving. The same answer twice is one\nrecord.",
+        "operationId": "updatePrivacy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrivacyPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Privacy"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/export": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Everything WhaleWatch holds on the signed-in user, as a JSON download",
+        "description": "The account, the watchlist, the whole consent ledger, the links and\nsessions still live, and a list of what is held but left out (hashes,\nlogs) and why. `Content-Disposition: attachment`, so a browser saves it.\nThe format is versioned by `format`.",
+        "operationId": "exportMe",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Export"
                 }
               }
             }
@@ -3700,6 +3868,77 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Delete the account: signed out at once, erased after 30 days",
+        "description": "Every session ends, this one too, and the cookie is cleared. From then\non the login signs nobody in, and its address may make a new account. The\nwatchlist, the consent records and the account itself are erased 30 days\nlater; until then an operator can restore it on request. A record that the\naccount was deleted, and when, is kept, with nothing else about it. A\nnotice goes to the address. Works unverified: an account that cannot save\nmay still go.",
+        "operationId": "deleteAccount",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`: not the account's password; `forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             }
@@ -4303,6 +4542,25 @@
   },
   "components": {
     "schemas": {
+      "AccountDeleteRequest": {
+        "properties": {
+          "password": {
+            "type": "string",
+            "title": "Password",
+            "description": "The account's password.",
+            "examples": [
+              "correct horse 42"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "title": "AccountDeleteRequest",
+        "description": "The password, to prove it is the owner deleting."
+      },
       "AccountPatch": {
         "properties": {
           "name": {
@@ -4824,6 +5082,16 @@
         "title": "Authed",
         "description": "Signups are open: the account exists and the response set its session cookie.\nA link to verify the address has been emailed; until it is followed,\n`session.user.email_verified` is false and the account saves nothing."
       },
+      "Basis": {
+        "type": "string",
+        "enum": [
+          "contract",
+          "consent",
+          "legitimate_interest"
+        ],
+        "title": "Basis",
+        "description": "The lawful basis (GDPR Art. 6(1)) a purpose rests on."
+      },
       "ChangeAction": {
         "type": "string",
         "enum": [
@@ -5210,6 +5478,7 @@
           "invalid_name",
           "email_taken",
           "invalid_token",
+          "terms_not_accepted",
           "forbidden_origin",
           "email_unverified",
           "unavailable",
@@ -5217,6 +5486,532 @@
         ],
         "title": "ErrorCode",
         "description": "What went wrong, for a program to branch on. ``message`` says it for a person."
+      },
+      "Export": {
+        "properties": {
+          "format": {
+            "type": "string",
+            "const": "whalewatch-export/1",
+            "title": "Format",
+            "description": "What this document is, and its version.",
+            "examples": [
+              "whalewatch-export/1"
+            ]
+          },
+          "exported_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Exported At",
+            "description": "When it was made.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "account": {
+            "$ref": "#/components/schemas/ExportAccount",
+            "description": "The account."
+          },
+          "watchlist": {
+            "$ref": "#/components/schemas/ExportWatchlist",
+            "description": "What the account follows."
+          },
+          "consents": {
+            "items": {
+              "$ref": "#/components/schemas/ExportConsent"
+            },
+            "type": "array",
+            "title": "Consents",
+            "description": "The whole ledger, oldest first."
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/ExportLink"
+            },
+            "type": "array",
+            "title": "Links",
+            "description": "Emailed links still waiting to be used."
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ExportSession"
+            },
+            "type": "array",
+            "title": "Sessions",
+            "description": "Sessions still signed in."
+          },
+          "not_included": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Not Included",
+            "description": "What is held but not here, and why: a person can still ask for it.",
+            "examples": [
+              [
+                "server logs: request lines (time, path, IP address)"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "format",
+          "exported_at",
+          "account",
+          "watchlist",
+          "consents",
+          "links",
+          "sessions",
+          "not_included"
+        ],
+        "title": "Export",
+        "description": "Everything WhaleWatch holds on the signed-in user."
+      },
+      "ExportAccount": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The account's internal number.",
+            "examples": [
+              42
+            ]
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The login, as typed.",
+            "examples": [
+              "ada@example.com"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name on the account.",
+            "examples": [
+              "Ada Lovelace"
+            ]
+          },
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone",
+            "description": "The IANA zone times are shown in.",
+            "examples": [
+              "Europe/London"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When the account was made.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "password_changed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Password Changed At",
+            "description": "The last password change, or signup.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "email_verified_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email Verified At",
+            "description": "When the address was verified. Null while it is not.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At",
+            "description": "The last signed-in request, to within five minutes.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "name",
+          "time_zone",
+          "created_at",
+          "password_changed_at",
+          "email_verified_at",
+          "last_seen_at"
+        ],
+        "title": "ExportAccount",
+        "description": "The account row, all of it but the password's hash."
+      },
+      "ExportConsent": {
+        "properties": {
+          "purpose": {
+            "$ref": "#/components/schemas/Purpose",
+            "description": "What the data is used for.",
+            "examples": [
+              "account"
+            ]
+          },
+          "basis": {
+            "$ref": "#/components/schemas/Basis",
+            "description": "The lawful basis it rested on.",
+            "examples": [
+              "contract"
+            ]
+          },
+          "granted": {
+            "type": "boolean",
+            "title": "Granted",
+            "description": "Consent given, or not objected to, from then on.",
+            "examples": [
+              true
+            ]
+          },
+          "terms_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terms Version",
+            "description": "For `account`, the terms accepted. Null: none on file.",
+            "examples": [
+              "2026-10-24"
+            ]
+          },
+          "privacy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Privacy Version",
+            "description": "The privacy policy in force at the time.",
+            "examples": [
+              "2026-10-24"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "register",
+              "create_user",
+              "preferences"
+            ],
+            "title": "Source",
+            "description": "`register`: the signup form. `create_user`: an operator made the account. `preferences`: the user changed it.",
+            "examples": [
+              "register"
+            ]
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Recorded At",
+            "description": "When.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "purpose",
+          "basis",
+          "granted",
+          "terms_version",
+          "privacy_version",
+          "source",
+          "recorded_at"
+        ],
+        "title": "ExportConsent",
+        "description": "One row of the lawful-basis ledger."
+      },
+      "ExportInsider": {
+        "properties": {
+          "cik": {
+            "type": "string",
+            "title": "Cik",
+            "description": "Their CIK.",
+            "examples": [
+              "0001197647"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Their name, as filed.",
+            "examples": [
+              "HUANG JEN HSUN"
+            ]
+          },
+          "added_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Added At",
+            "description": "When they were followed.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cik",
+          "name",
+          "added_at"
+        ],
+        "title": "ExportInsider",
+        "description": "A followed insider."
+      },
+      "ExportInvestor": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "Its slug.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Its name.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          },
+          "added_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Added At",
+            "description": "When it was followed.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "name",
+          "added_at"
+        ],
+        "title": "ExportInvestor",
+        "description": "A followed investor."
+      },
+      "ExportLink": {
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "email_verify",
+              "email_change",
+              "password_reset"
+            ],
+            "title": "Purpose",
+            "description": "What following it does.",
+            "examples": [
+              "email_change"
+            ]
+          },
+          "new_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Email",
+            "description": "For an email change, the address it changes to.",
+            "examples": [
+              "ada@new.example"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it was sent.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At",
+            "description": "When it stops working.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "purpose",
+          "new_email",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "ExportLink",
+        "description": "An emailed link not yet used. The token itself is not kept, so not exported."
+      },
+      "ExportSession": {
+        "properties": {
+          "remember": {
+            "type": "boolean",
+            "title": "Remember",
+            "description": "Whether it was a keep-me-signed-in session.",
+            "examples": [
+              true
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At",
+            "description": "When it ends.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "remember",
+          "expires_at"
+        ],
+        "title": "ExportSession",
+        "description": "A signed-in session. Its cookie is not kept, so not exported."
+      },
+      "ExportStock": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "Its CUSIP.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Its ticker, if known.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Its issuer's name, if known.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "added_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Added At",
+            "description": "When it was followed.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "ticker",
+          "name",
+          "added_at"
+        ],
+        "title": "ExportStock",
+        "description": "A followed stock."
+      },
+      "ExportWatchlist": {
+        "properties": {
+          "securities": {
+            "items": {
+              "$ref": "#/components/schemas/ExportStock"
+            },
+            "type": "array",
+            "title": "Securities",
+            "description": "Followed stocks."
+          },
+          "investors": {
+            "items": {
+              "$ref": "#/components/schemas/ExportInvestor"
+            },
+            "type": "array",
+            "title": "Investors",
+            "description": "Followed investors."
+          },
+          "insiders": {
+            "items": {
+              "$ref": "#/components/schemas/ExportInsider"
+            },
+            "type": "array",
+            "title": "Insiders",
+            "description": "Followed insiders."
+          }
+        },
+        "type": "object",
+        "required": [
+          "securities",
+          "investors",
+          "insiders"
+        ],
+        "title": "ExportWatchlist",
+        "description": "What the account follows, each list oldest first."
       },
       "FeedFiling": {
         "properties": {
@@ -9906,6 +10701,67 @@
         "title": "PriceEstimate",
         "description": "The stock's price at the row's period end, as its holders' filings imply it."
       },
+      "Privacy": {
+        "properties": {
+          "terms": {
+            "$ref": "#/components/schemas/TermsStanding",
+            "description": "The terms accepted and those in force."
+          },
+          "purposes": {
+            "items": {
+              "$ref": "#/components/schemas/PurposeStanding"
+            },
+            "type": "array",
+            "title": "Purposes",
+            "description": "Every purpose, `account` first, each present."
+          }
+        },
+        "type": "object",
+        "required": [
+          "terms",
+          "purposes"
+        ],
+        "title": "Privacy",
+        "description": "What the account's data is used for, and on what basis."
+      },
+      "PrivacyPatch": {
+        "properties": {
+          "product_email": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Email",
+            "description": "False objects to product email; true withdraws the objection.",
+            "examples": [
+              true
+            ]
+          },
+          "marketing_email": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketing Email",
+            "description": "True consents to marketing email; false withdraws the consent.",
+            "examples": [
+              false
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PrivacyPatch",
+        "description": "The user's choices: either, or both. Left out or null, a choice stays."
+      },
       "Problem": {
         "properties": {
           "error": {
@@ -9924,7 +10780,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
             "examples": [
               "not_found"
             ]
@@ -9969,6 +10825,76 @@
         ],
         "title": "ProblemError",
         "description": "What went wrong."
+      },
+      "Purpose": {
+        "type": "string",
+        "enum": [
+          "account",
+          "product_email",
+          "marketing_email"
+        ],
+        "title": "Purpose",
+        "description": "Why the site processes a user's data."
+      },
+      "PurposeStanding": {
+        "properties": {
+          "purpose": {
+            "$ref": "#/components/schemas/Purpose",
+            "description": "`account`: running the account and the emails it needs (verify, reset, change). `product_email`: news about the product. `marketing_email`: promotion.",
+            "examples": [
+              "marketing_email"
+            ]
+          },
+          "basis": {
+            "$ref": "#/components/schemas/Basis",
+            "description": "The lawful basis: `contract` for the account, `legitimate_interest` for product email (objectable), `consent` for marketing email (opt-in).",
+            "examples": [
+              "consent"
+            ]
+          },
+          "granted": {
+            "type": "boolean",
+            "title": "Granted",
+            "description": "Whether it applies: consent given, or not objected to. `account` is always true; it ends by deleting the account.",
+            "examples": [
+              false
+            ]
+          },
+          "changeable": {
+            "type": "boolean",
+            "title": "Changeable",
+            "description": "Whether `PATCH /v1/me/privacy` changes it: the two email purposes.",
+            "examples": [
+              true
+            ]
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since",
+            "description": "When the user's answer was recorded. Null for a purpose never asked about.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "purpose",
+          "basis",
+          "granted",
+          "changeable",
+          "since"
+        ],
+        "title": "PurposeStanding",
+        "description": "One purpose the site uses the account's data for, its basis, and where the user stands."
       },
       "ReadinessResponse": {
         "properties": {
@@ -10065,6 +10991,24 @@
             "description": "An IANA zone, such as the browser's. The account's zone when given, `America/New_York` when not.",
             "examples": [
               "Europe/London"
+            ]
+          },
+          "accept_terms": {
+            "type": "boolean",
+            "title": "Accept Terms",
+            "description": "The terms of service and the privacy policy were shown and accepted: the form's own checkbox. Anything but true is a 422 `terms_not_accepted`.",
+            "default": false,
+            "examples": [
+              true
+            ]
+          },
+          "marketing_email": {
+            "type": "boolean",
+            "title": "Marketing Email",
+            "description": "Consent to marketing email: a checkbox of its own, unticked unless the user ticks it, and never the terms' box. Changeable later at `/v1/me/privacy`.",
+            "default": false,
+            "examples": [
+              false
             ]
           }
         },
@@ -10803,7 +11747,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
             "examples": [
               "not_found"
             ]
@@ -11303,6 +12247,66 @@
         ],
         "title": "StockSuggestion",
         "description": "A stock the caller may have meant."
+      },
+      "TermsStanding": {
+        "properties": {
+          "accepted_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Version",
+            "description": "The terms accepted, by the date they took effect. Null: none on file.",
+            "examples": [
+              "2026-10-24"
+            ]
+          },
+          "accepted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted At",
+            "description": "When they were accepted.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "current_version": {
+            "type": "string",
+            "title": "Current Version",
+            "description": "The terms in force.",
+            "examples": [
+              "2026-10-24"
+            ]
+          },
+          "privacy_version": {
+            "type": "string",
+            "title": "Privacy Version",
+            "description": "The privacy policy in force.",
+            "examples": [
+              "2026-10-24"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepted_version",
+          "accepted_at",
+          "current_version",
+          "privacy_version"
+        ],
+        "title": "TermsStanding",
+        "description": "Which terms the account accepted, against the ones in force."
       },
       "TimelineEvent": {
         "oneOf": [
@@ -11922,7 +12926,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
             "examples": [
               "not_found"
             ]

@@ -163,6 +163,31 @@ class SessionStore:
         except (RedisError, OSError) as exc:
             raise SessionStoreError from exc
 
+    async def list_for(self, user_id: int) -> list[SessionRecord]:
+        """The user's live sessions, soonest to end first: what an export lists."""
+        index = f"{USER_SESSIONS_PREFIX}{user_id}"
+        try:
+            members: set[str] = await self._redis.smembers(index)  # type: ignore[misc]
+            ids = sorted(members)
+            values = await self._redis.mget([SESSION_KEY_PREFIX + member for member in ids])
+        except (RedisError, OSError) as exc:
+            raise SessionStoreError from exc
+        records = []
+        for session_id, value in zip(ids, values, strict=True):
+            # The index outlives a member that expired on its own.
+            if value is None:
+                continue
+            stored = json.loads(value)
+            records.append(
+                SessionRecord(
+                    id=session_id,
+                    user_id=user_id,
+                    remember=bool(stored["remember"]),
+                    expires_at=datetime.fromisoformat(stored["expires_at"]),
+                )
+            )
+        return sorted(records, key=lambda record: record.expires_at)
+
     async def end_all(self, user_id: int, *, keep: str | None) -> None:
         """Sign the user out everywhere, but for session ``keep`` when given."""
         index = f"{USER_SESSIONS_PREFIX}{user_id}"

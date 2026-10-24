@@ -33,7 +33,7 @@ In production all of this holds by design: `whalewatch.com`, `app.whalewatch.com
 ```bash
 cd whalewatch-api
 make up          # db, redis, api on http://localhost:8000 (hot reload)
-make migrate     # applies through 0035_account_identity: app_user (citext email), account_token, signup_request, watchlist_item
+make migrate     # applies through 0036_privacy: app_user (citext email), account_token, signup_request, watchlist_item, consent_record, account_deletion
 ```
 
 If your images predate 0035, rebuild them first (`docker compose build`, then `make up`): passwords are hashed with argon2id, from the `argon2-cffi` package. Sessions are kept in Redis, so `make up` must have Redis running; restarting it keeps them (append-only file on the `redisdata` volume).

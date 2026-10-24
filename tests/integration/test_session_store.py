@@ -130,3 +130,20 @@ async def test_a_redis_that_cannot_be_reached_is_said_so() -> None:
         await store.find("a cookie")
     with pytest.raises(SessionStoreError):
         await store.start(7, remember=True)
+
+
+async def test_a_users_sessions_are_listed_soonest_to_end_first(redis: Redis) -> None:
+    store = SessionStore(redis)
+    remembered = await store.start(7, remember=True)
+    await store.start(8, remember=True)
+    short = await store.start(7, remember=False)
+    gone = await store.start(7, remember=True)
+    # Expired on its own: the key is gone, the index still names it.
+    await redis.delete(SESSION_KEY_PREFIX + digest(gone.token))
+
+    listed = await store.list_for(7)
+
+    assert [(record.id, record.remember) for record in listed] == [
+        (digest(short.token), False),
+        (digest(remembered.token), True),
+    ]

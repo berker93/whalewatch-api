@@ -1,5 +1,5 @@
 """Account emails: verify an address, confirm an email change, tell the old address,
-reset a password.
+reset a password, say an account was deleted.
 
 Two backends, by ``EMAIL_BACKEND``. ``log`` writes each message to the log,
 link included, and sends nothing: in development the link is in the API's log
@@ -15,6 +15,7 @@ which posts the token back to the API.
 import asyncio
 import smtplib
 from dataclasses import dataclass
+from datetime import date
 from email.message import EmailMessage
 from typing import Protocol
 from urllib.parse import urlencode
@@ -137,5 +138,18 @@ def password_reset(settings: Settings, *, to: str, token: str, minutes: int) -> 
             f"{link(settings, RESET_PASSWORD_PATH, token)}\n\n"
             "If you didn't ask for this, ignore this message and your password stays "
             "as it is."
+        ),
+    )
+
+
+def account_deleted(*, to: str, purge_after: date) -> Message:
+    return Message(
+        to=to,
+        subject="Your WhaleWatch account is deleted",
+        body=(
+            "Your WhaleWatch account was deleted, and you were signed out everywhere. "
+            f"What it held is erased for good on {purge_after:%d %B %Y}; until then "
+            "WhaleWatch support can restore it on request.\n\n"
+            "If you didn't delete it, contact support now: whoever did knew your password."
         ),
     )

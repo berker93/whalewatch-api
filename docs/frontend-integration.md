@@ -71,12 +71,13 @@ Errors keep the existing shape, `{ error: { code, message, detail, request_id } 
 |---|---|---|---|
 | 401 | `unauthenticated` | any signed-in route | The request carried no session cookie |
 | 401 | `session_expired` | any signed-in route, `GET /v1/auth/session` | The cookie named a session that ended, ran out or was signed out. The response also clears the cookie |
-| 403 | `invalid_credentials` | login, change password | Wrong email or password, or wrong current password. **Never a 401** |
+| 403 | `invalid_credentials` | login, change password, delete account | Wrong email or password, or wrong current password. **Never a 401** |
 | 403 | `forbidden_origin` | any write | The `Origin` isn't on the API's allow-list. A config error, not a user error |
 | 403 | `email_unverified` | watchlist `PUT` / `DELETE` | The account's email isn't verified yet: it reads everything and saves nothing. Offer "resend the link" (§5) |
 | 409 | `email_taken` | register | The address already has an account (only while signups are open) |
 | 422 | `validation_error` | everywhere | `detail.errors[].loc` is `["body", "<wire field>"]` or `["query", "<param>"]` |
 | 422 | `weak_password` / `invalid_email` / `invalid_name` | register, change password, reset | Same `detail.errors` shape, with its own code |
+| 422 | `terms_not_accepted` | register | `accept_terms` wasn't `true`. `detail.errors[].loc` is `["body","accept_terms"]`: show it under the terms checkbox |
 | 422 | `invalid_token` | email confirm, reset confirm | The link is unknown, used, replaced or expired |
 | 429 | `rate_limited` | login, register, reset request, resend verification | 5 attempts per 15 minutes, per IP **and** per email, each action on its own. Every attempt counts, successful ones too. `Retry-After` is set |
 | 429 | `rate_limited` | change password, the emailed links' confirm calls | 10 per minute per IP. `Retry-After` is set |
@@ -310,7 +311,7 @@ The current quarter is the one that ended most recently in `tz`; `meta.period` a
 | `POST /v1/auth/login` | `{ email, password, remember? }` (`remember` defaults to `true`) | `Session` + cookie |
 | `POST /v1/auth/logout` | none | `204`, cookie cleared |
 | `GET /v1/auth/session` | none | `{ session: Session \| null }`, or `401 session_expired` |
-| `POST /v1/auth/register` | `{ name, email, password, time_zone? }` | `{ status: 'recorded' }` or `{ status: 'authed', session }` + cookie |
+| `POST /v1/auth/register` | `{ name, email, password, time_zone?, accept_terms, marketing_email? }` | `{ status: 'recorded' }` or `{ status: 'authed', session }` + cookie |
 | `POST /v1/auth/password` | `{ current_password, new_password }` | `204` |
 | `POST /v1/auth/password-reset` | `{ email }` | `204`, always |
 | `POST /v1/auth/password-reset/confirm` | `{ token, new_password }` | `204` |
@@ -415,7 +416,22 @@ export const apiAuth: AuthAdapter = {
 - **A password reset** signs out every session of the account. A weak `new_password` is refused before the token is spent, so the user can retry with the same link.
 - **Login takes the same time for a wrong email and a wrong password**, and both answer `403 invalid_credentials`. A password reset request answers `204` as fast whether or not the address has an account: the email goes after the answer.
 - **Signups:** `SIGNUPS_OPEN=false` by default, matching `FEATURES.signupsOpen`. Registration validates the fields, records the request and answers `recorded`. Accounts are made with the `create-user` CLI verb, and count as verified.
+- **Terms and marketing consent are two checkboxes.** `accept_terms` must be `true` (required; link the terms and the privacy policy next to it). `marketing_email` is its own checkbox, **unticked by default**, never merged into the terms box; left out, it's `false`. The API records both, with the document versions, as the account's lawful-basis ledger (§5a).
 - **Open signups start unverified.** `status: 'authed'` with `session.user.email_verified: false`, and a verification link (24 hours, one use) goes to the address. The account can browse, and its watchlist writes are `403 email_unverified` until the link is followed. A password reset link verifies the address too.
+
+### 5a · Privacy: choices, export, deletion
+
+| Endpoint | Body | Answer |
+|---|---|---|
+| `GET /v1/me/privacy` | none, signed in | `Privacy`: `{ terms: { accepted_version, accepted_at, current_version, privacy_version }, purposes: [{ purpose, basis, granted, changeable, since }] }` |
+| `PATCH /v1/me/privacy` | `{ product_email?, marketing_email? }` | `Privacy`. Left out or `null` stays as it is. Works unverified |
+| `GET /v1/me/export` | none, signed in | `Export`, with `Content-Disposition: attachment; filename="whalewatch-export-YYYY-MM-DD.json"` |
+| `DELETE /v1/account` | `{ password }` | `204`, cookie cleared. `403 invalid_credentials` for a wrong password |
+
+- **Purposes** come in a fixed order: `account` (`contract`, always granted, `changeable: false`), `product_email` (`legitimate_interest`, on by default, the user may object), `marketing_email` (`consent`, off unless given). Render the two `changeable` ones as toggles on the account page.
+- **Export:** fetch it with `credentials: 'include'` and save the blob; a plain `<a href>` to the API also works, since the cookie goes with it.
+- **Deletion** signs out every session at once and frees the address. The data is erased 30 days later; support can restore it until then. After the `204`, clear the session query and go to the marketing site. Ask for the password in a confirm dialog, and show the 30-day note there.
+- `terms.accepted_version` is `null` for accounts made before terms existed. Nothing asks them to accept new terms yet.
 
 ---
 
@@ -459,5 +475,8 @@ Both links are built as `WEB_URL + path + ?token=<token>`. `WEB_URL` is the app 
 - [ ] Pages: verify email, confirm email change, reset password (§6)
 - [ ] `GET /v1/me` for the app shell; gate saving on `entitlements.save`, with a resend-link banner for `email_unverified`
 - [ ] Treat `503 unavailable` as "try again", never as signed out
+- [ ] Registration: required `accept_terms` checkbox with terms + privacy links; separate unticked `marketing_email` checkbox; map `terms_not_accepted` (§5)
+- [ ] Footer: links to the terms and the privacy policy
+- [ ] Account page: email toggles, "Download my data", "Delete account" (§5a)
 - [ ] First-sign-in watchlist migration (§4)
 - [ ] Remove the `501` stubs for these methods. Saved filters and recents still have no endpoints

@@ -33,6 +33,10 @@ class FakeRedis:
         self._send("get")
         return self.values.get(key)
 
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        self._send("mget")
+        return [self.values.get(key) for key in keys]
+
     async def ttl(self, key: str) -> int:
         """-2 for a key with no TTL recorded, as Redis answers for one that has
         just expired: a test deletes a key's TTL to have it expire mid-request."""

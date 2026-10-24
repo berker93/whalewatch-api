@@ -80,6 +80,8 @@ TRACKED: Final = {
     "create-partitions": ("create-partitions", ["--through", "2027"], "success"),
     # No purchases, so no clusters: the table is emptied and nothing written.
     "detect-clusters": ("detect-clusters", [], "success"),
+    # No account is deleted, so none is due.
+    "purge-accounts": ("purge-accounts", [], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.
@@ -87,6 +89,8 @@ UNTRACKED: Final = {
     "runs": "reads the record; a listing that added itself would show itself first",
     "verify-investors": "never opens a database: it runs on the host and in a GitHub workflow",
     "create-user": "account administration: its row would put a person's email in the run log",
+    "delete-user": "account administration, as create-user",
+    "restore-user": "account administration, as create-user",
 }
 
 

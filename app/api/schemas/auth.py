@@ -53,6 +53,22 @@ class RegisterRequest(_Request):
         ),
         examples=["Europe/London"],
     )
+    accept_terms: bool = Field(
+        default=False,
+        description=(
+            "The terms of service and the privacy policy were shown and accepted: the "
+            "form's own checkbox. Anything but true is a 422 `terms_not_accepted`."
+        ),
+        examples=[True],
+    )
+    marketing_email: bool = Field(
+        default=False,
+        description=(
+            "Consent to marketing email: a checkbox of its own, unticked unless the user "
+            "ticks it, and never the terms' box. Changeable later at `/v1/me/privacy`."
+        ),
+        examples=[False],
+    )
 
 
 class SessionUser(BaseModel):

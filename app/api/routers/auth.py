@@ -12,7 +12,8 @@
     A new account, while ``SIGNUPS_OPEN``, signed in but unverified: a link to
     verify the address is emailed, and until it is followed the account reads
     everything and saves nothing. Closed, the request is recorded and no
-    session starts.
+    session starts. Either way only with the terms accepted, and with
+    marketing email as its own box was left (:mod:`app.accounts.privacy`).
 ``POST /v1/auth/verify-email`` and ``.../resend``
     Verify the address from its link; email another link, signed in.
 ``POST /v1/auth/password``
@@ -32,11 +33,11 @@ Failures
 --------
 The frontend branches on ``code``, so the codes are the contract:
 ``invalid_credentials`` is 403, never 401, which means only that the session is
-gone; ``weak_password``, ``invalid_email`` and ``invalid_name`` are 422s naming
-the field in ``detail.errors``, as a validation error does. The routes
-:func:`~app.api.auth.limit_attempts` does not cover, but that check a password
-or a token, are behind the stricter per-IP limit
-(:func:`app.api.auth.auth_rate_limited`).
+gone; ``weak_password``, ``invalid_email``, ``invalid_name`` and
+``terms_not_accepted`` are 422s naming the field in ``detail.errors``, as a
+validation error does. The routes :func:`~app.api.auth.limit_attempts` does
+not cover, but that check a password or a token, are behind the stricter
+per-IP limit (:func:`app.api.auth.auth_rate_limited`).
 """
 
 from datetime import datetime
@@ -48,7 +49,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.accounts import rules
+from app.accounts import privacy, rules
 from app.accounts.mail import (
     Message,
     deliver,
@@ -102,7 +103,7 @@ from app.api.schemas.error import (
     ValidationProblem,
 )
 from app.core.config import Settings
-from app.db.models import AppUser, SignupRequest, TokenPurpose
+from app.db.models import AppUser, ConsentSource, SignupRequest, TokenPurpose
 
 router = APIRouter(prefix="/auth", tags=["auth"], dependencies=[NoStoreDep])
 
@@ -117,7 +118,8 @@ _REFUSED: Final[Responses] = {
         "model": ValidationProblem,
         "description": (
             "A field was refused: `weak_password`, `invalid_email`, `invalid_name`, "
-            "`invalid_token`, or `validation_error` for a malformed body. "
+            "`terms_not_accepted`, `invalid_token`, or `validation_error` for a malformed "
+            "body. "
             "`detail.errors` names the field."
         ),
     }
@@ -278,8 +280,13 @@ async def register(
     session starts. Open, `status: authed`, with the session cookie set and a
     link to verify the address emailed; until it is followed the account reads
     everything and saves nothing. Either way the fields are checked first:
-    `invalid_name`, `invalid_email` and `weak_password`, in that order. Then at
-    most 5 attempts in 15 minutes from one address, and for one email."""
+    `invalid_name`, `invalid_email`, `weak_password` and `terms_not_accepted`,
+    in that order. Then at most 5 attempts in 15 minutes from one address, and
+    for one email.
+
+    The terms and privacy policy in force are recorded as accepted, product
+    email as on (legitimate interest, objectable later), and marketing email
+    as `marketing_email` says: off unless the user ticked its own box."""
     name = rules.normalise_name(body.name)
     email = rules.normalise_email(body.email)
     if problem := rules.name_problem(name):
@@ -288,6 +295,12 @@ async def register(
         raise refused(ErrorCode.INVALID_EMAIL, "email", problem)
     if problem := rules.password_problem(body.password):
         raise refused(ErrorCode.WEAK_PASSWORD, "password", problem)
+    if not body.accept_terms:
+        raise refused(
+            ErrorCode.TERMS_NOT_ACCEPTED,
+            "accept_terms",
+            "accept the terms of service and the privacy policy to make an account",
+        )
     time_zone = body.time_zone or rules.DEFAULT_TIME_ZONE
     if problem := await rules.time_zone_problem(session, time_zone):
         raise refused(ErrorCode.VALIDATION_ERROR, "time_zone", problem)
@@ -295,10 +308,16 @@ async def register(
     await limit_attempts(request, "register", email)
 
     if not settings.signups_open:
+        answers = {
+            "name": name,
+            "terms_version": privacy.TERMS_VERSION,
+            "privacy_version": privacy.PRIVACY_VERSION,
+            "marketing_email": body.marketing_email,
+        }
         await session.execute(
             insert(SignupRequest)
-            .values(email=email, name=name)
-            .on_conflict_do_update(index_elements=["email"], set_={"name": name})
+            .values(email=email, **answers)
+            .on_conflict_do_update(index_elements=["email"], set_=answers)
         )
         await session.commit()
         return RegisterResult(Recorded(status="recorded"))
@@ -319,6 +338,10 @@ async def register(
         # Registered by a request that raced this one.
         await session.rollback()
         raise _email_taken() from None
+    privacy.record_signup(
+        session, user.id, marketing_email=body.marketing_email, source=ConsentSource.REGISTER
+    )
+    await privacy.forget_signup_request(session, email)
     token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
     await session.commit()
     started = await store.start(user.id, remember=True)

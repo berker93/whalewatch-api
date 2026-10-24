@@ -448,6 +448,8 @@ def test_every_public_read_is_cached() -> None:
         "/v1/account",
         "/v1/auth/session",
         "/v1/me",
+        "/v1/me/export",
+        "/v1/me/privacy",
         "/v1/watchlist",
         # With no `tz`, the answer is in the signed-in user's zone.
         "/v1/timeline",

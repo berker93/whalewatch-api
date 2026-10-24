@@ -8,6 +8,9 @@
     Changes ``name`` and ``time_zone`` at once. A new ``email`` is not applied:
     a confirmation link goes to it and a notice to the current address, and
     ``pending_email`` names it until it is confirmed.
+``DELETE /v1/account``
+    Deletes the account, with its password: signed out everywhere at once, the
+    rows erased thirty days later (:mod:`app.accounts.privacy`).
 ``POST /v1/account/email/confirm``
     The confirmation link's token. Needs no session, since the link may be
     opened on another device; the token is the proof, and the account's owner
@@ -22,13 +25,20 @@ message under the field the last part names. An email on another account is a
 
 from typing import Final
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, BackgroundTasks, Response, status
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.accounts import rules
-from app.accounts.mail import deliver, email_change_confirmation, email_change_notice, mailer_for
+from app.accounts import privacy, rules
+from app.accounts.mail import (
+    account_deleted,
+    deliver,
+    email_change_confirmation,
+    email_change_notice,
+    mailer_for,
+)
+from app.accounts.passwords import verify_password
 from app.accounts.sessions import (
     EMAIL_CHANGE_TTL,
     issue_token,
@@ -37,13 +47,21 @@ from app.accounts.sessions import (
     redeem_token,
     revoke_tokens,
 )
-from app.api.auth import UNAUTHORIZED, AuthRateLimitDep, NoStoreDep, ViewerDep
+from app.api.auth import (
+    UNAUTHORIZED,
+    AuthRateLimitDep,
+    NoStoreDep,
+    SessionStoreDep,
+    ViewerDep,
+    clear_session_cookie,
+)
 from app.api.deps import SessionDep, SettingsDep
-from app.api.errors import Responses
+from app.api.errors import INVALID, ApiError, Responses
 from app.api.routers.auth import refused
 from app.api.schemas.account import AccountPatch, AccountProfile, AccountUpdate, EmailConfirm
 from app.api.schemas.error import ErrorCode, Problem, ValidationProblem
-from app.db.models import AppUser, TokenPurpose
+from app.api.schemas.privacy import AccountDeleteRequest
+from app.db.models import AppUser, DeletionRequester, TokenPurpose
 
 router = APIRouter(prefix="/account", tags=["account"], dependencies=[NoStoreDep])
 
@@ -162,6 +180,55 @@ async def update_account(
 
     profile = await _profile(session, user)
     return AccountUpdate(profile=profile, pending_email=profile.pending_email)
+
+
+@router.delete(
+    "",
+    operation_id="deleteAccount",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete the account: signed out at once, erased after 30 days",
+    responses={
+        **UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN: {
+            "model": Problem,
+            "description": (
+                "`invalid_credentials`: not the account's password; `forbidden_origin`: "
+                "a write from a site not allowed to call."
+            ),
+        },
+        **INVALID,
+    },
+    dependencies=[AuthRateLimitDep],
+)
+async def delete_account(
+    body: AccountDeleteRequest,
+    response: Response,
+    background: BackgroundTasks,
+    viewer: ViewerDep,
+    session: SessionDep,
+    store: SessionStoreDep,
+    settings: SettingsDep,
+) -> None:
+    """Every session ends, this one too, and the cookie is cleared. From then
+    on the login signs nobody in, and its address may make a new account. The
+    watchlist, the consent records and the account itself are erased 30 days
+    later; until then an operator can restore it on request. A record that the
+    account was deleted, and when, is kept, with nothing else about it. A
+    notice goes to the address. Works unverified: an account that cannot save
+    may still go."""
+    user = viewer.user
+    if not await verify_password(body.password, user.password_hash):
+        raise ApiError(403, ErrorCode.INVALID_CREDENTIALS, "That isn't the account's password.")
+    deletion = await privacy.delete_account(
+        session, store, user, requested_by=DeletionRequester.USER
+    )
+    await session.commit()
+    clear_session_cookie(response, settings)
+    background.add_task(
+        deliver,
+        mailer_for(settings),
+        account_deleted(to=user.email, purge_after=deletion.purge_after.date()),
+    )
 
 
 def _error(field: str, message: str) -> dict[str, object]:

@@ -116,6 +116,7 @@ def test_every_entry_names_a_task_that_exists(name: str) -> None:
         ("fetch-prices", "fetch_prices", crontab(minute=30, hour=21, day_of_week="mon-fri")),
         ("resolve-cusips", "resolve_cusips", crontab(minute=0, hour=3)),
         ("refresh-matviews", "refresh_matviews", crontab(minute=0, hour=4)),
+        ("purge-accounts", "purge_accounts", crontab(minute=0, hour=5)),
     ],
 )
 def test_each_entry_runs_when_the_ticket_says(name: str, task: str, when: crontab) -> None:
@@ -131,6 +132,7 @@ _SECONDS_BETWEEN_SENDS = {
     "fetch-prices": 24 * 60 * 60,
     "resolve-cusips": 24 * 60 * 60,
     "refresh-matviews": 24 * 60 * 60,
+    "purge-accounts": 24 * 60 * 60,
 }
 
 

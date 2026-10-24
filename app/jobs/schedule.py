@@ -128,4 +128,12 @@ BEAT_SCHEDULE: Final[dict[str, dict[str, Any]]] = {
         "schedule": crontab(minute=0, hour=4),
         "options": {"expires": DAILY_EXPIRES_SECONDS},
     },
+    # Deleted accounts past their thirty days, erased. Daily, so an account is
+    # gone within a day of its date; a missed day is caught by the next, since
+    # the purge takes everything due, not the day's.
+    "purge-accounts": {
+        "task": "app.jobs.tasks.purge_accounts",
+        "schedule": crontab(minute=0, hour=5),
+        "options": {"expires": DAILY_EXPIRES_SECONDS},
+    },
 }

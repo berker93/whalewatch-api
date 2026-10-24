@@ -16,6 +16,7 @@ task                       CLI verb                    job
 ``fetch_prices``           ``fetch-quotes``            app/jobs/enrichment.py
 ``recompute_positions``    ``recompute``               app/jobs/derived.py
 ``refresh_matviews``       ``refresh-views``           app/jobs/derived.py
+``purge_accounts``         ``purge-accounts``          app/jobs/accounts.py
 =========================  ==========================  ==============================
 
 What a task adds is only what a message needs: arguments that are JSON
@@ -66,7 +67,7 @@ from app.core.logging import get_logger
 from app.core.periods import parse_period
 from app.derived.scope import Pair
 from app.ingestion.insider_discovery import new_york_today
-from app.jobs import derived, enrichment, form4, thirteen_f
+from app.jobs import accounts, derived, enrichment, form4, thirteen_f
 from app.jobs.celery_app import COMPUTE_QUEUE, INGESTION_QUEUE
 from app.jobs.retry import MAX_RETRIES, is_transient, retry_countdown
 from app.jobs.schedule import should_poll_now
@@ -272,6 +273,15 @@ def refresh_matviews(
         concurrent=concurrent,
         after_run_id=None if upstream is None else uuid.UUID(upstream["run_id"]),
     )
+
+
+# --- accounts ----------------------------------------------------------------
+
+
+@shared_task(bind=True, queue=COMPUTE_QUEUE, max_retries=MAX_RETRIES)
+def purge_accounts(self: Task[Any, Any]) -> Summary:
+    """``purge-accounts``: erase every deleted account past its thirty days."""
+    return _run(self, accounts.purge_accounts)
 
 
 # --- chains ------------------------------------------------------------------

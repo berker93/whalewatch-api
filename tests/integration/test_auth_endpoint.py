@@ -190,7 +190,12 @@ async def test_while_signups_are_closed_registering_is_recorded_and_starts_nothi
 ) -> None:
     response = await client.post(
         "/v1/auth/register",
-        json={"name": " Ada ", "email": "Ada@Example.com", "password": PASSWORD},
+        json={
+            "name": " Ada ",
+            "email": "Ada@Example.com",
+            "password": PASSWORD,
+            "accept_terms": True,
+        },
         headers=FRONTEND,
     )
 
@@ -214,6 +219,7 @@ async def test_while_signups_are_open_registering_signs_in(
             "email": "ada@example.com",
             "password": PASSWORD,
             "time_zone": "Europe/London",
+            "accept_terms": True,
         },
         headers=FRONTEND,
     )
@@ -237,7 +243,12 @@ async def test_registering_a_taken_address_is_email_taken(
 
     response = await client.post(
         "/v1/auth/register",
-        json={"name": "Imposter", "email": "ADA@example.com", "password": PASSWORD},
+        json={
+            "name": "Imposter",
+            "email": "ADA@example.com",
+            "password": PASSWORD,
+            "accept_terms": True,
+        },
         headers=FRONTEND,
     )
 
@@ -269,7 +280,12 @@ async def test_ten_characters_is_enough_as_the_frontend_says(client: AsyncClient
     """PASSWORD_MIN_LENGTH in whalewatch-web: the API's rule is the same or looser."""
     response = await client.post(
         "/v1/auth/register",
-        json={"name": "Ada", "email": "ada@example.com", "password": "1234567890"},
+        json={
+            "name": "Ada",
+            "email": "ada@example.com",
+            "password": "1234567890",
+            "accept_terms": True,
+        },
         headers=FRONTEND,
     )
 
@@ -515,7 +531,12 @@ async def test_resets_and_registrations_are_limited_too(client: AsyncClient, app
     registrations = [
         await client.post(
             "/v1/auth/register",
-            json={"name": "Ada", "email": f"ada{n}@example.com", "password": PASSWORD},
+            json={
+                "name": "Ada",
+                "email": f"ada{n}@example.com",
+                "password": PASSWORD,
+                "accept_terms": True,
+            },
             headers=FRONTEND,
         )
         for n in range(6)
@@ -533,7 +554,7 @@ async def test_a_refused_field_is_not_a_registration_attempt(
 
     await client.post(
         "/v1/auth/register",
-        json={"name": "Ada", "email": "ada@example.com", "password": "short"},
+        json={"name": "Ada", "email": "ada@example.com", "password": "short", "accept_terms": True},
         headers=FRONTEND,
     )
 
@@ -634,7 +655,12 @@ async def test_an_address_is_one_account_whatever_its_case(
     app.state.settings = make_settings(signups_open=True)
     again = await client.post(
         "/v1/auth/register",
-        json={"name": "Berk", "email": "berk@example.com", "password": PASSWORD},
+        json={
+            "name": "Berk",
+            "email": "berk@example.com",
+            "password": PASSWORD,
+            "accept_terms": True,
+        },
         headers=FRONTEND,
     )
     assert _error(again) == (409, "email_taken")
@@ -736,7 +762,7 @@ async def _register(client: AsyncClient, app: FastAPI, email: str = "ada@example
     app.state.settings = make_settings(signups_open=True)
     response = await client.post(
         "/v1/auth/register",
-        json={"name": "Ada Lovelace", "email": email, "password": PASSWORD},
+        json={"name": "Ada Lovelace", "email": email, "password": PASSWORD, "accept_terms": True},
         headers=FRONTEND,
     )
     assert response.status_code == 200, response.text

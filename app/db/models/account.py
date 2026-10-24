@@ -17,7 +17,8 @@ and the only ones a request writes to.
 Sessions are not here: they are in Redis (:mod:`app.accounts.sessions`), where
 ending one is deleting a key.
 ``signup_request``
-    Who asked for an account while signups were closed.
+    Who asked for an account while signups were closed, and what they agreed
+    to on the form, for ``create-user`` to carry over.
 ``watchlist_item``
     One thing one user follows: a stock, an investor or an insider.
 
@@ -30,11 +31,13 @@ from enum import StrEnum
 from sqlalchemy import (
     CHAR,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Text,
+    false,
     func,
     text,
 )
@@ -149,6 +152,12 @@ class SignupRequest(Base):
     requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    terms_version: Mapped[str | None] = mapped_column(Text)
+    """The terms accepted on the form. Null on a request from before the form asked."""
+    privacy_version: Mapped[str | None] = mapped_column(Text)
+    """The privacy policy the form showed. Null on the same terms."""
+    marketing_email: Mapped[bool] = mapped_column(Boolean, server_default=false())
+    """Whether the form's marketing box was ticked."""
 
 
 class WatchlistItem(Base):
