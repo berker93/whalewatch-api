@@ -61,7 +61,12 @@ Without `credentials: 'include'` the browser drops the `Set-Cookie` from login a
 
 ### Responses that are one person's
 
-Auth, account and watchlist responses carry `Cache-Control: no-store`. The timeline isn't cached by the API either. Keep React Query's own caching as it is; just never persist these responses anywhere shared.
+Auth, account, watchlist and saved-filter responses carry `Cache-Control: no-store`. The timeline isn't cached by the API either. Keep React Query's own caching as it is; just never persist these responses anywhere shared.
+
+Every read of 13F or Form 4 data now depends on the caller's plan, so it answers `Cache-Control: private` with `Vary: Cookie`, not `public`. Two consequences for the page:
+
+- **Key plan-dependent queries on the account too.** Free and Pro get different bodies for the same URL. After a sign-in, sign-out or plan change, invalidate the data queries, not just `me`.
+- **History stops at the plan's window.** `history_quarters` counts back from the quarter being filed (on 25 October 2026, Free's 4 are 2025Q4 to 2026Q3), and `insider_months` from today. Lists and charts simply start there. A request that names an earlier `period`, `from` or `to` is a `402 plan_limit` (below).
 
 ### Errors
 
@@ -73,7 +78,8 @@ Errors keep the existing shape, `{ error: { code, message, detail, request_id } 
 | 401 | `session_expired` | any signed-in route, `GET /v1/auth/session` | The cookie named a session that ended, ran out or was signed out. The response also clears the cookie |
 | 403 | `invalid_credentials` | login, change password, delete account | Wrong email or password, or wrong current password. **Never a 401** |
 | 403 | `forbidden_origin` | any write | The `Origin` isn't on the API's allow-list. A config error, not a user error |
-| 403 | `email_unverified` | watchlist `PUT` / `DELETE` | The account's email isn't verified yet: it reads everything and saves nothing. Offer "resend the link" (§5) |
+| 403 | `email_unverified` | watchlist `PUT` / `DELETE`, saved-filter `POST` / `DELETE` | The account's email isn't verified yet: it reads everything and saves nothing. Offer "resend the link" (§5) |
+| 402 | `plan_limit` | any 13F or Form 4 read, watchlist `PUT`, saved-filter `POST` | The plan doesn't reach that far back, or holds no more. `detail` is `{ limit, allowed, needed, plan }`: `limit` is the entitlement key (`history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters`), and `plan` is the cheapest public plan that lifts it (`{ slug, name, price_cents, currency, interval, value }`), or `null` when none does. Show an upgrade prompt from it, not an error |
 | 409 | `email_taken` | register | The address already has an account (only while signups are open) |
 | 422 | `validation_error` | everywhere | `detail.errors[].loc` is `["body", "<wire field>"]` or `["query", "<param>"]` |
 | 422 | `weak_password` / `invalid_email` / `invalid_name` | register, change password, reset | Same `detail.errors` shape, with its own code |
@@ -169,7 +175,15 @@ export const fromWireRef = <R extends WireRef>(ref: R) =>
 ### Watchlist
 
 - `GET /v1/watchlist` → `{ securities: StockMatch[], investors: InvestorMatch[], insiders: InsiderMatch[] }`. The shape is the FE's `Watchlist` exactly, and `InsiderMatch` has the six fields TA-2 picked. Each list is in the order items were added, oldest first. Nothing followed is `200` with three `[]`.
-- `PUT /v1/watchlist/items` `{ ref }` follows; `DELETE /v1/watchlist/items` `{ ref }` unfollows. Both are idempotent and answer with the whole watchlist. A ref that names nothing is a `404` either way. A malformed CUSIP or CIK is a `422` with `loc: ["body","ref","cusip"]`. The cap is 500 items.
+- `PUT /v1/watchlist/items` `{ ref }` follows; `DELETE /v1/watchlist/items` `{ ref }` unfollows. Both are idempotent and answer with the whole watchlist. A ref that names nothing is a `404` either way. A malformed CUSIP or CIK is a `422` with `loc: ["body","ref","cusip"]`. Following past the plan's `watchlist_items` (10 on Free) is a `402 plan_limit`; following something already followed is never refused. No plan keeps more than 500, and the 501st is a `422`.
+
+### Saved filters
+
+`apiSource`'s `notYet('saved-filters')` can go:
+
+- `GET /v1/saved-filters` → `{ data: SavedFilter[] }`, oldest first. `SavedFilter` is `{ id, name, query, created_at }`: `id` is a string, as the FE type has it, and `query` is `GET /v1/flows`'s parameters with the ones left at their defaults left out. A period comes back as `2026Q1` however it was sent.
+- `POST /v1/saved-filters` `{ name, query }` → `201` with the `SavedFilter`. `query` takes `period`, `period_type`, `min_investors`, `min_value`, `direction`, `sort`, `order`; anything else (`sector`, paging) is a `422`. The plan's `screener_saved_filters` (3 on Free) more is a `402 plan_limit`. Verified email only, as for the watchlist.
+- `DELETE /v1/saved-filters/{id}` → `204`, idempotent.
 
 `toggleWatch` has to know whether the ref is held. Read it from the watchlist the app already has in the query cache, or fetch it:
 
@@ -323,7 +337,7 @@ The current quarter is the one that ended most recently in `tz`; `meta.period` a
 
 `GET /v1/me` is the one call an app page needs before it renders: `user` (`email`, `name`, `time_zone`, `email_verified`, `email_verified_at`, `created_at`, `last_seen_at`), `plan` (`{ id, name }`: `free`, `pro`, `api_hobbyist` or `api_pro`; `free` without a subscription) and `entitlements`. Gate the follow buttons on `entitlements.save`, not on `email_verified`.
 
-`entitlements` is every capability the account has, resolved: `save` (verified email), the limits `history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters` and `api_calls_month` (a whole number, or `null` for no limit), and the flags `export_enabled`, `alerts_instant` and `mcp_enabled`. They are rows in the database, changed without a release, so read them from here and never write a plan's numbers into the page. A change to a plan reaches a signed-in session within about a minute, and a change to one account's subscription within five. Today only `watchlist_items` is enforced by the API (a full watchlist is a 422); the rest are for the page to gate on until their endpoints do.
+`entitlements` is every capability the account has, resolved: `save` (verified email), the limits `history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters` and `api_calls_month` (a whole number, or `null` for no limit), and the flags `export_enabled`, `alerts_instant` and `mcp_enabled`. They are rows in the database, changed without a release, so read them from here and never write a plan's numbers into the page. A change to a plan reaches a signed-in session within about a minute, and a change to one account's subscription within five. The API enforces `history_quarters`, `insider_months`, `watchlist_items` and `screener_saved_filters` (a `402 plan_limit` when one stops a request); `export_enabled`, `alerts_instant`, `api_calls_month` and `mcp_enabled` have no endpoint yet.
 
 `remember: false` gives a cookie without `Max-Age`, which ends with the browser, and a server-side session of 12 hours. `remember: true` gives 30 days.
 

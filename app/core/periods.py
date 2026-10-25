@@ -140,6 +140,15 @@ def quarters_between(first: date, last: date) -> list[date]:
     return [_from_index(index) for index in range(_index(first), _index(last) + 1)]
 
 
+def current_quarter(today: date) -> date:
+    """The quarter that ended most recently before ``today``: the one being filed.
+
+    On a quarter's last day that quarter has not ended, so it is the one before.
+    """
+    this_quarter = quarter_end(today.year, (today.month - 1) // 3 + 1)
+    return quarters_ending(this_quarter, 2)[0]
+
+
 def next_quarter_end(period: date) -> date:
     """The quarter end after ``period``: ``2026-03-31`` -> ``2026-06-30``.
 

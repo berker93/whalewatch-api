@@ -12,6 +12,11 @@ returned, never to the whole table before it is paged:
 - the sparkline, the view's rows for the eight quarters before it,
 - and when its filings were filed, through ``effective_filing``.
 
+Everything is inside the caller's plan's window (:mod:`app.api.entitlements`),
+in SQL: a filer's latest period is its latest inside it, so one whose every
+period is older is listed as having nothing published; the sparkline has no
+quarter before it, and ``first_period`` is the first inside it.
+
 The top holding is the one figure read live, so for as long as the views are
 stale it can be from a newer rebuild of the period than the value beside it.
 The period is the same either way: the view decides it.
@@ -26,6 +31,7 @@ from fastapi import APIRouter, HTTPException, Path, Query, status
 from sqlalchemy import (
     CTE,
     BindParameter,
+    ColumnElement,
     Interval,
     Row,
     Select,
@@ -36,9 +42,11 @@ from sqlalchemy import (
     true,
 )
 from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.sql import Subquery
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
+from app.api.entitlements import EntitlementContextDep
 from app.api.errors import INVALID, INVALID_CURSOR, not_found
 from app.api.meta import unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
@@ -60,20 +68,26 @@ from app.derived.views import FILER_SUMMARY
 
 router = APIRouter(tags=["investors"])
 
-#: Each filer's newest row of the view: its latest published period.
-LATEST: Final = (
-    select(FILER_SUMMARY)
-    .distinct(FILER_SUMMARY.c.filer_id)
-    .order_by(FILER_SUMMARY.c.filer_id, FILER_SUMMARY.c.period_of_report.desc())
-    .subquery("latest")
-)
+PeriodEnd = date | BindParameter[date]
+
+
+def latest(history_from: PeriodEnd | None) -> Subquery:
+    """Each filer's newest row of the view inside the caller's window: its
+    latest published period. None for every period."""
+    rows = select(FILER_SUMMARY)
+    if history_from is not None:
+        rows = rows.where(FILER_SUMMARY.c.period_of_report >= history_from)
+    return (
+        rows.distinct(FILER_SUMMARY.c.filer_id)
+        .order_by(FILER_SUMMARY.c.filer_id, FILER_SUMMARY.c.period_of_report.desc())
+        .subquery("latest")
+    )
+
+
+#: Every filer's latest period, whatever the plan: for ``make explain``.
+LATEST: Final = latest(None)
 
 _DISPLAY_NAME: Final = func.coalesce(Filer.display_name, Filer.name)
-
-# Sort keys must be NOT NULL, and a filer with nothing published has no value
-# and no positions. -1 is below every real one, so those filers come last.
-_VALUE_KEY: Final = func.coalesce(LATEST.c.portfolio_value_usd, -1)
-_POSITIONS_KEY: Final = func.coalesce(LATEST.c.position_count, -1)
 
 
 class InvestorSort(StrEnum):
@@ -84,35 +98,53 @@ class InvestorSort(StrEnum):
     NAME = "name"
 
 
-#: Largest first for the numbers, A to Z for the name. Each ends on a unique
-#: column, so ties do not straddle a page boundary.
-KEYSETS: Final = {
-    InvestorSort.VALUE: Keyset(
-        "investors.value",
-        (
-            SortKey("value_key", _VALUE_KEY, Decimal, descending=True),
-            SortKey("filer_id", Filer.id.expression, int, descending=True),
-        ),
-    ),
-    InvestorSort.POSITIONS: Keyset(
-        "investors.positions",
-        (
-            SortKey("positions_key", _POSITIONS_KEY, int, descending=True),
-            SortKey("filer_id", Filer.id.expression, int, descending=True),
-        ),
-    ),
-    InvestorSort.NAME: Keyset(
-        "investors.name",
-        (
-            SortKey("display_name", _DISPLAY_NAME, str),
-            SortKey("slug", Filer.slug.expression, str),
-        ),
-    ),
-}
+def _sort_keys(rows: Subquery) -> tuple[ColumnElement[Any], ColumnElement[Any]]:
+    """The value and position count of ``rows``, :func:`latest`'s, as sort keys.
+
+    Sort keys must be NOT NULL, and a filer with nothing published has no
+    value and no positions. -1 is below every real one, so those filers come last.
+    """
+    return (
+        func.coalesce(rows.c.portfolio_value_usd, -1),
+        func.coalesce(rows.c.position_count, -1),
+    )
 
 
-def _filers() -> Select[Any]:
-    """Every filer, with its latest period's row of the view, or nulls."""
+def keysets(rows: Subquery) -> dict["InvestorSort", Keyset]:
+    """Largest first for the numbers, A to Z for the name, over :func:`latest`'s
+    ``rows``. Each ends on a unique column, so ties do not straddle a page
+    boundary. Named the same whatever the window, so a cursor outlives a
+    change of plan."""
+    value_key, positions_key = _sort_keys(rows)
+    return {
+        InvestorSort.VALUE: Keyset(
+            "investors.value",
+            (
+                SortKey("value_key", value_key, Decimal, descending=True),
+                SortKey("filer_id", Filer.id.expression, int, descending=True),
+            ),
+        ),
+        InvestorSort.POSITIONS: Keyset(
+            "investors.positions",
+            (
+                SortKey("positions_key", positions_key, int, descending=True),
+                SortKey("filer_id", Filer.id.expression, int, descending=True),
+            ),
+        ),
+        InvestorSort.NAME: Keyset(
+            "investors.name",
+            (
+                SortKey("display_name", _DISPLAY_NAME, str),
+                SortKey("slug", Filer.slug.expression, str),
+            ),
+        ),
+    }
+
+
+def _filers(rows: Subquery) -> Select[Any]:
+    """Every filer, with its latest period's row of the view, ``rows`` from
+    :func:`latest`, or nulls."""
+    value_key, positions_key = _sort_keys(rows)
     return (
         select(
             Filer.id.label("filer_id"),
@@ -120,23 +152,24 @@ def _filers() -> Select[Any]:
             _DISPLAY_NAME.label("display_name"),
             Filer.manager_name,
             Filer.category,
-            LATEST.c.period_of_report,
-            LATEST.c.portfolio_value_usd,
-            LATEST.c.position_count,
-            LATEST.c.top10_weight_pct,
-            LATEST.c.turnover_pct,
-            _VALUE_KEY.label("value_key"),
-            _POSITIONS_KEY.label("positions_key"),
+            rows.c.period_of_report,
+            rows.c.portfolio_value_usd,
+            rows.c.position_count,
+            rows.c.top10_weight_pct,
+            rows.c.turnover_pct,
+            value_key.label("value_key"),
+            positions_key.label("positions_key"),
         )
         .select_from(Filer)
-        .outerjoin(LATEST, LATEST.c.filer_id == Filer.id)
+        .outerjoin(rows, rows.c.filer_id == Filer.id)
     )
 
 
-def _decorated(filers: CTE) -> Select[Any]:
+def _decorated(filers: CTE, history_from: PeriodEnd | None) -> Select[Any]:
     """``filers``, with what each row needs from outside the view.
 
     ``filers`` has :func:`_filers`'s columns, and is what is being returned.
+    The sparkline has no quarter before ``history_from``.
     """
     top = top_holdings(filers).subquery("top")
 
@@ -144,6 +177,9 @@ def _decorated(filers: CTE) -> Select[Any]:
     # Eight quarters back from a quarter end is the same day of the same
     # month, two years earlier. Only the bound: _sparkline places each period.
     since = filers.c.period_of_report - literal_column("interval '2 years'", Interval)
+    in_sparkline = [summary.c.filer_id == filers.c.filer_id, summary.c.period_of_report > since]
+    if history_from is not None:
+        in_sparkline.append(summary.c.period_of_report >= history_from)
     sparkline = (
         select(
             func.array_agg(
@@ -153,10 +189,7 @@ def _decorated(filers: CTE) -> Select[Any]:
                 aggregate_order_by(summary.c.portfolio_value_usd, summary.c.period_of_report)
             ).label("sparkline_values"),
         )
-        .where(
-            summary.c.filer_id == filers.c.filer_id,
-            summary.c.period_of_report > since,
-        )
+        .where(*in_sparkline)
         .lateral("sparkline")
     )
 
@@ -197,10 +230,16 @@ def list_query(
     sort: InvestorSort = InvestorSort.VALUE,
     category: FilerCategory | None = None,
     q: str | None = None,
+    history_from: PeriodEnd | None,
 ) -> tuple[Select[Any], Keyset]:
     """``GET /v1/investors``'s one query, and the keyset to hand its rows to
-    :func:`~app.api.pagination.page_of` with."""
-    statement = _filers()
+    :func:`~app.api.pagination.page_of` with.
+
+    :param history_from: The caller's window (:mod:`app.api.entitlements`).
+        None for every period.
+    """
+    rows = latest(history_from)
+    statement = _filers(rows)
     if category is not None:
         statement = statement.where(Filer.category == category.value)
     if q is not None:
@@ -213,25 +252,31 @@ def list_query(
             )
         )
 
-    keyset = KEYSETS[sort]
+    keyset = keysets(rows)[sort]
     filers = page_statement(statement, keyset, page).cte("page")
-    return _decorated(filers).order_by(*keyset.order_by(on=filers)), keyset
+    return _decorated(filers, history_from).order_by(*keyset.order_by(on=filers)), keyset
 
 
-def detail_query(slug: str | BindParameter[str]) -> Select[Any]:
-    """``GET /v1/investors/{slug}``'s one query: one row, or none for an unknown slug."""
-    filer = _filers().where(Filer.slug == slug).cte("investor")
+def detail_query(slug: str | BindParameter[str], *, history_from: PeriodEnd | None) -> Select[Any]:
+    """``GET /v1/investors/{slug}``'s one query: one row, or none for an unknown slug.
+
+    ``first_period`` is the first inside the caller's window.
+    """
+    filer = _filers(latest(history_from)).where(Filer.slug == slug).cte("investor")
+    published = [FILER_SUMMARY.c.filer_id == filer.c.filer_id]
+    if history_from is not None:
+        published.append(FILER_SUMMARY.c.period_of_report >= history_from)
     first_period = (
-        select(func.min(FILER_SUMMARY.c.period_of_report))
-        .where(FILER_SUMMARY.c.filer_id == filer.c.filer_id)
-        .scalar_subquery()
+        select(func.min(FILER_SUMMARY.c.period_of_report)).where(*published).scalar_subquery()
     )
     ciks = (
         select(func.array_agg(aggregate_order_by(FilerCik.cik, FilerCik.priority, FilerCik.cik)))
         .where(FilerCik.filer_id == filer.c.filer_id)
         .scalar_subquery()
     )
-    return _decorated(filer).add_columns(first_period.label("first_period"), ciks.label("ciks"))
+    return _decorated(filer, history_from).add_columns(
+        first_period.label("first_period"), ciks.label("ciks")
+    )
 
 
 SortParam = Annotated[
@@ -274,12 +319,17 @@ SlugParam = Annotated[
 async def list_investors(
     session: SessionDep,
     page: PageParamsDep,
+    entitled: EntitlementContextDep,
     sort: SortParam = InvestorSort.VALUE,
     category: CategoryParam = None,
     q: SearchParam = None,
 ) -> Envelope[InvestorSummary]:
-    """List investors, paginated. Each row names its own ``latest_period``."""
-    statement, keyset = list_query(page, sort=sort, category=category, q=q)
+    """List investors, paginated. Each row names its own ``latest_period``: the
+    latest inside the caller's plan's window, and none for an investor with
+    nothing published in it."""
+    statement, keyset = list_query(
+        page, sort=sort, category=category, q=q, history_from=entitled.history_from
+    )
     rows_on_page, page_info = page_of(list(await session.execute(statement)), keyset, page)
 
     return Envelope(
@@ -297,10 +347,12 @@ async def list_investors(
     responses={**not_found("No investor with that slug."), **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
-async def read_investor(slug: SlugParam, session: SessionDep) -> InvestorDetail:
+async def read_investor(
+    slug: SlugParam, session: SessionDep, entitled: EntitlementContextDep
+) -> InvestorDetail:
     """One investor, with the list's fields and its concentration, turnover,
-    first period and CIKs."""
-    statement = detail_query(slug)
+    first period and CIKs: all inside the caller's plan's window."""
+    statement = detail_query(slug, history_from=entitled.history_from)
     row = (await session.execute(statement)).one_or_none()
     if row is None:
         raise HTTPException(

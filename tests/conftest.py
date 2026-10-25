@@ -19,12 +19,14 @@ os.environ.setdefault("POSTGRES_PASSWORD", "localdev")
 os.environ.setdefault("SEC_CONTACT_EMAIL", "tests@whalewatch.io")
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
 from app.accounts.sessions import SessionStore
+from app.api.auth import OptionalViewerDep
 from app.api.deps import get_redis
+from app.api.entitlements import GATED, EntitlementContext, entitlement_context
 from app.core.config import Settings
 from app.main import create_app
 from tests.fake_redis import FakeRedis
@@ -54,6 +56,19 @@ def make_settings(**overrides: Any) -> Settings:
     return Settings(_env_file=None, **{**defaults, **overrides})
 
 
+async def unlimited_entitlements(request: Request, viewer: OptionalViewerDep) -> EntitlementContext:
+    """What a test that is not about plans runs as: every period and day, the
+    request marked gated as the real dependency marks it. The fixtures' 13Fs
+    are 2024's, which Free's window, counted back from today, would hide. The
+    viewer's write limits are still its plan's.
+
+    A test about plans takes this away:
+    ``app.dependency_overrides.pop(entitlement_context)``.
+    """
+    setattr(request.state, GATED, True)
+    return EntitlementContext.unlimited(viewer=viewer)
+
+
 @pytest.fixture
 def settings() -> Settings:
     return make_settings()
@@ -76,6 +91,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     ``get_redis`` first, so a cached endpoint builds its answer every time.
     """
     app.dependency_overrides.setdefault(get_redis, lambda: FakeRedis())
+    app.dependency_overrides.setdefault(entitlement_context, unlimited_entitlements)
     app.state.sessions = SessionStore(FakeRedis())  # type: ignore[arg-type]
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http_client:

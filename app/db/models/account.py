@@ -21,12 +21,16 @@ ending one is deleting a key.
     to on the form, for ``create-user`` to carry over.
 ``watchlist_item``
     One thing one user follows: a stock, an investor or an insider.
+``saved_filter``
+    One screener filter one user saved: a name, and ``GET /v1/flows``'s
+    parameters.
 
 See :mod:`app.accounts` for the rules these are written by.
 """
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     CHAR,
@@ -41,7 +45,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import CITEXT
+from sqlalchemy.dialects.postgresql import CITEXT, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -216,4 +220,36 @@ class WatchlistItem(Base):
             unique=True,
             postgresql_where=text("insider_id IS NOT NULL"),
         ),
+    )
+
+
+#: The longest a saved filter's name may be.
+MAX_FILTER_NAME: int = 80
+
+
+class SavedFilter(Base):
+    """One screener filter one user saved, listed in the order saved (:attr:`id`)."""
+
+    __tablename__ = "saved_filter"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app_user.id", ondelete="CASCADE"))
+
+    name: Mapped[str] = mapped_column(Text)
+    """What the user called it, trimmed."""
+
+    query: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    """``GET /v1/flows``'s parameters, as :class:`app.api.schemas.saved_filter.ScreenerQuery`
+    validated them, without the ones left at their defaults."""
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            f"name = btrim(name) AND length(name) BETWEEN 1 AND {MAX_FILTER_NAME}",
+            name="name_is_named",
+        ),
+        CheckConstraint("jsonb_typeof(query) = 'object'", name="query_is_an_object"),
+        Index("ix_saved_filter_user_id", "user_id", "id"),
     )

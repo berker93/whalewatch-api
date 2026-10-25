@@ -23,8 +23,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routers.timeline import current_quarter
-from app.core.periods import quarter_label, quarters_ending
+from app.core.periods import current_quarter, quarter_label, quarters_ending
 from app.db.models import (
     AmendmentKind,
     Filer,

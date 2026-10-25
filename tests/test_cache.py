@@ -23,6 +23,12 @@ from app.api.cache import (
     period_lifetime,
 )
 from app.api.deps import get_app_settings, get_redis
+from app.api.entitlements import (
+    EntitlementContext,
+    EntitlementContextDep,
+    entitlement_context,
+    takes_entitlements,
+)
 from app.api.schemas.types import Period
 from app.main import create_app
 from tests.conftest import make_settings
@@ -451,6 +457,7 @@ def test_every_public_read_is_cached() -> None:
         "/v1/me/export",
         "/v1/me/privacy",
         "/v1/watchlist",
+        "/v1/saved-filters",
         # With no `tz`, the answer is in the signed-in user's zone.
         "/v1/timeline",
         "/v1/timeline/upcoming",
@@ -467,3 +474,118 @@ def test_every_public_read_is_cached() -> None:
         for path, route in reads.items()
         if "_cache_redis" not in inspect.signature(route.endpoint).parameters
     } == uncached
+
+
+def test_every_read_of_filing_data_is_gated() -> None:
+    """A new read takes the caller's entitlements unless it is added here with
+    the reason it cannot show more than a plan allows (TIER-4's audit)."""
+    ungated = {
+        # Names and identifiers: no period, no trade.
+        "/v1/search",
+        # What exists and how far each period has filled in: counts, no rows.
+        "/v1/meta/periods",
+        "/v1/meta/freshness",
+        "/v1/meta/data-sources",
+        # The caller's own account, watchlist, filters and export.
+        "/v1/account",
+        "/v1/auth/session",
+        "/v1/me",
+        "/v1/me/export",
+        "/v1/me/privacy",
+        "/v1/watchlist",
+        "/v1/saved-filters",
+    }
+    reads = {
+        path: route
+        for path, route in _routes(create_app(make_settings()).routes)
+        if path.startswith(("/v1/", "/filings/")) and "GET" in (route.methods or set())
+    }
+
+    assert {path for path, route in reads.items() if not takes_entitlements(route.endpoint)} == (
+        ungated
+    )
+
+
+# --- the entitlement tier ---------------------------------------------------------
+
+FREE = EntitlementContext(history_quarters=4, insider_months=6, today=date(2026, 10, 25))
+PRO = EntitlementContext(history_quarters=20, insider_months=None, today=date(2026, 10, 25))
+
+
+@pytest.fixture
+def plans(toy: FastAPI, builds: Builds) -> list[EntitlementContext]:
+    """A gated endpoint on the toy app, and the contexts its requests get, in turn."""
+    contexts: list[EntitlementContext] = []
+
+    @toy.get("/v1/gated/{slug}", response_model=Answer)
+    @cached(Lifetime.CURRENT_PERIOD)
+    async def gated(slug: str, entitled: EntitlementContextDep) -> Answer:
+        return builds(f"{slug}:{entitled.tier}")
+
+    toy.dependency_overrides[entitlement_context] = lambda: contexts.pop(0)
+    return contexts
+
+
+async def test_a_plan_never_reads_another_plans_answer(
+    http: AsyncClient, redis: FakeRedis, plans: list[EntitlementContext]
+) -> None:
+    plans += [PRO, FREE, PRO, FREE]
+    answers = [await http.get("/v1/gated/a") for _ in range(4)]
+
+    assert [r.headers["x-cache"] for r in answers] == ["MISS", "MISS", "HIT", "HIT"]
+    assert [r.json()["slug"] for r in answers] == [
+        "a:h2021-12-31.iall",
+        "a:h2025-12-31.i2026-04-25",
+        "a:h2021-12-31.iall",
+        "a:h2025-12-31.i2026-04-25",
+    ]
+    assert sorted(key.rsplit(":", 1)[0] for key in redis.values) == [
+        f"{KEY_PREFIX}test_cache.gated:h2021-12-31.iall",
+        f"{KEY_PREFIX}test_cache.gated:h2025-12-31.i2026-04-25",
+    ]
+
+
+async def test_one_window_is_one_entry_whichever_plan_has_it(
+    http: AsyncClient, redis: FakeRedis, plans: list[EntitlementContext]
+) -> None:
+    """The window, not the plan: an override that gives one account Pro's
+    history and insider trades shares Pro's entry."""
+    plans += [PRO, EntitlementContext(history_quarters=20, insider_months=None, today=PRO.today)]
+    first, second = [await http.get("/v1/gated/a") for _ in range(2)]
+
+    assert (first.headers["x-cache"], second.headers["x-cache"]) == ("MISS", "HIT")
+    assert len(redis.values) == 1
+
+
+async def test_a_quarter_ending_is_a_new_entry(
+    http: AsyncClient, redis: FakeRedis, plans: list[EntitlementContext]
+) -> None:
+    """An answer built on the last day of September for Free's four quarters
+    from 2025Q3 is not served on the first of October, when they start at 2025Q4."""
+    plans += [
+        EntitlementContext(history_quarters=4, insider_months=6, today=date(2026, 9, 30)),
+        EntitlementContext(history_quarters=4, insider_months=6, today=date(2026, 10, 1)),
+    ]
+    first, second = [await http.get("/v1/gated/a") for _ in range(2)]
+
+    assert (first.headers["x-cache"], second.headers["x-cache"]) == ("MISS", "MISS")
+    assert first.json()["slug"] == "a:h2025-09-30.i2026-03-30"
+    assert second.json()["slug"] == "a:h2025-12-31.i2026-04-01"
+
+
+async def test_a_gated_answer_is_private_and_varies_by_cookie(
+    http: AsyncClient, plans: list[EntitlementContext]
+) -> None:
+    plans += [FREE, FREE]
+    built, hit = [await http.get("/v1/gated/a") for _ in range(2)]
+
+    for response in (built, hit):
+        assert response.headers["cache-control"].startswith("private, max-age=")
+        assert response.headers["vary"] == "Cookie"
+
+
+async def test_an_ungated_answer_stays_public(http: AsyncClient) -> None:
+    response = await http.get("/v1/search", params={"q": "x"})
+
+    assert response.headers["cache-control"].startswith("public, max-age=")
+    assert "vary" not in response.headers

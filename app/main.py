@@ -22,6 +22,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from app.accounts import entitlements
 from app.accounts.sessions import SessionStore, SessionStoreError
+from app.api.entitlements import GatedResponseMiddleware
 from app.api.errors import (
     RATE_LIMITED,
     entitlements_unavailable,
@@ -56,6 +57,7 @@ from app.api.routers import (
     me,
     meta,
     portfolio,
+    saved_filters,
     search,
     stocks,
     timeline,
@@ -152,6 +154,8 @@ def create_app(settings: Settings) -> FastAPI:
     # Each add_middleware wraps everything added before it, so the last added
     # is the outermost: the list below reads from the route outwards. The order
     # is argued in app.api.middleware's docstring.
+    # Innermost: it reads what the route marked, and needs nothing of the others.
+    app.add_middleware(GatedResponseMiddleware)
     app.add_middleware(TimeoutMiddleware, seconds=settings.request_timeout_seconds)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
@@ -214,6 +218,7 @@ def create_app(settings: Settings) -> FastAPI:
         me,
         account,
         watchlist,
+        saved_filters,
         timeline,
     ):
         app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)

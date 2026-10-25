@@ -10,6 +10,8 @@ In the order a request meets them, outermost first (see :func:`app.main.create_a
 - :class:`BodySizeLimitMiddleware` refuses a body over the limit, 413.
 - :class:`~app.api.rate_limit.RateLimitMiddleware`, 429.
 - :class:`TimeoutMiddleware` gives up on a slow request, 504.
+- :class:`~app.api.entitlements.GatedResponseMiddleware` makes the answer to a
+  request whose route took the caller's entitlements ``private``.
 
 Every one of them that refuses a request answers in the one error shape, through
 :func:`app.api.errors.problem`, and inside the first three, so a refusal still

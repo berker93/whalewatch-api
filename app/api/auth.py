@@ -39,6 +39,7 @@ this file could have.
 """
 
 import hashlib
+from dataclasses import dataclass
 from typing import Annotated, Final, Literal
 
 from fastapi import Depends, Request, Response, status
@@ -131,22 +132,53 @@ def session_token(request: Request, settings: Settings) -> str | None:
     return request.cookies.get(settings.session_cookie_name) or None
 
 
-async def require_viewer(
+@dataclass(frozen=True, slots=True)
+class SessionLookup:
+    """What the request's cookie named: one lookup, whichever dependencies ask.
+
+    FastAPI runs a dependency once per request however many others need it, so
+    a route that takes both a viewer and the entitlements
+    (:mod:`app.api.entitlements`) reads the session once, and marks the account
+    seen once.
+    """
+
+    token: str | None
+    viewer: Viewer | None
+    unavailable: SessionStoreError | None = None
+    """Redis could not be reached: who is asking is unknown."""
+
+
+async def lookup_session(
     request: Request, session: SessionDep, store: SessionStoreDep, settings: SettingsDep
-) -> Viewer:
+) -> SessionLookup:
     token = session_token(request, settings)
     if token is None:
+        return SessionLookup(token=None, viewer=None)
+    try:
+        viewer = await find_session(session, store, token)
+    except SessionStoreError as exc:
+        return SessionLookup(token=token, viewer=None, unavailable=exc)
+    if viewer is not None:
+        await touch(session, viewer.user)
+    return SessionLookup(token=token, viewer=viewer)
+
+
+SessionLookupDep = Annotated[SessionLookup, Depends(lookup_session)]
+
+
+async def require_viewer(lookup: SessionLookupDep, settings: SettingsDep) -> Viewer:
+    if lookup.unavailable is not None:
+        raise lookup.unavailable
+    if lookup.token is None:
         raise ApiError(401, ErrorCode.UNAUTHENTICATED, "Not signed in.")
-    viewer = await find_session(session, store, token)
-    if viewer is None:
+    if lookup.viewer is None:
         raise ApiError(
             401,
             ErrorCode.SESSION_EXPIRED,
             "The session has ended. Log in again.",
             headers={"set-cookie": cleared_cookie_header(settings)},
         )
-    await touch(session, viewer.user)
-    return viewer
+    return lookup.viewer
 
 
 async def require_verified(viewer: Annotated[Viewer, Depends(require_viewer)]) -> Viewer:
@@ -160,20 +192,10 @@ async def require_verified(viewer: Annotated[Viewer, Depends(require_viewer)]) -
     return viewer
 
 
-async def optional_viewer(
-    request: Request, session: SessionDep, store: SessionStoreDep, settings: SettingsDep
-) -> Viewer | None:
-    token = session_token(request, settings)
-    if token is None:
-        return None
-    try:
-        viewer = await find_session(session, store, token)
-    except SessionStoreError as exc:
-        logger.warning("sessions.unavailable", error=repr(exc.__cause__))
-        return None
-    if viewer is not None:
-        await touch(session, viewer.user)
-    return viewer
+async def optional_viewer(lookup: SessionLookupDep) -> Viewer | None:
+    if lookup.unavailable is not None:
+        logger.warning("sessions.unavailable", error=repr(lookup.unavailable.__cause__))
+    return lookup.viewer
 
 
 def no_store(response: Response) -> None:

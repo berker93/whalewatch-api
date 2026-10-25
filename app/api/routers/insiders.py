@@ -36,6 +36,13 @@ there and the class is not, so such a line is under each of the issuer's
 stocks, with ``cusip`` null to say so. The issuer is the CIK SEC lists the
 stock's current ticker under.
 
+The plan's window
+-----------------
+Trades are inside the caller's ``insiders_from`` (:mod:`app.api.entitlements`),
+months back from today, in SQL: no line traded before it, and no cluster begun
+before it, so an episode's totals never include a purchase outside it. A
+``from``, ``to``, ``filed_from`` or ``filed_to`` before it is a 402.
+
 Sorting
 -------
 By ``transaction_date`` (the default) or ``value_usd``, then the newest
@@ -70,6 +77,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
+from app.api.entitlements import PLAN_LIMITED, EntitlementContext, EntitlementContextDep
 from app.api.errors import INVALID, INVALID_CURSOR, invalid, not_found
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
 from app.api.routers.portfolio import SortOrder
@@ -145,6 +153,9 @@ class Filters:
     """Filed on or after this day, in UTC."""
     filed_end: date | None = None
     """Filed on or before this day, in UTC."""
+    trades_from: date | None = None
+    """The caller's window: no trade before this day. Not the client's to
+    choose, so not a parameter: :func:`_filters` sets it."""
 
 
 def _keyset(listing: str, sort: InsiderSort, order: SortOrder) -> Keyset:
@@ -233,6 +244,8 @@ def transactions_query(
         conditions.append(or_(*(flags[role] for role in sorted(filters.roles))))
     if filters.min_value is not None:
         conditions.append(Line.value_usd >= filters.min_value)
+    if filters.trades_from is not None:
+        conditions.append(Line.transaction_date >= filters.trades_from)
     if filters.start is not None:
         conditions.append(Line.transaction_date >= filters.start)
     if filters.end is not None:
@@ -532,6 +545,7 @@ def _filters(
     end: date | None,
     exclude_10b5_1: bool,
     *,
+    entitled: EntitlementContext,
     insider_ciks: frozenset[str] | None = None,
     filed_start: date | None = None,
     filed_end: date | None = None,
@@ -540,6 +554,8 @@ def _filters(
         raise invalid("from", f"from ({start}) is after to ({end}).")
     if filed_start is not None and filed_end is not None and filed_start > filed_end:
         raise invalid("filed_from", f"filed_from ({filed_start}) is after filed_to ({filed_end}).")
+    for day in (start, end, filed_start, filed_end):
+        entitled.require_day(day)
     if codes is None:
         chosen: frozenset[str] | None = DEFAULT_CODES
     elif ALL_CODES in codes:
@@ -556,6 +572,7 @@ def _filters(
         insider_ciks=insider_ciks or frozenset(),
         filed_start=filed_start,
         filed_end=filed_end,
+        trades_from=entitled.insiders_from,
     )
 
 
@@ -589,12 +606,13 @@ async def _envelope(
     operation_id="listInsiderTransactions",
     response_model=InsiderTransactionEnvelope,
     summary="Insiders' Form 4 trades, open-market purchases and sales by default",
-    responses={**_NOT_FOUND, **INVALID_CURSOR, **INVALID},
+    responses={**_NOT_FOUND, **PLAN_LIMITED, **INVALID_CURSOR, **INVALID},
 )
 @cached(Lifetime.INSIDERS)
 async def list_insider_transactions(
     session: SessionDep,
     page: PageParamsDep,
+    entitled: EntitlementContextDep,
     ticker: FeedTickerParam = None,
     code: CodesParam = None,
     role: RolesParam = None,
@@ -619,6 +637,7 @@ async def list_insider_transactions(
         start,
         end,
         exclude_10b5_1,
+        entitled=entitled,
         insider_ciks=insider_cik,
         filed_start=filed_from,
         filed_end=filed_to,
@@ -641,13 +660,14 @@ async def list_insider_transactions(
     operation_id="getStockInsiders",
     response_model=InsiderTransactionEnvelope,
     summary="One stock's insider trades, open-market purchases and sales by default",
-    responses={**_NOT_FOUND, **INVALID_CURSOR, **INVALID},
+    responses={**_NOT_FOUND, **PLAN_LIMITED, **INVALID_CURSOR, **INVALID},
 )
 @cached(Lifetime.INSIDERS)
 async def read_stock_insiders(
     ticker: TickerParam,
     session: SessionDep,
     page: PageParamsDep,
+    entitled: EntitlementContextDep,
     code: CodesParam = None,
     role: RolesParam = None,
     min_value: MinValueParam = None,
@@ -660,7 +680,7 @@ async def read_stock_insiders(
     """The stock's Form 4 lines, newest trade first, with its issuer's lines
     that no one security could be linked to. Filtered as
     `/v1/insiders/transactions` is, open-market purchases and sales by default."""
-    filters = _filters(code, role, min_value, start, end, exclude_10b5_1)
+    filters = _filters(code, role, min_value, start, end, exclude_10b5_1, entitled=entitled)
     security = await _resolve(session, ticker)
     return await _envelope(
         session,
@@ -720,9 +740,12 @@ def clusters_query(
     end: date | None = None,
     sort: ClusterSort = ClusterSort.DATE,
     order: SortOrder = SortOrder.DESC,
+    trades_from: date | None,
 ) -> tuple[Select[Any], Keyset]:
     """One page of one parameter set's episodes, with their security, and the keyset.
 
+    :param trades_from: The caller's window: no episode begun before it, so
+        no purchase outside it is in a total. None for every day.
     :param security_id: One stock's: every episode of its issuer, and any
         linked to it.
     :param start: Episodes still going on or after this day.
@@ -741,6 +764,8 @@ def clusters_query(
                 cluster.issuer_cik.in_(_issuer_ciks(security_id)),
             )
         )
+    if trades_from is not None:
+        conditions.append(cluster.window_start >= trades_from)
     if start is not None:
         conditions.append(cluster.window_end >= start)
     if end is not None:
@@ -920,12 +945,13 @@ ClusterEndParam = Annotated[
     operation_id="listInsiderClusters",
     response_model=InsiderClusterEnvelope,
     summary="Cluster buys: several of a company's insiders buying within a window",
-    responses={**_NOT_FOUND, **INVALID_CURSOR, **INVALID},
+    responses={**_NOT_FOUND, **PLAN_LIMITED, **INVALID_CURSOR, **INVALID},
 )
 @cached(Lifetime.INSIDERS)
 async def list_insider_clusters(
     session: SessionDep,
     page: PageParamsDep,
+    entitled: EntitlementContextDep,
     window: WindowParam = DEFAULT_WINDOW,
     min_insiders: MinInsidersParam = DEFAULT_MIN_INSIDERS,
     ticker: FeedTickerParam = None,
@@ -938,11 +964,14 @@ async def list_insider_clusters(
     directors bought its shares on the open market within `window` days, latest
     first. Windows that share a purchase are one episode. Found over all of
     history, not back from today. `meta.rules` states what counts as a purchase:
-    plan purchases and 10% owners are left out."""
+    plan purchases and 10% owners are left out. None begun before the caller's
+    plan's window."""
     window = _grid_value("window", window, WINDOWS)
     min_insiders = _grid_value("min_insiders", min_insiders, MIN_INSIDERS)
     if start is not None and end is not None and start > end:
         raise invalid("from", f"from ({start}) is after to ({end}).")
+    entitled.require_day(start)
+    entitled.require_day(end)
     security_id = (await _resolve(session, ticker)).id if ticker is not None else None
 
     statement, keyset = clusters_query(
@@ -954,6 +983,7 @@ async def list_insider_clusters(
         end=end,
         sort=sort,
         order=order,
+        trades_from=entitled.insiders_from,
     )
     rows, page_info = page_of(list(await session.execute(statement)), keyset, page)
     insiders: dict[tuple[str, date], list[ClusterInsider]] = {}

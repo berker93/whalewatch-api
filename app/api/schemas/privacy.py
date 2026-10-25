@@ -4,7 +4,7 @@
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -177,6 +177,16 @@ class ExportWatchlist(BaseModel):
     insiders: list[ExportInsider] = Field(description="Followed insiders.")
 
 
+class ExportSavedFilter(BaseModel):
+    """A saved screener filter."""
+
+    name: str = Field(description="What the user called it.", examples=["Crowded buys"])
+    query: dict[str, Any] = Field(
+        description="`GET /v1/flows`'s parameters, as saved.", examples=[{"direction": "buy"}]
+    )
+    created_at: datetime = Field(description="When it was saved.", examples=[_AT])
+
+
 class ExportConsent(BaseModel):
     """One row of the lawful-basis ledger."""
 
@@ -231,6 +241,9 @@ class Export(BaseModel):
     exported_at: datetime = Field(description="When it was made.", examples=[_AT])
     account: ExportAccount = Field(description="The account.")
     watchlist: ExportWatchlist = Field(description="What the account follows.")
+    saved_filters: list[ExportSavedFilter] = Field(
+        description="The screener filters saved, oldest first."
+    )
     consents: list[ExportConsent] = Field(description="The whole ledger, oldest first.")
     links: list[ExportLink] = Field(description="Emailed links still waiting to be used.")
     sessions: list[ExportSession] = Field(description="Sessions still signed in.")

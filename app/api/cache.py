@@ -30,7 +30,8 @@ names it gets a 304 with no body.
 
 The key
 -------
-``ww:v1:{endpoint}:{hash}``. The endpoint is the handler, by its router's
+``ww:v1:{endpoint}:{hash}``, and for an endpoint whose answer depends on the
+caller's plan, ``ww:v1:{endpoint}:{tier}:{hash}``. The endpoint is the handler, by its router's
 module and its name: ``portfolio.read_portfolio``. Not the route's path, which
 FastAPI keeps relative to the router it was declared on, without ``/v1``. The
 hash is of the arguments the handler is called with, path and query, after
@@ -41,6 +42,21 @@ declare is not an argument, so it cannot split the cache. The hash also covers
 the release, version and commit, so a deploy that changes a response's shape
 does not go on serving the previous release's for the rest of a day. ``v1`` is
 for invalidating everything by hand, with no deploy: bump it.
+
+The tier
+--------
+An endpoint that takes an :class:`~app.api.entitlements.EntitlementContext`
+answers Free and Pro differently for the same arguments, so its key carries
+the context's :attr:`~app.api.entitlements.EntitlementContext.tier`: the first
+period and trade day the answer was built from, ``h2025-12-31.i2026-04-25``.
+Without it, whichever plan asked first would be served to the other for the
+rest of the day: Pro's history to Free, or Free's to Pro. Keyed on the window
+rather than the plan, so an answer built before a quarter ended is not served
+after it, and every plan with the same window shares one entry.
+
+Such an answer goes out ``Cache-Control: private`` with ``Vary: Cookie``
+rather than ``public``: a browser may keep it for the session that asked, and
+a CDN or proxy, which cannot tell sessions apart, keeps none of it.
 
 Invalidation
 ------------
@@ -76,6 +92,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import RedisDep, SettingsDep
+from app.api.entitlements import EntitlementContext, takes_entitlements
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.periods import filing_deadline
@@ -115,8 +132,9 @@ STALE_WHILE_REVALIDATE: Final = 24 * 60 * 60
 #: today is reckoned in UTC, a day ahead of EDGAR's evening.
 _CLOSING: Final = timedelta(days=4)
 
-#: Arguments that are the handler's resources, not what it was asked.
-_NOT_ARGUMENTS: Final = (AsyncSession, Redis, Settings)
+#: Arguments that are the handler's resources, not what it was asked. The
+#: entitlements are keyed on, but as the tier, not hashed with the arguments.
+_NOT_ARGUMENTS: Final = (AsyncSession, Redis, Settings, EntitlementContext)
 
 type Endpoint = Callable[..., Awaitable[Any]]
 
@@ -143,6 +161,7 @@ def cached(
         if period is not None and period not in signature.parameters:
             raise TypeError(f"{endpoint.__name__} has no parameter {period!r}")
         name = f"{endpoint.__module__.rpartition('.')[2]}.{endpoint.__name__}"
+        gated = takes_entitlements(endpoint)
 
         @functools.wraps(endpoint)
         async def wrapper(
@@ -153,7 +172,11 @@ def cached(
             **kwargs: Any,
         ) -> Response:
             kept = lifetime if lifetime is not None else period_lifetime(kwargs[period or ""])
-            key = cache_key(name, kwargs, _cache_settings)
+            tier = None
+            if gated:
+                [context] = [v for v in kwargs.values() if isinstance(v, EntitlementContext)]
+                tier = context.tier
+            key = cache_key(name, kwargs, _cache_settings, tier=tier)
 
             body, remaining, reachable = await _read(_cache_redis, key)
             hit = body is not None
@@ -169,7 +192,7 @@ def cached(
                 if reachable:
                     await _write(_cache_redis, key, body, remaining)
 
-            return _respond(_cache_request, body, kept, remaining, hit=hit)
+            return _respond(_cache_request, body, kept, remaining, hit=hit, gated=gated)
 
         # FastAPI reads the handler's parameters from its signature, so the
         # wrapper declares the endpoint's own and asks for three more.
@@ -202,8 +225,11 @@ def period_lifetime(period: date | None, *, today: date | None = None) -> Lifeti
     return Lifetime.CLOSED_PERIOD if closed else Lifetime.CURRENT_PERIOD
 
 
-def cache_key(endpoint: str, arguments: dict[str, Any], settings: Settings) -> str:
-    """``ww:v1:{endpoint}:{hash}``, for an endpoint's answer to ``arguments``."""
+def cache_key(
+    endpoint: str, arguments: dict[str, Any], settings: Settings, *, tier: str | None = None
+) -> str:
+    """``ww:v1:{endpoint}:{hash}``, for an endpoint's answer to ``arguments``;
+    ``ww:v1:{endpoint}:{tier}:{hash}`` for one built for an entitlement tier."""
     canonical = json.dumps(
         {
             "release": [VERSION, settings.git_sha],
@@ -217,6 +243,8 @@ def cache_key(endpoint: str, arguments: dict[str, Any], settings: Settings) -> s
         separators=(",", ":"),
     )
     digest = hashlib.blake2b(canonical.encode(), digest_size=16).hexdigest()
+    if tier is not None:
+        return f"{KEY_PREFIX}{endpoint}:{tier}:{digest}"
     return f"{KEY_PREFIX}{endpoint}:{digest}"
 
 
@@ -268,14 +296,16 @@ async def _write(redis: Redis, key: str, body: str, seconds: int) -> None:
 
 
 def _respond(
-    request: Request, body: str, lifetime: Lifetime, remaining: int, *, hit: bool
+    request: Request, body: str, lifetime: Lifetime, remaining: int, *, hit: bool, gated: bool
 ) -> Response:
     content = body.encode()
     etag = f'"{hashlib.blake2b(content, digest_size=16).hexdigest()}"'
-    cache_control = f"public, max-age={remaining}"
+    cache_control = f"{'private' if gated else 'public'}, max-age={remaining}"
     if lifetime is Lifetime.CLOSED_PERIOD:
         cache_control += f", stale-while-revalidate={STALE_WHILE_REVALIDATE}"
     headers = {"Cache-Control": cache_control, "ETag": etag, "X-Cache": "HIT" if hit else "MISS"}
+    if gated:
+        headers["Vary"] = "Cookie"
 
     if _none_match(request.headers.get("if-none-match"), etag):
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)

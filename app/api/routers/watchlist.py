@@ -8,7 +8,10 @@
 ``PUT /v1/watchlist/items`` and ``DELETE /v1/watchlist/items``
     Follow and unfollow one thing, by a :class:`~app.api.schemas.watchlist.WatchRef`.
     Both idempotent, and both answer with the whole watchlist. A ref that names
-    nothing (no such CUSIP, slug or CIK) is a 404, either way.
+    nothing (no such CUSIP, slug or CIK) is a 404, either way. A follow past
+    the plan's ``watchlist_items`` is a 402 naming the plan that keeps more
+    (:mod:`app.api.entitlements`); past :data:`MAX_WATCHLIST_ITEMS`, which no
+    plan lifts, a 422. Following what is already followed is never refused.
 
 An insider is shown as their latest Form 4 gives them: name, roles and title
 from their latest filing, its issuer, and the ticker of the security its lines
@@ -23,9 +26,10 @@ from sqlalchemy import Select, delete, func, select, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.accounts.entitlements import MAX_WATCHLIST_ITEMS, limit
+from app.accounts.entitlements import MAX_WATCHLIST_ITEMS
 from app.api.auth import UNAUTHORIZED, UNVERIFIED, NoStoreDep, VerifiedViewerDep, ViewerDep
 from app.api.deps import SessionDep
+from app.api.entitlements import PLAN_LIMITED, EntitlementContextDep
 from app.api.errors import INVALID, invalid, not_found
 from app.api.schemas.insider import Role
 from app.api.schemas.search import InvestorMatch, StockMatch
@@ -249,24 +253,31 @@ async def read_watchlist(viewer: ViewerDep, session: SessionDep) -> Watchlist:
     operation_id="addWatchlistItem",
     response_model=Watchlist,
     summary="Follow a stock, an investor or an insider",
-    responses={**UNAUTHORIZED, **UNVERIFIED, **_NOT_FOUND, **INVALID},
+    responses={**UNAUTHORIZED, **PLAN_LIMITED, **UNVERIFIED, **_NOT_FOUND, **INVALID},
 )
 async def add_watchlist_item(
-    body: WatchlistItemRequest, viewer: VerifiedViewerDep, session: SessionDep
+    body: WatchlistItemRequest,
+    viewer: VerifiedViewerDep,
+    entitled: EntitlementContextDep,
+    session: SessionDep,
 ) -> Watchlist:
-    """Adds `ref` at the end of its list. Already followed is no change. A ref
-    that names nothing is a 404; a full watchlist (the plan's
-    `watchlist_items`: 10 on Free, and on a plan of no limit 500) a 422; an
-    account whose email is not verified a 403 `email_unverified`."""
+    """Adds `ref` at the end of its list. Already followed is no change, and
+    never refused. A ref that names nothing is a 404; a watchlist as full as
+    the plan allows (its `watchlist_items`: 10 on Free) a 402 `plan_limit`
+    naming the plan that keeps more; one at 500, the most any plan keeps, a
+    422; an account whose email is not verified a 403 `email_unverified`."""
     target = await resolve_ref(session, body.ref.root)
     user_id = viewer.user.id
-    allowed = limit(viewer, "watchlist_items")
-    most = MAX_WATCHLIST_ITEMS if allowed is None else min(allowed, MAX_WATCHLIST_ITEMS)
-    count = await session.scalar(
-        select(func.count()).select_from(WatchlistItem).where(WatchlistItem.user_id == user_id)
-    )
-    if (count or 0) >= most:
-        raise invalid("ref", f"the watchlist is full: at most {most} items", where="body")
+    mine = WatchlistItem.user_id == user_id
+    followed = select(WatchlistItem.id).where(mine).filter_by(**target).exists()
+    if await session.scalar(select(followed)):
+        return await build_watchlist(session, user_id)
+    count = await session.scalar(select(func.count()).select_from(WatchlistItem).where(mine)) or 0
+    if count >= MAX_WATCHLIST_ITEMS:
+        raise invalid(
+            "ref", f"the watchlist is full: at most {MAX_WATCHLIST_ITEMS} items", where="body"
+        )
+    entitled.require_room("watchlist_items", count, what="watchlist items")
     # Any of the three partial unique indexes: already followed is no change.
     await session.execute(
         insert(WatchlistItem).values(user_id=user_id, **target).on_conflict_do_nothing()

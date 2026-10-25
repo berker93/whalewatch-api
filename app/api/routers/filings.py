@@ -11,6 +11,10 @@ That audience is why the response carries columns a public API would not:
 ``value_multiplier``, ``parse_status``, ``parse_notes``, ``raw_key``. None of
 them are secrets — they are facts about a public document — and each one exists
 precisely so that a wrong number is diagnosable from outside the container.
+
+It is also every period's holdings, for anyone with an accession number, so a
+13F for a period before the caller's plan's window
+(:mod:`app.api.entitlements`) is a 402, refused before its holdings are read.
 """
 
 from typing import Annotated
@@ -22,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.api.deps import SessionDep
+from app.api.entitlements import PLAN_LIMITED, EntitlementContextDep
 from app.api.errors import INVALID, not_found
 from app.api.schemas.filing import FilingRead, HoldingRead
 from app.core.accession import ACCESSION_SHAPE, normalise_accession
@@ -75,11 +80,12 @@ IncludeOptions = Annotated[
     operation_id="getFiling",
     response_model=FilingRead,
     summary="One filing, with its holdings",
-    responses={**not_found("No filing with that accession number."), **INVALID},
+    responses={**not_found("No filing with that accession number."), **PLAN_LIMITED, **INVALID},
 )
 async def read_filing(
     accession_no: AccessionNo,
     session: SessionDep,
+    entitled: EntitlementContextDep,
     include_options: IncludeOptions = True,
 ) -> FilingRead:
     """Read a filing and every position it reports, largest first.
@@ -119,6 +125,7 @@ async def read_filing(
             ),
         )
 
+    entitled.require_period(row.Filing.period_of_report)
     holdings = await _read_holdings(
         session, filing_id=row.Filing.id, include_options=include_options
     )

@@ -319,7 +319,8 @@ async def test_free_follows_ten_things(client: AsyncClient, db_session: AsyncSes
 
     statuses = await _follow_many(client, db_session, 11)
 
-    assert statuses == [200] * 10 + [422]
+    # The eleventh is a 402 naming the limit (tests/integration/test_plan_enforcement.py).
+    assert statuses == [200] * 10 + [402]
 
 
 async def test_a_plan_of_no_limit_follows_past_free(

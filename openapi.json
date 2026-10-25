@@ -134,6 +134,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "422": {
             "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
@@ -153,7 +163,7 @@
           "investors"
         ],
         "summary": "Every tracked investor, with its latest published portfolio",
-        "description": "List investors, paginated. Each row names its own ``latest_period``.",
+        "description": "List investors, paginated. Each row names its own ``latest_period``: the\nlatest inside the caller's plan's window, and none for an investor with\nnothing published in it.",
         "operationId": "listInvestors",
         "parameters": [
           {
@@ -299,7 +309,7 @@
           "investors"
         ],
         "summary": "One investor",
-        "description": "One investor, with the list's fields and its concentration, turnover,\nfirst period and CIKs.",
+        "description": "One investor, with the list's fields and its concentration, turnover,\nfirst period and CIKs: all inside the caller's plan's window.",
         "operationId": "getInvestor",
         "parameters": [
           {
@@ -375,7 +385,7 @@
           "investors"
         ],
         "summary": "One investor's positions in one period",
-        "description": "The portfolio, paginated, with each position's change since the filer's\nprevious published period.\n\n``meta.caveats`` lists what ``audit-amendments`` would flag about the\nperiod, so a client sees it on every page.",
+        "description": "The portfolio, paginated, with each position's change since the filer's\nprevious published period.\n\n``meta.caveats`` lists what ``audit-amendments`` would flag about the\nperiod, so a client sees it on every page. A period before the caller's\nplan's window is a 402, and `first_period` is the first inside it.",
         "operationId": "getInvestorPortfolio",
         "parameters": [
           {
@@ -521,6 +531,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "400": {
             "description": "`cursor` is malformed, or came from a different listing or sort order.",
             "content": {
@@ -550,7 +570,7 @@
           "investors"
         ],
         "summary": "What one investor opened, added to, trimmed and exited",
-        "description": "Changes, newest period first and largest trade first within one.\n\nEach row names its period, so ``meta`` names none.",
+        "description": "Changes, newest period first and largest trade first within one.\n\nEach row names its period, so ``meta`` names none. Without `from`, from the\nfirst period of the caller's plan's window; a `from` or `to` before it is a 402.",
         "operationId": "getInvestorActivity",
         "parameters": [
           {
@@ -703,6 +723,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "400": {
             "description": "`cursor` is malformed, or came from a different listing or sort order.",
             "content": {
@@ -732,7 +762,7 @@
           "investors"
         ],
         "summary": "One investor's portfolio value, positions and concentration, quarter by quarter",
-        "description": "Every quarter from the first published to the latest, oldest first.\n\nA quarter in between with nothing published is a row of nulls, so a chart\nof it shows the gap rather than drawing across it. Empty for a filer with\nnothing published. As of the views' last refresh. Not paginated.",
+        "description": "Every quarter from the first published to the latest, oldest first,\ninside the caller's plan's window.\n\nA quarter in between with nothing published is a row of nulls, so a chart\nof it shows the gap rather than drawing across it. Empty for a filer with\nnothing published in the window. As of the views' last refresh. Not paginated.",
         "operationId": "getInvestorHistory",
         "parameters": [
           {
@@ -1010,6 +1040,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "400": {
             "description": "`cursor` is malformed, or came from a different listing or sort order.",
             "content": {
@@ -1039,7 +1079,7 @@
           "stocks"
         ],
         "summary": "One stock's tracked ownership quarter by quarter, with its five largest holders",
-        "description": "Every quarter from the first the stock was held in to the latest\npublished, oldest first. Empty for a stock no investor's published\nportfolio has held. Not paginated.",
+        "description": "Every quarter from the first the stock was held in to the latest\npublished, oldest first, inside the caller's plan's window. Empty for a\nstock no investor's published portfolio has held in it. Not paginated.",
         "operationId": "getStockOwnershipHistory",
         "parameters": [
           {
@@ -1118,7 +1158,7 @@
           "stocks"
         ],
         "summary": "One stock's quarter-end prices, as its holders' 13Fs imply them",
-        "description": "Every quarter from the first any investor's published portfolio held the\nstock to the last, oldest first, with how many filings each price is from\nand how far they agree. Not market data: each price is the median of value\nover shares across the holders' 13Fs. Empty for a stock nobody has held.\nNot paginated.",
+        "description": "Every quarter from the first any investor's published portfolio held the\nstock to the last, oldest first, with how many filings each price is from\nand how far they agree. Not market data: each price is the median of value\nover shares across the holders' 13Fs. Empty for a stock nobody has held.\nInside the caller's plan's window. Not paginated.",
         "operationId": "getStockImpliedPrices",
         "parameters": [
           {
@@ -1197,7 +1237,7 @@
           "stocks"
         ],
         "summary": "One stock's splits, as its holders' share counts show them",
-        "description": "Every split detected, oldest first, each dated the first quarter end\nafter it: for marking on a chart of the implied prices or the ownership.\nDetected from the filings, not read from a corporate-action feed: a split\nthe tracked investors did not hold through is not here. Empty for most\nstocks. Not paginated.",
+        "description": "Every split detected, oldest first, each dated the first quarter end\nafter it: for marking on a chart of the implied prices or the ownership.\nDetected from the filings, not read from a corporate-action feed: a split\nthe tracked investors did not hold through is not here. Empty for most\nstocks. Inside the caller's plan's window. Not paginated.",
         "operationId": "getStockSplits",
         "parameters": [
           {
@@ -1558,6 +1598,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "400": {
             "description": "`cursor` is malformed, or came from a different listing or sort order.",
             "content": {
@@ -1810,6 +1860,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "400": {
             "description": "`cursor` is malformed, or came from a different listing or sort order.",
             "content": {
@@ -1839,7 +1899,7 @@
           "insiders"
         ],
         "summary": "Cluster buys: several of a company's insiders buying within a window",
-        "description": "Episodes in which at least `min_insiders` of one company's officers and\ndirectors bought its shares on the open market within `window` days, latest\nfirst. Windows that share a purchase are one episode. Found over all of\nhistory, not back from today. `meta.rules` states what counts as a purchase:\nplan purchases and 10% owners are left out.",
+        "description": "Episodes in which at least `min_insiders` of one company's officers and\ndirectors bought its shares on the open market within `window` days, latest\nfirst. Windows that share a purchase are one episode. Found over all of\nhistory, not back from today. `meta.rules` states what counts as a purchase:\nplan purchases and 10% owners are left out. None begun before the caller's\nplan's window.",
         "operationId": "listInsiderClusters",
         "parameters": [
           {
@@ -2030,6 +2090,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "400": {
             "description": "`cursor` is malformed, or came from a different listing or sort order.",
             "content": {
@@ -2146,6 +2216,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
                 }
               }
             }
@@ -2271,6 +2351,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "422": {
             "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
@@ -2392,6 +2482,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "422": {
             "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
@@ -2502,6 +2602,16 @@
               }
             }
           },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
           "422": {
             "description": "A parameter is missing or malformed. `detail.errors` says which.",
             "content": {
@@ -2521,7 +2631,7 @@
           "market"
         ],
         "summary": "Recent filings, with what each period holds and its largest trade",
-        "description": "Filings newest first: those a published period was built from. One\nwithheld as suspect is left out until its period is published. Each row\nnames its period, so ``meta`` names none.",
+        "description": "Filings newest first: those a published period was built from. One\nwithheld as suspect is left out until its period is published. None for a\nperiod before the caller's plan's window. Each row names its period, so\n``meta`` names none.",
         "operationId": "getMarketActivity",
         "parameters": [
           {
@@ -2820,6 +2930,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
                 }
               }
             }
@@ -3781,7 +3901,7 @@
           "account"
         ],
         "summary": "Everything WhaleWatch holds on the signed-in user, as a JSON download",
-        "description": "The account, the watchlist, the whole consent ledger, the links and\nsessions still live, and a list of what is held but left out (hashes,\nlogs) and why. `Content-Disposition: attachment`, so a browser saves it.\nThe format is versioned by `format`.",
+        "description": "The account, the watchlist, the saved filters, the whole consent\nledger, the links and sessions still live, and a list of what is held but\nleft out (hashes, logs) and why. `Content-Disposition: attachment`, so a browser saves it.\nThe format is versioned by `format`.",
         "operationId": "exportMe",
         "responses": {
           "200": {
@@ -4143,7 +4263,7 @@
           "watchlist"
         ],
         "summary": "Follow a stock, an investor or an insider",
-        "description": "Adds `ref` at the end of its list. Already followed is no change. A ref\nthat names nothing is a 404; a full watchlist (the plan's\n`watchlist_items`: 10 on Free, and on a plan of no limit 500) a 422; an\naccount whose email is not verified a 403 `email_unverified`.",
+        "description": "Adds `ref` at the end of its list. Already followed is no change, and\nnever refused. A ref that names nothing is a 404; a watchlist as full as\nthe plan allows (its `watchlist_items`: 10 on Free) a 402 `plan_limit`\nnaming the plan that keeps more; one at 500, the most any plan keeps, a\n422; an account whose email is not verified a 403 `email_unverified`.",
         "operationId": "addWatchlistItem",
         "requestBody": {
           "content": {
@@ -4190,6 +4310,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
                 }
               }
             }
@@ -4315,13 +4445,231 @@
         }
       }
     },
+    "/v1/saved-filters": {
+      "get": {
+        "tags": [
+          "saved-filters"
+        ],
+        "summary": "The signed-in user's saved screener filters",
+        "description": "Every filter saved, oldest first. None saved is an empty list, never a 404.",
+        "operationId": "getSavedFilters",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedFilters"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "saved-filters"
+        ],
+        "summary": "Save a screener filter",
+        "description": "Saves `query` as `name`, after the others. As many as the plan's\n`screener_saved_filters` allows (3 on Free): one more is a 402\n`plan_limit` naming the plan that keeps more, and one past 100, the most\nany plan keeps, a 422. An account whose email is not verified is a 403\n`email_unverified`.",
+        "operationId": "saveFilter",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewSavedFilter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedFilter"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/saved-filters/{filter_id}": {
+      "delete": {
+        "tags": [
+          "saved-filters"
+        ],
+        "summary": "Delete a saved screener filter",
+        "description": "Deletes it. One already deleted, or another user's, is no change: 204 either way.",
+        "operationId": "deleteSavedFilter",
+        "parameters": [
+          {
+            "name": "filter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "`id` from the list.",
+              "examples": [
+                12
+              ],
+              "title": "Filter Id"
+            },
+            "description": "`id` from the list."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/timeline": {
       "get": {
         "tags": [
           "timeline"
         ],
         "summary": "Form 4 trades and 13F filings for what is followed, newest first",
-        "description": "Every event for `ref` whose filing reached EDGAR between `from` and `to`,\ndays in `tz`, newest first, ties by `id`. Not paged: the whole window in one\nanswer, `[]` when nothing happened. A 422 when `from` is after `to`, the\nwindow is over 120 days, a date is not a real one, or `tz` is not an IANA\nzone.",
+        "description": "Every event for `ref` whose filing reached EDGAR between `from` and `to`,\ndays in `tz`, newest first, ties by `id`. Not paged: the whole window in one\nanswer, `[]` when nothing happened. A 422 when `from` is after `to`, the\nwindow is over 120 days, a date is not a real one, or `tz` is not an IANA\nzone. Nothing from before the caller's plan's windows: no trade older than\nits `insider_months`, no 13F for a quarter older than its `history_quarters`.",
         "operationId": "getTimeline",
         "parameters": [
           {
@@ -5482,6 +5830,7 @@
           "forbidden_origin",
           "email_unverified",
           "unavailable",
+          "plan_limit",
           "http_error"
         ],
         "title": "ErrorCode",
@@ -5514,6 +5863,14 @@
           "watchlist": {
             "$ref": "#/components/schemas/ExportWatchlist",
             "description": "What the account follows."
+          },
+          "saved_filters": {
+            "items": {
+              "$ref": "#/components/schemas/ExportSavedFilter"
+            },
+            "type": "array",
+            "title": "Saved Filters",
+            "description": "The screener filters saved, oldest first."
           },
           "consents": {
             "items": {
@@ -5567,6 +5924,7 @@
           "exported_at",
           "account",
           "watchlist",
+          "saved_filters",
           "consents",
           "links",
           "sessions",
@@ -5897,6 +6255,46 @@
         ],
         "title": "ExportLink",
         "description": "An emailed link not yet used. The token itself is not kept, so not exported."
+      },
+      "ExportSavedFilter": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "What the user called it.",
+            "examples": [
+              "Crowded buys"
+            ]
+          },
+          "query": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Query",
+            "description": "`GET /v1/flows`'s parameters, as saved.",
+            "examples": [
+              {
+                "direction": "buy"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it was saved.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "query",
+          "created_at"
+        ],
+        "title": "ExportSavedFilter",
+        "description": "A saved screener filter."
       },
       "ExportSession": {
         "properties": {
@@ -10057,6 +10455,30 @@
         "title": "Meta",
         "description": "What the rows in ``data`` describe, and when this answer was produced."
       },
+      "NewSavedFilter": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "What to call it: 1 to 80 characters, trimmed.",
+            "examples": [
+              "Crowded buys"
+            ]
+          },
+          "query": {
+            "$ref": "#/components/schemas/ScreenerQuery",
+            "description": "The screener's parameters."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "query"
+        ],
+        "title": "NewSavedFilter",
+        "description": "A filter to save."
+      },
       "OtherHolders": {
         "properties": {
           "holder_count": {
@@ -10489,6 +10911,201 @@
         ],
         "title": "PeriodType",
         "description": "One quarter, or the four ending at it."
+      },
+      "PlanLimitDetail": {
+        "properties": {
+          "limit": {
+            "type": "string",
+            "enum": [
+              "history_quarters",
+              "insider_months",
+              "watchlist_items",
+              "screener_saved_filters"
+            ],
+            "title": "Limit",
+            "description": "The entitlement that stopped the request: `history_quarters` (a period before the caller's window), `insider_months` (a trade day before it), `watchlist_items` or `screener_saved_filters` (that many saved already).",
+            "examples": [
+              "history_quarters"
+            ]
+          },
+          "allowed": {
+            "type": "integer",
+            "title": "Allowed",
+            "description": "The caller's value of `limit`. Never null: no limit is never refused.",
+            "examples": [
+              4
+            ]
+          },
+          "needed": {
+            "type": "integer",
+            "title": "Needed",
+            "description": "What the request needed it to be: quarters or months back from today, counting the current one, or one more than is saved.",
+            "examples": [
+              9
+            ]
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanOffer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The cheapest public plan whose value is at least `needed`; null for none."
+          }
+        },
+        "type": "object",
+        "required": [
+          "limit",
+          "allowed",
+          "needed",
+          "plan"
+        ],
+        "title": "PlanLimitDetail",
+        "description": "Which limit, how far the request needed it to go, and who goes further."
+      },
+      "PlanLimitProblem": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/PlanLimitProblemError",
+            "description": "What was refused, with the limit and the plan that lifts it in `detail`."
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "PlanLimitProblem",
+        "description": "The 402 body: the caller's plan does not allow the request."
+      },
+      "PlanLimitProblemError": {
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, or holds no more of something; `detail` names the limit and the plan that lifts it.",
+            "examples": [
+              "not_found"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "What went wrong, in a sentence for a person. Not a contract: do not parse it.",
+            "examples": [
+              "No investor 'berkshire'. GET /v1/investors lists every one."
+            ]
+          },
+          "detail": {
+            "$ref": "#/components/schemas/PlanLimitDetail",
+            "description": "The limit, and the plan that lifts it."
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id",
+            "description": "This request's id, also sent as the `X-Request-ID` header. Quote it when reporting a problem: it finds the request in the server's logs.",
+            "examples": [
+              "3f2c9a7e5b1d4c0e8a6f2d9b7c5e1a30"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "detail"
+        ],
+        "title": "PlanLimitProblemError",
+        "description": "The caller's plan does not allow the request."
+      },
+      "PlanOffer": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "The plan's id.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Its name, for a person.",
+            "examples": [
+              "Pro"
+            ]
+          },
+          "price_cents": {
+            "type": "integer",
+            "title": "Price Cents",
+            "description": "Its price, in cents.",
+            "examples": [
+              1400
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "description": "ISO 4217.",
+            "examples": [
+              "USD"
+            ]
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "month",
+                  "year"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval",
+            "description": "How often `price_cents` is billed.",
+            "examples": [
+              "month"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value",
+            "description": "Its value of `limit`: a whole number, or null for no limit.",
+            "examples": [
+              20
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "name",
+          "price_cents",
+          "currency",
+          "interval",
+          "value"
+        ],
+        "title": "PlanOffer",
+        "description": "A plan that allows what was refused: the cheapest public one."
       },
       "PortfolioPosition": {
         "properties": {
@@ -10996,7 +11613,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, or holds no more of something; `detail` names the limit and the plan that lifts it.",
             "examples": [
               "not_found"
             ]
@@ -11267,6 +11884,180 @@
         ],
         "title": "Role",
         "description": "What a reporting owner checked on the filing: what they were to the issuer."
+      },
+      "SavedFilter": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Its id, for `DELETE /v1/saved-filters/{id}`.",
+            "examples": [
+              "12"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "What the user called it.",
+            "examples": [
+              "Crowded buys"
+            ]
+          },
+          "query": {
+            "$ref": "#/components/schemas/ScreenerQuery",
+            "description": "The screener's parameters, defaults left out."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it was saved.",
+            "examples": [
+              "2026-10-25T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "query",
+          "created_at"
+        ],
+        "title": "SavedFilter",
+        "description": "One saved filter."
+      },
+      "SavedFilters": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/SavedFilter"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "Oldest first. Empty when none are saved."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "title": "SavedFilters",
+        "description": "Every filter the user saved, oldest first."
+      },
+      "ScreenerQuery": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "`period`, as `2026Q1` or `2026-03-31`, kept as `2026Q1`. Left out: the latest quarter, whenever the filter is applied.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeriodType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`period_type`: `quarter` or `year`.",
+            "examples": [
+              "quarter"
+            ]
+          },
+          "min_investors": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Investors",
+            "description": "`min_investors`.",
+            "examples": [
+              5
+            ]
+          },
+          "min_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal",
+                "examples": [
+                  "1000000"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Value",
+            "description": "`min_value`, in dollars.",
+            "examples": [
+              "1000000"
+            ]
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Direction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`direction`: `buy` or `sell`.",
+            "examples": [
+              "buy"
+            ]
+          },
+          "sort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FlowSort"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`sort`.",
+            "examples": [
+              "buyers"
+            ]
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SortOrder"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`order`: `asc` or `desc`.",
+            "examples": [
+              "desc"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ScreenerQuery",
+        "description": "``GET /v1/flows``'s parameters. Each one left out is the screener's default."
       },
       "SearchResults": {
         "properties": {
@@ -11963,7 +12754,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, or holds no more of something; `detail` names the limit and the plan that lifts it.",
             "examples": [
               "not_found"
             ]
@@ -13142,7 +13933,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, or holds no more of something; `detail` names the limit and the plan that lifts it.",
             "examples": [
               "not_found"
             ]

@@ -48,6 +48,7 @@ class ErrorCode(StrEnum):
     FORBIDDEN_ORIGIN = "forbidden_origin"
     EMAIL_UNVERIFIED = "email_unverified"
     UNAVAILABLE = "unavailable"
+    PLAN_LIMIT = "plan_limit"
     #: Any other status. Nothing in this API raises one on purpose; it is here
     #: so that an exception from a dependency still answers in this shape.
     HTTP_ERROR = "http_error"
@@ -78,7 +79,9 @@ class ProblemError(BaseModel):
             "`forbidden_origin` (403): a write from a site not allowed to call; "
             "`email_unverified` (403): a save by an account whose email is not "
             "verified yet; `unavailable` (503): sessions cannot be read right now, "
-            "try again shortly."
+            "try again shortly. Plans: `plan_limit` (402): the caller's plan does not "
+            "reach that far back, or holds no more of something; `detail` names the "
+            "limit and the plan that lifts it."
         ),
         examples=["not_found"],
     )

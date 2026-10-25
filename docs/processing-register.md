@@ -27,6 +27,7 @@ The people who sign up. Every table below is in Postgres unless it says Redis.
 | Password hash (argon2id) | `app_user.password_hash` | Login | Contract | Same |
 | Created, password changed, email verified, last seen (to 5 min) | `app_user` | Security, account page | Contract | Same |
 | Watchlist (stocks, investors, insiders followed) | `watchlist_item` | The product | Contract | Same |
+| Saved screener filters (name, screener parameters) | `saved_filter` | The product | Contract | Same |
 | Plan and subscription (plan, status, period end, cancel date, grandfathered plan, per-account entitlements) | `subscription`, `subscription_entitlement`; a copy of the grant in the Redis session | What the account may do | Contract | Same |
 | Emailed-link tokens, as SHA-256 only; a pending new email | `account_token` | Verify, reset, change email | Contract | 1 h (reset) or 24 h (verify, change), or until used; deleted on account deletion |
 | Session: user id, remember flag, expiry. Cookie stored as SHA-256 only | Redis `ww:session:*`, `ww:user-sessions:*` | Staying signed in | Contract | 12 h, or 30 days with "keep me signed in"; ended at once on sign-out, password change or reset, and deletion |
@@ -63,9 +64,9 @@ one. **OPEN**: an endpoint and UI to accept new terms when the version changes.
 
 | Right | How |
 |---|---|
-| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, the whole consent ledger, live links and sessions, every subscription, and a list of what's left out and why (hashes, logs). Logs on request by email. |
+| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, saved filters, the whole consent ledger, live links and sessions, every subscription, and a list of what's left out and why (hashes, logs). Logs on request by email. |
 | Rectification (Art. 16) | `PATCH /v1/account`: name, time zone, email (confirmed by link) |
-| Erasure (Art. 17) | `DELETE /v1/account` with the password, or `delete-user --email` by an operator for a request by email. The account is soft-deleted at once: signed out everywhere, links dead, login refused, address free for a new account. The `purge-accounts` job (beat, daily 05:00 New York) hard-deletes it 30 days later with its watchlist, consent records, tokens and subscriptions, and writes the counts to `account_deletion`. `restore-user --email` undoes it within the 30 days. |
+| Erasure (Art. 17) | `DELETE /v1/account` with the password, or `delete-user --email` by an operator for a request by email. The account is soft-deleted at once: signed out everywhere, links dead, login refused, address free for a new account. The `purge-accounts` job (beat, daily 05:00 New York) hard-deletes it 30 days later with its watchlist, saved filters, consent records, tokens and subscriptions, and writes the counts to `account_deletion`. `restore-user --email` undoes it within the 30 days. |
 | Withdraw consent, object (Art. 7(3), 21) | `PATCH /v1/me/privacy` |
 | Restriction (Art. 18) | **OPEN**: no mechanism. Handle by hand (operator) if asked |
 

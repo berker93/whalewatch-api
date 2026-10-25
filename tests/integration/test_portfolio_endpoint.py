@@ -874,7 +874,7 @@ async def test_a_closed_quarter_is_served_from_the_cache_until_it_is_invalidated
 
     assert [r.headers["x-cache"] for r in (first, second, third)] == ["MISS", "HIT", "MISS"]
     assert first.headers["cache-control"] == (
-        f"public, max-age=86400, stale-while-revalidate={STALE_WHILE_REVALIDATE}"
+        f"private, max-age=86400, stale-while-revalidate={STALE_WHILE_REVALIDATE}"
     )
     assert second.content == first.content
     assert [row["shares"] for row in third.json()["data"]] == ["300.0000"]
@@ -892,5 +892,5 @@ async def test_the_latest_portfolio_is_kept_for_five_minutes(
 
     response = await client.get("/v1/investors/berkshire/portfolio")
 
-    assert response.headers["cache-control"] == "public, max-age=300"
+    assert response.headers["cache-control"] == "private, max-age=300"
     assert list(redis.ttls.values()) == [300]

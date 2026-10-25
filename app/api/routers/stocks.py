@@ -21,6 +21,14 @@
     The splits ``security_split`` has detected, for annotating a chart of
     either of the above.
 
+The plan's window
+-----------------
+Every query is cut at the caller's ``history_from`` (:mod:`app.api.entitlements`)
+in SQL: the detail's latest period and the owners' default are the latest
+inside it, and the history, the implied prices and the splits start at it. An
+owners period before it is a 402. So are owners for a stock nobody has
+published inside it, when someone did before it.
+
 Finding the stock
 -----------------
 ``{ticker}`` is a label, read as of the period being viewed: the owners'
@@ -76,6 +84,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
+from app.api.entitlements import PLAN_LIMITED, EntitlementContext, EntitlementContextDep
 from app.api.errors import INVALID, INVALID_CURSOR, ApiError, not_found
 from app.api.estimates import estimate_columns, estimates
 from app.api.meta import period_meta, unscoped_meta
@@ -239,13 +248,17 @@ async def _resolve(session: AsyncSession, ticker: str, *, on: date | None = None
 # --- the detail -----------------------------------------------------------------
 
 
-def detail_query(security_id: SecurityId) -> Select[Any]:
-    """The latest published period, its coverage, and the stock's row of each
-    view for it. One row, whose figures are null where the stock was not held
-    or not changed, and all null when nothing is published."""
+def detail_query(security_id: SecurityId, *, history_from: PeriodEnd | None) -> Select[Any]:
+    """The latest published period inside the caller's window, its coverage,
+    and the stock's row of each view for it. One row, whose figures are null
+    where the stock was not held or not changed, and all null when nothing is
+    published in the window."""
     consensus, flows, summary = CONSENSUS_HOLDINGS, QUARTER_FLOWS, FILER_SUMMARY
     # max() over the views' unique index, which leads with the period.
-    latest = select(func.max(consensus.c.period_of_report).label("period")).subquery("latest")
+    periods = select(func.max(consensus.c.period_of_report).label("period"))
+    if history_from is not None:
+        periods = periods.where(consensus.c.period_of_report >= history_from)
+    latest = periods.subquery("latest")
     return (
         select(
             latest.c.period,
@@ -294,21 +307,33 @@ OWNERS_KEYSET: Final = Keyset(
 )
 
 
-async def _owners_period(session: AsyncSession, period: date | None) -> date:
-    """``period``, or the latest one published for any filer.
+async def _owners_period(
+    session: AsyncSession, period: date | None, entitled: EntitlementContext
+) -> date:
+    """``period``, or the latest one published for any filer inside the caller's window.
 
     :raises HTTPException: 404 when nothing is published, or nothing for
         ``period``. An empty list would read as a stock nobody holds.
+    :raises PlanLimitError: 402 when everything published is before the window.
     """
     snapshot = PositionSnapshot
     # Both through the (period_of_report, security_id) index: max() reads
     # one entry backwards, and exists() one entry.
     latest = select(func.max(snapshot.period_of_report)).scalar_subquery()
+    in_window = select(func.max(snapshot.period_of_report))
+    if entitled.history_from is not None:
+        in_window = in_window.where(snapshot.period_of_report >= entitled.history_from)
     published = (
         exists().where(snapshot.period_of_report == period) if period is not None else null()
     )
     row = (
-        await session.execute(select(latest.label("latest"), published.label("published")))
+        await session.execute(
+            select(
+                latest.label("latest"),
+                in_window.scalar_subquery().label("in_window"),
+                published.label("published"),
+            )
+        )
     ).one()
     if row.latest is None:
         raise HTTPException(
@@ -316,7 +341,10 @@ async def _owners_period(session: AsyncSession, period: date | None) -> date:
         )
     latest_period: date = row.latest
     if period is None:
-        return latest_period
+        if row.in_window is None:
+            entitled.require_period(latest_period)  # before the window: a 402
+        in_window_period: date = row.in_window
+        return in_window_period
     if not row.published:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -383,15 +411,20 @@ def owners_query(security_id: SecurityId, period: PeriodEnd, page: PageParams) -
 # --- the history ----------------------------------------------------------------
 
 
-def totals_query(security_id: SecurityId) -> Select[Any]:
-    """Every published quarter from the first the stock was held in, with its
-    holders, shares and dollars in it. Oldest first.
+def totals_query(security_id: SecurityId, *, history_from: PeriodEnd | None) -> Select[Any]:
+    """Every published quarter from the first the stock was held in, inside the
+    caller's window, with its holders, shares and dollars in it. Oldest first.
 
     A quarter published without the stock in it has null totals. Published is
     every period in ``mv_filer_summary``, and every one the stock is in, so a
     period the views do not have yet is still a row.
     """
     snapshot, summary = PositionSnapshot, FILER_SUMMARY
+    held = [snapshot.security_id == security_id]
+    summarised = []
+    if history_from is not None:
+        held.append(snapshot.period_of_report >= history_from)
+        summarised.append(summary.c.period_of_report >= history_from)
     totals = (
         select(
             snapshot.period_of_report,
@@ -399,12 +432,13 @@ def totals_query(security_id: SecurityId) -> Select[Any]:
             func.sum(snapshot.shares).label("total_shares"),
             func.sum(snapshot.value_usd).label("total_value_usd"),
         )
-        .where(snapshot.security_id == security_id)
+        .where(*held)
         .group_by(snapshot.period_of_report)
         .cte("totals")
     )
     published = union(
-        select(summary.c.period_of_report), select(totals.c.period_of_report)
+        select(summary.c.period_of_report).where(*summarised),
+        select(totals.c.period_of_report),
     ).subquery("published")
     return (
         select(
@@ -423,10 +457,12 @@ def totals_query(security_id: SecurityId) -> Select[Any]:
     )
 
 
-def top_holders_query(security_id: SecurityId, period: PeriodEnd) -> Select[Any]:
+def top_holders_query(
+    security_id: SecurityId, period: PeriodEnd, *, history_from: PeriodEnd | None
+) -> Select[Any]:
     """The :data:`TOP_HOLDERS` largest holders in ``period``, and each one's
-    position in the stock in every period it published. Largest holder first,
-    then oldest period first.
+    position in the stock in every period it published inside the caller's
+    window. Largest holder first, then oldest period first.
 
     ``shares`` is null in a period the filer published without the stock.
     Published, as in :func:`totals_query`, is the filer's periods in
@@ -450,12 +486,14 @@ def top_holders_query(security_id: SecurityId, period: PeriodEnd) -> Select[Any]
         .where(
             snapshot.security_id == security_id,
             snapshot.filer_id.in_(select(top.c.filer_id)),
+            *([] if history_from is None else [snapshot.period_of_report >= history_from]),
         )
         .cte("held")
     )
     published = union(
         select(summary.c.filer_id, summary.c.period_of_report).where(
-            summary.c.filer_id.in_(select(top.c.filer_id))
+            summary.c.filer_id.in_(select(top.c.filer_id)),
+            *([] if history_from is None else [summary.c.period_of_report >= history_from]),
         ),
         select(held.c.filer_id, held.c.period_of_report),
     ).subquery("published")
@@ -560,10 +598,11 @@ def ownership_points(totals: list[Row[Any]], series: list[Row[Any]]) -> list[Own
 # --- implied prices and splits --------------------------------------------------
 
 
-def implied_prices_query(security_id: SecurityId) -> Select[Any]:
-    """Every ``implied_price`` row of the stock, oldest first: its primary key's
-    slice for the security."""
+def implied_prices_query(security_id: SecurityId, *, history_from: PeriodEnd | None) -> Select[Any]:
+    """Every ``implied_price`` row of the stock inside the caller's window,
+    oldest first: its primary key's slice for the security."""
     price = ImpliedPrice
+    window = [] if history_from is None else [price.period_of_report >= history_from]
     return (
         select(
             price.period_of_report,
@@ -573,14 +612,17 @@ def implied_prices_query(security_id: SecurityId) -> Select[Any]:
             price.unpriced_count,
             price.agreeing_count,
         )
-        .where(price.security_id == security_id)
+        .where(price.security_id == security_id, *window)
         .order_by(price.period_of_report)
     )
 
 
-def splits_query(security_id: SecurityId) -> Select[Any]:
-    """Every detected split of the stock, oldest first."""
+def splits_query(security_id: SecurityId, *, history_from: PeriodEnd | None) -> Select[Any]:
+    """Every detected split of the stock inside the caller's window, oldest
+    first. A price inside it is adjusted only by the splits after it, which are
+    inside it too."""
     split = SecuritySplit
+    window = [] if history_from is None else [split.period_of_report >= history_from]
     return (
         select(
             split.period_of_report,
@@ -592,7 +634,7 @@ def splits_query(security_id: SecurityId) -> Select[Any]:
             split.holders_agreeing,
             split.holders_exact,
         )
-        .where(split.security_id == security_id)
+        .where(split.security_id == security_id, *window)
         .order_by(split.period_of_report)
     )
 
@@ -679,11 +721,14 @@ _NOT_FOUND = not_found(
     responses={**_NOT_FOUND, **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
-async def read_stock(ticker: TickerParam, session: SessionDep) -> StockDetail:
+async def read_stock(
+    ticker: TickerParam, session: SessionDep, entitled: EntitlementContextDep
+) -> StockDetail:
     """The stock, with its holders, shares and dollars held, and the net
     change in them, in the latest period published for any investor."""
     security = await _resolve(session, ticker)
-    row = (await session.execute(detail_query(security.id))).one()
+    statement = detail_query(security.id, history_from=entitled.history_from)
+    row = (await session.execute(statement)).one()
 
     stock = StockDetail(
         cusip=security.cusip,
@@ -719,6 +764,7 @@ async def read_stock(ticker: TickerParam, session: SessionDep) -> StockDetail:
             "published for the period, without.",
             StockNotFound | Problem,
         ),
+        **PLAN_LIMITED,
         **INVALID_CURSOR,
         **INVALID,
     },
@@ -728,14 +774,16 @@ async def read_owners(
     ticker: TickerParam,
     session: SessionDep,
     page: PageParamsDep,
+    entitled: EntitlementContextDep,
     period: PeriodParam = None,
 ) -> Envelope[StockOwner]:
     """Holders, largest position first, each with its change since that
     investor's previous published period. Exits are not owners, and are not
     listed. The ticker is read as of the period asked for (today without one):
     an old ticker finds the company that held it then."""
+    entitled.require_period(period)
     security = await _resolve(session, ticker, on=period)
-    period = await _owners_period(session, period)
+    period = await _owners_period(session, period, entitled)
     statement = owners_query(security.id, period, page)
     rows, page_info = page_of(list(await session.execute(statement)), OWNERS_KEYSET, page)
 
@@ -769,15 +817,20 @@ async def read_owners(
 )
 @cached(Lifetime.CURRENT_PERIOD)
 async def read_ownership_history(
-    ticker: TickerParam, session: SessionDep
+    ticker: TickerParam, session: SessionDep, entitled: EntitlementContextDep
 ) -> Envelope[OwnershipPoint]:
     """Every quarter from the first the stock was held in to the latest
-    published, oldest first. Empty for a stock no investor's published
-    portfolio has held. Not paginated."""
+    published, oldest first, inside the caller's plan's window. Empty for a
+    stock no investor's published portfolio has held in it. Not paginated."""
     security = await _resolve(session, ticker)
-    totals = list(await session.execute(totals_query(security.id)))
+    since = entitled.history_from
+    totals = list(await session.execute(totals_query(security.id, history_from=since)))
     held = [row.period_of_report for row in totals if row.holder_count]
-    series = list(await session.execute(top_holders_query(security.id, max(held)))) if held else []
+    series = (
+        list(await session.execute(top_holders_query(security.id, max(held), history_from=since)))
+        if held
+        else []
+    )
     return Envelope(data=ownership_points(totals, series), meta=unscoped_meta(), page=None)
 
 
@@ -790,16 +843,19 @@ async def read_ownership_history(
 )
 @cached(Lifetime.CURRENT_PERIOD)
 async def read_implied_prices(
-    ticker: TickerParam, session: SessionDep
+    ticker: TickerParam, session: SessionDep, entitled: EntitlementContextDep
 ) -> Envelope[ImpliedPricePoint]:
     """Every quarter from the first any investor's published portfolio held the
     stock to the last, oldest first, with how many filings each price is from
     and how far they agree. Not market data: each price is the median of value
     over shares across the holders' 13Fs. Empty for a stock nobody has held.
-    Not paginated."""
+    Inside the caller's plan's window. Not paginated."""
     security = await _resolve(session, ticker)
-    prices = list(await session.execute(implied_prices_query(security.id)))
-    splits = list(await session.execute(splits_query(security.id))) if prices else []
+    since = entitled.history_from
+    prices = list(await session.execute(implied_prices_query(security.id, history_from=since)))
+    splits = (
+        list(await session.execute(splits_query(security.id, history_from=since))) if prices else []
+    )
     return Envelope(data=implied_price_points(prices, splits), meta=unscoped_meta(), page=None)
 
 
@@ -811,14 +867,16 @@ async def read_implied_prices(
     responses={**_NOT_FOUND, **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
-async def read_splits(ticker: TickerParam, session: SessionDep) -> Envelope[StockSplit]:
+async def read_splits(
+    ticker: TickerParam, session: SessionDep, entitled: EntitlementContextDep
+) -> Envelope[StockSplit]:
     """Every split detected, oldest first, each dated the first quarter end
     after it: for marking on a chart of the implied prices or the ownership.
     Detected from the filings, not read from a corporate-action feed: a split
     the tracked investors did not hold through is not here. Empty for most
-    stocks. Not paginated."""
+    stocks. Inside the caller's plan's window. Not paginated."""
     security = await _resolve(session, ticker)
-    rows = await session.execute(splits_query(security.id))
+    rows = await session.execute(splits_query(security.id, history_from=entitled.history_from))
     return Envelope(
         data=[
             StockSplit(

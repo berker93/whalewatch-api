@@ -51,6 +51,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.api.entitlements import EntitlementContext
 from app.api.pagination import MAX_LIMIT, PageParams
 from app.api.routers.insiders import (
     Filters,
@@ -141,6 +142,12 @@ class Query:
     def statement(self) -> str:
         return f"{self.tag}\n{self.sql.strip()}"
 
+
+#: Free's windows, today: what most requests are cut at, signed-out visitors
+#: included (app.api.entitlements). A paid plan of no limit sends each query
+#: without the condition.
+_FREE: Final = EntitlementContext(history_quarters=4, insider_months=6, today=date.today())
+_HISTORY_FROM: Final = _FREE.history_from
 
 #: Every filer's latest published period: what the top holding is read for.
 _LATEST_PERIODS: Final = select(LATEST.c.filer_id, LATEST.c.period_of_report).subquery("periods")
@@ -288,28 +295,40 @@ QUERIES: Final = (
         """,
     ),
     # The first page, at the default page size, largest first.
-    Query.from_app("investor_list", "GET /v1/investors", list_query(PageParams())[0]),
     Query.from_app(
-        "investor_detail", "GET /v1/investors/{slug}", detail_query(bindparam("filer_slug"))
+        "investor_list",
+        "GET /v1/investors",
+        list_query(PageParams(), history_from=_HISTORY_FROM)[0],
+    ),
+    Query.from_app(
+        "investor_detail",
+        "GET /v1/investors/{slug}",
+        detail_query(bindparam("filer_slug"), history_from=_HISTORY_FROM),
     ),
     # The first page, at the default page size and sort (weight, largest first).
     Query.from_app(
         "investor_portfolio",
         "GET /v1/investors/{slug}/portfolio",
-        portfolio_query(bindparam("filer_id"), bindparam("period"), PageParams())[0],
+        portfolio_query(
+            bindparam("filer_id"), bindparam("period"), PageParams(), history_from=_HISTORY_FROM
+        )[0],
     ),
     Query.from_app(
         "investor_portfolio_options",
         "GET /v1/investors/{slug}/portfolio?include_options=true",
         portfolio_query(
-            bindparam("filer_id"), bindparam("period"), PageParams(), include_options=True
+            bindparam("filer_id"),
+            bindparam("period"),
+            PageParams(),
+            include_options=True,
+            history_from=_HISTORY_FROM,
         )[0],
     ),
     # Every period, every action but hold: the default.
     Query.from_app(
         "investor_activity",
         "GET /v1/investors/{slug}/activity",
-        activity_query(bindparam("filer_id"), PageParams()),
+        activity_query(bindparam("filer_id"), PageParams(), history_from=_HISTORY_FROM),
     ),
     # The largest page of each, where the estimated return (SEC-7, on every
     # row since SEC-8) costs the most: one period for every row of the
@@ -317,17 +336,24 @@ QUERIES: Final = (
     Query.from_app(
         "investor_portfolio_returns",
         "GET /v1/investors/{slug}/portfolio?limit=200",
-        portfolio_query(bindparam("filer_id"), bindparam("period"), PageParams(limit=MAX_LIMIT))[0],
+        portfolio_query(
+            bindparam("filer_id"),
+            bindparam("period"),
+            PageParams(limit=MAX_LIMIT),
+            history_from=_HISTORY_FROM,
+        )[0],
     ),
     Query.from_app(
         "investor_activity_returns",
         "GET /v1/investors/{slug}/activity?limit=200",
-        activity_query(bindparam("filer_id"), PageParams(limit=MAX_LIMIT)),
+        activity_query(
+            bindparam("filer_id"), PageParams(limit=MAX_LIMIT), history_from=_HISTORY_FROM
+        ),
     ),
     Query.from_app(
         "investor_history",
         "GET /v1/investors/{slug}/history",
-        history_query(bindparam("filer_slug")),
+        history_query(bindparam("filer_slug"), history_from=_HISTORY_FROM),
     ),
     # By CUSIP, the only way to find most stocks until tickers resolve. The
     # ticker and alias branches are index probes that find nothing.
@@ -338,7 +364,9 @@ QUERIES: Final = (
         "stock_suggestions", "GET /v1/stocks/{ticker}, a 404", suggestions_query("APPL")
     ),
     Query.from_app(
-        "stock_detail", "GET /v1/stocks/{ticker}", stock_detail_query(bindparam("security_id"))
+        "stock_detail",
+        "GET /v1/stocks/{ticker}",
+        stock_detail_query(bindparam("security_id"), history_from=_HISTORY_FROM),
     ),
     # The first page, at the default page size.
     Query.from_app(
@@ -349,20 +377,24 @@ QUERIES: Final = (
     Query.from_app(
         "stock_history_totals",
         "GET /v1/stocks/{ticker}/ownership-history",
-        totals_query(bindparam("security_id")),
+        totals_query(bindparam("security_id"), history_from=_HISTORY_FROM),
     ),
     Query.from_app(
         "stock_history_top",
         "GET /v1/stocks/{ticker}/ownership-history",
-        top_holders_query(bindparam("security_id"), bindparam("period")),
+        top_holders_query(
+            bindparam("security_id"), bindparam("period"), history_from=_HISTORY_FROM
+        ),
     ),
     Query.from_app(
         "stock_implied_prices",
         "GET /v1/stocks/{ticker}/implied-prices",
-        implied_prices_query(bindparam("security_id")),
+        implied_prices_query(bindparam("security_id"), history_from=_HISTORY_FROM),
     ),
     Query.from_app(
-        "stock_splits", "GET /v1/stocks/{ticker}/splits", splits_query(bindparam("security_id"))
+        "stock_splits",
+        "GET /v1/stocks/{ticker}/splits",
+        splits_query(bindparam("security_id"), history_from=_HISTORY_FROM),
     ),
     Query.from_app(
         "market_top_holdings",
@@ -391,7 +423,11 @@ QUERIES: Final = (
         new_positions_query(QUARTER_FLOWS, bindparam("period"), DEFAULT_TOP),
     ),
     # The first page, at the default page size.
-    Query.from_app("market_activity", "GET /v1/market/activity", feed_query(PageParams())),
+    Query.from_app(
+        "market_activity",
+        "GET /v1/market/activity",
+        feed_query(PageParams(), history_from=_HISTORY_FROM),
+    ),
     Query.from_app(
         "flows",
         "GET /v1/flows",
@@ -469,7 +505,9 @@ QUERIES: Final = (
     ),
     # The default set's latest episodes, in the order the index holds them.
     Query.from_app(
-        "insider_clusters", "GET /v1/insiders/clusters", clusters_query(PageParams())[0]
+        "insider_clusters",
+        "GET /v1/insiders/clusters",
+        clusters_query(PageParams(), trades_from=_FREE.insiders_from)[0],
     ),
     # Who bought, for a page of episodes: lines by id and date, so each lookup
     # is pruned to the partitions of the episode's years.

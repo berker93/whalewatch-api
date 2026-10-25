@@ -40,6 +40,14 @@ included. A line its issuer filed with no linked security (two classes, a
 symbol naming neither or both) is under each of the issuer's followed stocks,
 as on the stock page, but once: under the first the request named.
 
+The plan's window
+-----------------
+The window of days is the client's; what is in it is the caller's plan's
+(:mod:`app.api.entitlements`), in SQL: no Form 4 line traded before
+``insiders_from``, and no 13F event for a period before ``history_from``. Not
+a 402: a feed of both kinds has no one limit to name, and a window reaching
+past either still has the other's events.
+
 Time zones
 ----------
 ``tz`` is the account's zone, which the frontend always sends. Omitted, it is
@@ -80,6 +88,7 @@ from app.accounts.entitlements import MAX_WATCHLIST_ITEMS
 from app.accounts.rules import DEFAULT_TIME_ZONE, time_zone_problem
 from app.api.auth import OptionalViewerDep
 from app.api.deps import SessionDep
+from app.api.entitlements import EntitlementContext, EntitlementContextDep
 from app.api.errors import INVALID, invalid
 from app.api.routers.insiders import _codes_condition, _transaction
 from app.api.routers.watchlist import normalise_cik, normalise_cusip
@@ -102,7 +111,7 @@ from app.api.schemas.timeline import (
     UpcomingMeta,
 )
 from app.api.schemas.watchlist import WatchInsider, WatchInvestor, WatchStock
-from app.core.periods import filing_deadline, quarter_end, quarter_label, quarters_ending
+from app.core.periods import current_quarter, filing_deadline, quarter_label, quarters_ending
 from app.db.models import (
     OPEN_MARKET_CODES,
     Filer,
@@ -293,9 +302,12 @@ async def followed_issuers(session: AsyncSession, refs: Refs) -> dict[str, str]:
     return issuers
 
 
-def insider_trades_query(refs: Refs, window: Window, issuers: dict[str, str]) -> Select[Any]:
+def insider_trades_query(
+    refs: Refs, window: Window, issuers: dict[str, str], *, trades_from: date | None
+) -> Select[Any]:
     """Lines filed in the window by a followed insider (any code), or at a
     followed stock (open-market codes), with what :func:`_transaction` reads.
+    None traded before ``trades_from``, the caller's window.
 
     At a followed stock means linked to it, or linked to no security at all and
     filed by its issuer (Q6): the loader leaves a line unlinked when the issuer
@@ -359,6 +371,7 @@ def insider_trades_query(refs: Refs, window: Window, issuers: dict[str, str]) ->
             # Nothing is traded after it is filed: lets the yearly partitions
             # after the window be skipped.
             Line.transaction_date <= window.last + timedelta(days=1),
+            *([] if trades_from is None else [Line.transaction_date >= trades_from]),
             or_(*matches),
         )
     )
@@ -422,9 +435,10 @@ def _traded() -> Any:
     return func.round(traded_usd(), 2)
 
 
-def filing_summaries_query(refs: Refs, window: Window) -> Select[Any]:
+def filing_summaries_query(refs: Refs, window: Window, *, history_from: date | None) -> Select[Any]:
     """The followed investors' filings in the window, with their period's
-    counts and net, value, and largest trade."""
+    counts and net, value, and largest trade. None for a period before
+    ``history_from``, the caller's window."""
     change, feed, summary = PositionChange, FILING_FEED, FILER_SUMMARY
     traded = _traded()
     followed = select(Filer.id).where(Filer.slug.in_(sorted(refs.investors)))
@@ -487,6 +501,7 @@ def filing_summaries_query(refs: Refs, window: Window) -> Select[Any]:
         .outerjoin(Security, Security.id == feed.c.largest_security_id)
         .where(
             feed.c.filer_id.in_(followed),
+            *([] if history_from is None else [feed.c.period_of_report >= history_from]),
             feed.c.filed_at >= window.start,
             feed.c.filed_at < window.end,
         )
@@ -528,9 +543,10 @@ def filing_summary_events(rows: Sequence[Row[Any]]) -> list[FilingSummaryEvent]:
     return events
 
 
-def holder_changes_query(refs: Refs, window: Window) -> Select[Any]:
+def holder_changes_query(refs: Refs, window: Window, *, history_from: date | None) -> Select[Any]:
     """Each followed stock's four largest holder moves in every quarter that has
-    a filing in the window, ranked over the whole quarter, then windowed.
+    a filing in the window, ranked over the whole quarter, then windowed. None
+    for a quarter before ``history_from``, the caller's window.
 
     A holder's move is dated by its period's latest filing in the feed: an
     amended quarter counts once, from the filing its figures come from.
@@ -549,7 +565,9 @@ def holder_changes_query(refs: Refs, window: Window) -> Select[Any]:
         .subquery("latest")
     )
     in_window = select(feed.c.period_of_report).where(
-        feed.c.filed_at >= window.start, feed.c.filed_at < window.end
+        feed.c.filed_at >= window.start,
+        feed.c.filed_at < window.end,
+        *([] if history_from is None else [feed.c.period_of_report >= history_from]),
     )
     followed = select(Security.id).where(Security.cusip.in_(sorted(refs.stocks)))
     ranked = (
@@ -631,18 +649,21 @@ def holder_change_events(rows: Sequence[Row[Any]]) -> list[HolderChangeEvent]:
     ]
 
 
-async def build_timeline(session: AsyncSession, refs: Refs, window: Window) -> list[TimelineEvent]:
+async def build_timeline(
+    session: AsyncSession, refs: Refs, window: Window, entitled: EntitlementContext
+) -> list[TimelineEvent]:
     events: list[InsiderTradeEvent | HolderChangeEvent | FilingSummaryEvent] = []
+    trades_from, history_from = entitled.insiders_from, entitled.history_from
     if refs.insiders or refs.stocks:
         issuers = await followed_issuers(session, refs)
-        rows = (await session.execute(insider_trades_query(refs, window, issuers))).all()
-        events += insider_trade_events(rows, refs, issuers)
+        statement = insider_trades_query(refs, window, issuers, trades_from=trades_from)
+        events += insider_trade_events((await session.execute(statement)).all(), refs, issuers)
     if refs.investors:
-        rows = (await session.execute(filing_summaries_query(refs, window))).all()
-        events += filing_summary_events(rows)
+        statement = filing_summaries_query(refs, window, history_from=history_from)
+        events += filing_summary_events((await session.execute(statement)).all())
     if refs.stocks:
-        rows = (await session.execute(holder_changes_query(refs, window))).all()
-        events += holder_change_events(rows)
+        statement = holder_changes_query(refs, window, history_from=history_from)
+        events += holder_change_events((await session.execute(statement)).all())
     # Newest first; events at the same instant by id, so the order never
     # depends on the queries'.
     events.sort(key=lambda e: e.id)
@@ -653,12 +674,6 @@ async def build_timeline(session: AsyncSession, refs: Refs, window: Window) -> l
 # --- upcoming -------------------------------------------------------------------
 
 
-def current_quarter(today: date) -> date:
-    """The quarter that ended most recently before ``today``: the one being filed."""
-    this_quarter = quarter_end(today.year, (today.month - 1) // 3 + 1)
-    return quarters_ending(this_quarter, 2)[0]
-
-
 def _filed(period: date) -> Any:
     """``filer_id`` has a published portfolio for ``period``."""
     return exists().where(
@@ -666,9 +681,12 @@ def _filed(period: date) -> Any:
     )
 
 
-def pending_holders_query(cusips: frozenset[str], prior: date, current: date) -> Select[Any]:
+def pending_holders_query(
+    cusips: frozenset[str], prior: date, current: date, *, history_from: date | None
+) -> Select[Any]:
     """Each stock's holders with shares at ``prior`` that have not published
-    ``current``, largest holding first. An exit held nothing at ``prior``'s end
+    ``current``, largest holding first; none when ``prior`` is before
+    ``history_from``, the caller's window. An exit held nothing at ``prior``'s end
     of the quarter after, and the snapshot has no row for one, so nothing here
     is an exit."""
     snapshot = PositionSnapshot
@@ -680,6 +698,7 @@ def pending_holders_query(cusips: frozenset[str], prior: date, current: date) ->
         .where(
             Security.cusip.in_(sorted(cusips)),
             snapshot.period_of_report == prior,
+            *([] if history_from is None else [snapshot.period_of_report >= history_from]),
             snapshot.shares > 0,
             ~_filed(current),
         )
@@ -688,7 +707,7 @@ def pending_holders_query(cusips: frozenset[str], prior: date, current: date) ->
 
 
 async def build_upcoming(
-    session: AsyncSession, refs: Refs, tz: str
+    session: AsyncSession, refs: Refs, tz: str, entitled: EntitlementContext
 ) -> tuple[list[UpcomingFiling], date, Coverage]:
     today = await session.scalar(select(cast(func.timezone(tz, func.now()), Date)))
     assert today is not None  # a SELECT without FROM has its one row
@@ -719,7 +738,10 @@ async def build_upcoming(
     pending: dict[str, list[InvestorRef]] = {}
     if refs.stocks:
         prior = quarters_ending(current, 2)[0]
-        for row in await session.execute(pending_holders_query(refs.stocks, prior, current)):
+        statement = pending_holders_query(
+            refs.stocks, prior, current, history_from=entitled.history_from
+        )
+        for row in await session.execute(statement):
             pending.setdefault(row.cusip, []).append(
                 InvestorRef(slug=row.slug, display_name=row.display_name)
             )
@@ -796,6 +818,7 @@ ToParam = Annotated[
 async def read_timeline(
     session: SessionDep,
     viewer: OptionalViewerDep,
+    entitled: EntitlementContextDep,
     start: FromParam,
     end: ToParam,
     ref: RefsParam = None,
@@ -805,7 +828,8 @@ async def read_timeline(
     days in `tz`, newest first, ties by `id`. Not paged: the whole window in one
     answer, `[]` when nothing happened. A 422 when `from` is after `to`, the
     window is over 120 days, a date is not a real one, or `tz` is not an IANA
-    zone."""
+    zone. Nothing from before the caller's plan's windows: no trade older than
+    its `insider_months`, no 13F for a quarter older than its `history_quarters`."""
     if start > end:
         raise invalid("from", f"from ({start}) is after to ({end}).")
     if (end - start).days + 1 > MAX_WINDOW_DAYS:
@@ -813,7 +837,7 @@ async def read_timeline(
     refs = parse_refs(ref)
     zone = await resolve_zone(session, tz, viewer.user.time_zone if viewer else None)
     window = await window_of(session, start, end, zone)
-    events = await build_timeline(session, refs, window)
+    events = await build_timeline(session, refs, window, entitled)
     return TimelineEventEnvelope(
         data=events,
         meta=TimelineMeta(
@@ -831,7 +855,11 @@ async def read_timeline(
     responses=INVALID,
 )
 async def read_upcoming(
-    session: SessionDep, viewer: OptionalViewerDep, ref: RefsParam = None, tz: TzParam = None
+    session: SessionDep,
+    viewer: OptionalViewerDep,
+    entitled: EntitlementContextDep,
+    ref: RefsParam = None,
+    tz: TzParam = None,
 ) -> UpcomingFilingEnvelope:
     """The current quarter is the one that ended most recently, in `tz`: from
     the day after a quarter ends, every followed investor is upcoming until it
@@ -840,7 +868,7 @@ async def read_upcoming(
     them; insiders are left out. Empty once every tracked filer has filed."""
     refs = parse_refs(ref)
     zone = await resolve_zone(session, tz, viewer.user.time_zone if viewer else None)
-    upcoming, current, coverage = await build_upcoming(session, refs, zone)
+    upcoming, current, coverage = await build_upcoming(session, refs, zone, entitled)
     return UpcomingFilingEnvelope(
         data=upcoming,
         meta=UpcomingMeta(

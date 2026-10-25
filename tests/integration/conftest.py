@@ -55,9 +55,10 @@ from alembic import command
 from app.accounts import entitlements
 from app.accounts.sessions import SessionStore
 from app.api.deps import get_redis, get_session
+from app.api.entitlements import entitlement_context
 from app.core.config import Settings
 from app.db.session import create_session_factory
-from tests.conftest import make_settings
+from tests.conftest import make_settings, unlimited_entitlements
 from tests.fake_redis import FakeRedis
 from tests.integration.accounts import Outbox
 
@@ -283,7 +284,9 @@ async def client(
     test about the cache overrides ``get_redis`` with a fake of its own.
 
     The plan catalog the lifespan keeps fresh is loaded once, from the rows
-    the migrations seeded, as the lifespan's first load would.
+    the migrations seeded, as the lifespan's first load would. Every request
+    sees every period (``unlimited_entitlements``) unless the test is about
+    plans and takes that away.
     """
     entitlements.install(await entitlements.load_catalog(db_session))
     app.state.engine = migrated_engine
@@ -291,6 +294,7 @@ async def client(
     app.state.sessions = SessionStore(session_redis)  # type: ignore[arg-type]
     app.dependency_overrides[get_session] = lambda: db_session
     app.dependency_overrides.setdefault(get_redis, lambda: FakeRedis())
+    app.dependency_overrides.setdefault(entitlement_context, unlimited_entitlements)
 
     transport = ASGITransport(app=app)
     try:

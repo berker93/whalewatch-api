@@ -35,6 +35,13 @@ scoped ``recompute`` of one ``(filer, period)`` would have to rewrite every
 later period of the filer. At 6.5 ms for the largest filer that is not a
 trade worth making yet.
 
+The plan's window
+-----------------
+Every query here is cut at the caller's ``history_from``
+(:mod:`app.api.entitlements`) in SQL: the default period is the filer's latest
+inside it, ``first_period`` is the first inside it, and the activity and the
+history start at it. A period asked for before it is a 402.
+
 Estimates
 ---------
 The portfolio's and the activity's rows carry the price estimate and the
@@ -74,6 +81,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
+from app.api.entitlements import PLAN_LIMITED, EntitlementContext, EntitlementContextDep
 from app.api.errors import INVALID, INVALID_CURSOR, invalid, not_found
 from app.api.estimates import estimate_columns, estimates
 from app.api.meta import period_meta, unscoped_meta
@@ -155,13 +163,15 @@ def _unknown(slug: str) -> HTTPException:
 
 
 async def _portfolio_period(
-    session: AsyncSession, slug: str, period: date | None
+    session: AsyncSession, slug: str, period: date | None, entitled: EntitlementContext
 ) -> tuple[int, date]:
-    """The filer, and the period to serve: ``period``, or its latest published one.
+    """The filer, and the period to serve: ``period``, or its latest published
+    one inside the caller's window.
 
     :raises HTTPException: 404 for an unknown slug, for a filer with nothing
         published, and for a period the filer has not published. An empty
         portfolio would read as a manager who sold everything.
+    :raises PlanLimitError: 402 for a filer whose every period is before the window.
     """
     snapshot = PositionSnapshot
     # max() over the primary key's (filer_id, period_of_report) prefix: one
@@ -171,6 +181,9 @@ async def _portfolio_period(
         .where(snapshot.filer_id == Filer.id)
         .scalar_subquery()
     )
+    in_window = select(func.max(snapshot.period_of_report)).where(snapshot.filer_id == Filer.id)
+    if entitled.history_from is not None:
+        in_window = in_window.where(snapshot.period_of_report >= entitled.history_from)
     published = (
         exists().where(snapshot.filer_id == Filer.id, snapshot.period_of_report == period)
         if period is not None
@@ -178,9 +191,12 @@ async def _portfolio_period(
     )
     row = (
         await session.execute(
-            select(Filer.id, latest.label("latest"), published.label("published")).where(
-                Filer.slug == slug
-            )
+            select(
+                Filer.id,
+                latest.label("latest"),
+                in_window.scalar_subquery().label("in_window"),
+                published.label("published"),
+            ).where(Filer.slug == slug)
         )
     ).one_or_none()
     if row is None:
@@ -191,7 +207,9 @@ async def _portfolio_period(
             detail=f"Nothing is published for {slug!r} yet.",
         )
     if period is None:
-        return row.id, row.latest
+        if row.in_window is None:
+            entitled.require_period(row.latest)  # before the window: a 402
+        return row.id, row.in_window
     if not row.published:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -320,18 +338,26 @@ def portfolio_query(
     sort: PortfolioSort = PortfolioSort.WEIGHT,
     order: SortOrder = SortOrder.DESC,
     include_options: bool = False,
+    history_from: PeriodEnd | None,
 ) -> tuple[Select[Any], Keyset]:
     """One page of the portfolio, named, with ``first_period`` and the
-    estimates (:mod:`app.api.estimates`), and its keyset."""
+    estimates (:mod:`app.api.estimates`), and its keyset.
+
+    :param history_from: The caller's window (:mod:`app.api.entitlements`):
+        ``first_period`` is the first period held inside it. None for every period.
+    """
     positions = _positions(filer_id, period, include_options=include_options)
     keyset = _portfolio_keyset(positions, sort, order)
     page_rows = page_statement(select(positions), keyset, page).cte("page")
 
     # See the module docstring: grouped once, not looked up per row.
     snapshot = PositionSnapshot
+    held_until = [snapshot.filer_id == filer_id, snapshot.period_of_report <= period]
+    if history_from is not None:
+        held_until.append(snapshot.period_of_report >= history_from)
     first_held = (
         select(snapshot.security_id, func.min(snapshot.period_of_report).label("first_period"))
-        .where(snapshot.filer_id == filer_id, snapshot.period_of_report <= period)
+        .where(*held_until)
         .group_by(snapshot.security_id)
         .cte("first_held")
     )
@@ -395,9 +421,13 @@ def activity_query(
     start: date | None = None,
     end: date | None = None,
     actions: frozenset[ChangeAction] = DEFAULT_ACTIONS,
+    history_from: date | None,
 ) -> Select[Any]:
     """One page of the filer's changes, named and with the estimates at each
-    row's period (:mod:`app.api.estimates`), in :data:`ACTIVITY_KEYSET` order."""
+    row's period (:mod:`app.api.estimates`), in :data:`ACTIVITY_KEYSET` order.
+
+    :param history_from: The caller's window: no period before it. None for every period.
+    """
     change = PositionChange
     keys = {key.name: key.expression for key in ACTIVITY_KEYSET.keys}
     rows = select(
@@ -423,6 +453,8 @@ def activity_query(
         # The first period we have: every position "new", none of them bought.
         change.prev_period_of_report.is_not(None),
     )
+    if history_from is not None:
+        rows = rows.where(change.period_of_report >= history_from)
     if start is not None:
         rows = rows.where(change.period_of_report >= start)
     if end is not None:
@@ -445,13 +477,19 @@ def activity_query(
     )
 
 
-def history_query(slug: str | BindParameter[str]) -> Select[Any]:
-    """The filer's id and each published period's summary, oldest first.
+def history_query(slug: str | BindParameter[str], *, history_from: PeriodEnd | None) -> Select[Any]:
+    """The filer's id and each published period's summary inside the caller's
+    window, oldest first.
 
     No rows for an unknown slug, and one row with a null period for a filer
-    with nothing published.
+    with nothing published inside the window.
     """
     summary = FILER_SUMMARY
+    joined = summary.c.filer_id == Filer.id
+    if history_from is not None:
+        # In the outer join's condition rather than the WHERE: a filer with
+        # nothing in the window is still a row, so not a 404.
+        joined = and_(joined, summary.c.period_of_report >= history_from)
     return (
         select(
             Filer.id,
@@ -461,7 +499,7 @@ def history_query(slug: str | BindParameter[str]) -> Select[Any]:
             summary.c.top10_weight_pct,
         )
         .select_from(Filer)
-        .outerjoin(summary, summary.c.filer_id == Filer.id)
+        .outerjoin(summary, joined)
         .where(Filer.slug == slug)
         .order_by(summary.c.period_of_report)
     )
@@ -545,6 +583,7 @@ ActionsParam = Annotated[
     summary="One investor's positions in one period",
     responses={
         **not_found("No investor with that slug, or nothing published for the period."),
+        **PLAN_LIMITED,
         **INVALID_CURSOR,
         **INVALID,
     },
@@ -554,6 +593,7 @@ async def read_portfolio(
     slug: SlugParam,
     session: SessionDep,
     page: PageParamsDep,
+    entitled: EntitlementContextDep,
     period: PeriodParam = None,
     include_options: IncludeOptions = False,
     sort: SortParam = PortfolioSort.WEIGHT,
@@ -563,11 +603,19 @@ async def read_portfolio(
     previous published period.
 
     ``meta.caveats`` lists what ``audit-amendments`` would flag about the
-    period, so a client sees it on every page.
+    period, so a client sees it on every page. A period before the caller's
+    plan's window is a 402, and `first_period` is the first inside it.
     """
-    filer_id, period = await _portfolio_period(session, slug, period)
+    entitled.require_period(period)
+    filer_id, period = await _portfolio_period(session, slug, period, entitled)
     statement, keyset = portfolio_query(
-        filer_id, period, page, sort=sort, order=order, include_options=include_options
+        filer_id,
+        period,
+        page,
+        sort=sort,
+        order=order,
+        include_options=include_options,
+        history_from=entitled.history_from,
     )
     rows, page_info = page_of(list(await session.execute(statement)), keyset, page)
 
@@ -582,26 +630,40 @@ async def read_portfolio(
     operation_id="getInvestorActivity",
     response_model=ActivityEnvelope,
     summary="What one investor opened, added to, trimmed and exited",
-    responses={**not_found("No investor with that slug."), **INVALID_CURSOR, **INVALID},
+    responses={
+        **not_found("No investor with that slug."),
+        **PLAN_LIMITED,
+        **INVALID_CURSOR,
+        **INVALID,
+    },
 )
 @cached(period="end")
 async def read_activity(
     slug: SlugParam,
     session: SessionDep,
     page: PageParamsDep,
+    entitled: EntitlementContextDep,
     start: RangeStart = None,
     end: RangeEnd = None,
     action: ActionsParam = None,
 ) -> Envelope[Activity]:
     """Changes, newest period first and largest trade first within one.
 
-    Each row names its period, so ``meta`` names none.
+    Each row names its period, so ``meta`` names none. Without `from`, from the
+    first period of the caller's plan's window; a `from` or `to` before it is a 402.
     """
     if start is not None and end is not None and start > end:
         raise invalid("from", f"from ({quarter_label(start)}) is after to ({quarter_label(end)}).")
+    entitled.require_period(start)
+    entitled.require_period(end)
     filer_id = await _filer_id(session, slug)
     statement = activity_query(
-        filer_id, page, start=start, end=end, actions=action or DEFAULT_ACTIONS
+        filer_id,
+        page,
+        start=start,
+        end=end,
+        actions=action or DEFAULT_ACTIONS,
+        history_from=entitled.history_from,
     )
     rows, page_info = page_of(list(await session.execute(statement)), ACTIVITY_KEYSET, page)
 
@@ -640,14 +702,17 @@ async def read_activity(
     responses={**not_found("No investor with that slug."), **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
-async def read_history(slug: SlugParam, session: SessionDep) -> Envelope[HistoryPoint]:
-    """Every quarter from the first published to the latest, oldest first.
+async def read_history(
+    slug: SlugParam, session: SessionDep, entitled: EntitlementContextDep
+) -> Envelope[HistoryPoint]:
+    """Every quarter from the first published to the latest, oldest first,
+    inside the caller's plan's window.
 
     A quarter in between with nothing published is a row of nulls, so a chart
     of it shows the gap rather than drawing across it. Empty for a filer with
-    nothing published. As of the views' last refresh. Not paginated.
+    nothing published in the window. As of the views' last refresh. Not paginated.
     """
-    rows = list(await session.execute(history_query(slug)))
+    rows = list(await session.execute(history_query(slug, history_from=entitled.history_from)))
     if not rows:
         raise _unknown(slug)
 

@@ -27,6 +27,13 @@ a flow row carries both ``gross_bought_usd`` and ``net_value_usd``, and the top
 lists rank by either: ``?metric=value`` is gross, the dollars bought (or sold),
 and ``?metric=net_value`` is net. See :mod:`app.derived.views`.
 
+The plan's window
+-----------------
+Every period is inside the caller's ``history_from`` (:mod:`app.api.entitlements`):
+the default is the latest inside it, and one asked for before it is a 402. A
+year needs all four of its quarters inside it, so Free, with four quarters,
+sees only the latest year. The feed has no filing for a period before it.
+
 A year
 ------
 ``?period_type=year`` is the four quarters ending at ``?period``: the calendar
@@ -62,6 +69,7 @@ from sqlalchemy.sql.base import ReadOnlyColumnCollection
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
+from app.api.entitlements import PLAN_LIMITED, EntitlementContext, EntitlementContextDep
 from app.api.errors import INVALID, INVALID_CURSOR, invalid, not_found
 from app.api.meta import period_meta, refreshed_at, unscoped_meta
 from app.api.pagination import Keyset, PageParams, SortKey, page_of, page_statement
@@ -157,19 +165,39 @@ class Direction(StrEnum):
 
 
 async def _period(
-    session: AsyncSession, view: TableClause, period: date | None, *, what: str
+    session: AsyncSession,
+    view: TableClause,
+    period: date | None,
+    *,
+    what: str,
+    entitled: EntitlementContext,
+    quarters: int = 1,
 ) -> date:
-    """``period``, or the latest one ``view`` has.
+    """``period``, or the latest one ``view`` has inside the caller's window.
 
     :param what: What ``view`` holds, for the 404: "holdings", "flows".
+    :param quarters: How many quarters a row of ``view`` covers, ending at its
+        period: all of them must be inside the window.
     :raises HTTPException: 404 when the view is empty, or has nothing for
         ``period``. An empty list would read as a quarter nobody traded in.
+    :raises PlanLimitError: 402 for a period before the window, or a view with
+        nothing inside it.
     """
-    # Both through the view's unique index, which leads with the period.
+    entitled.require_period(period, quarters=quarters)
+    # All three through the view's unique index, which leads with the period.
     latest = select(func.max(view.c.period_of_report)).scalar_subquery()
+    in_window = select(func.max(view.c.period_of_report))
+    if (first := entitled.first_period(quarters)) is not None:
+        in_window = in_window.where(view.c.period_of_report >= first)
     published = exists().where(view.c.period_of_report == period) if period is not None else null()
     row = (
-        await session.execute(select(latest.label("latest"), published.label("published")))
+        await session.execute(
+            select(
+                latest.label("latest"),
+                in_window.scalar_subquery().label("in_window"),
+                published.label("published"),
+            )
+        )
     ).one()
     if row.latest is None:
         raise HTTPException(
@@ -178,7 +206,10 @@ async def _period(
         )
     latest_period: date = row.latest
     if period is None:
-        return latest_period
+        if row.in_window is None:
+            entitled.require_period(latest_period, quarters=quarters)  # a 402
+        in_window_period: date = row.in_window
+        return in_window_period
     if not row.published:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -205,6 +236,11 @@ async def _meta(
         meta.quarters = [quarter_label(q) for q in quarters_ending(period, YEAR_QUARTERS)]
     meta.refreshed_at = await refreshed_at(session, *views, FILER_SUMMARY)
     return meta
+
+
+def _quarters(period_type: PeriodType) -> int:
+    """How many quarters a row of ``period_type``'s view covers."""
+    return YEAR_QUARTERS if period_type is PeriodType.YEAR else 1
 
 
 # --- holdings -------------------------------------------------------------------
@@ -406,9 +442,13 @@ FEED_KEYSET: Final = Keyset(
 )
 
 
-def feed_query(page: PageParams) -> Select[Any]:
-    """One page of the feed, with each filing's form, filer and largest trade's stock."""
-    page_rows = page_statement(select(FILING_FEED), FEED_KEYSET, page).cte("page")
+def feed_query(page: PageParams, *, history_from: PeriodEnd | None) -> Select[Any]:
+    """One page of the feed, with each filing's form, filer and largest trade's
+    stock: no filing for a period before ``history_from``, the caller's window."""
+    rows = select(FILING_FEED)
+    if history_from is not None:
+        rows = rows.where(FILING_FEED.c.period_of_report >= history_from)
+    page_rows = page_statement(rows, FEED_KEYSET, page).cte("page")
     return (
         select(
             page_rows,
@@ -481,11 +521,12 @@ _NOT_PUBLISHED = not_found("Nothing published for the period.")
     operation_id="getTopHoldings",
     response_model=MarketHoldingEnvelope,
     summary="The most widely or most heavily held stocks",
-    responses={**_NOT_PUBLISHED, **INVALID},
+    responses={**_NOT_PUBLISHED, **PLAN_LIMITED, **INVALID},
 )
 @cached(period="period")
 async def read_top_holdings(
     session: SessionDep,
+    entitled: EntitlementContextDep,
     period: HoldingsPeriodParam = None,
     metric: Annotated[
         HoldingMetric,
@@ -494,7 +535,7 @@ async def read_top_holdings(
     limit: LimitParam = DEFAULT_TOP,
 ) -> Envelope[MarketHolding]:
     """The top stocks at a quarter end. Not paginated."""
-    period = await _period(session, CONSENSUS_HOLDINGS, period, what="holdings")
+    period = await _period(session, CONSENSUS_HOLDINGS, period, what="holdings", entitled=entitled)
     rows = await session.execute(top_holdings_query(period, metric, limit))
     return Envelope(
         data=[
@@ -522,11 +563,12 @@ async def read_top_holdings(
     operation_id="getTopBuys",
     response_model=StockFlowEnvelope,
     summary="The stocks the tracked investors bought most",
-    responses={**_NOT_PUBLISHED, **INVALID},
+    responses={**_NOT_PUBLISHED, **PLAN_LIMITED, **INVALID},
 )
 @cached(period="period")
 async def read_top_buys(
     session: SessionDep,
+    entitled: EntitlementContextDep,
     period: PeriodParam = None,
     period_type: PeriodTypeParam = PeriodType.QUARTER,
     metric: FlowMetricParam = FlowMetric.VALUE,
@@ -534,7 +576,9 @@ async def read_top_buys(
 ) -> Envelope[StockFlow]:
     """Most bought first. Not paginated."""
     flows = FLOWS[period_type]
-    period = await _period(session, flows, period, what="flows")
+    period = await _period(
+        session, flows, period, what="flows", entitled=entitled, quarters=_quarters(period_type)
+    )
     rows = await session.execute(top_buys_query(flows, period, metric, limit))
     return await _flows_envelope(session, rows, period, period_type)
 
@@ -544,11 +588,12 @@ async def read_top_buys(
     operation_id="getTopSells",
     response_model=StockFlowEnvelope,
     summary="The stocks the tracked investors sold most",
-    responses={**_NOT_PUBLISHED, **INVALID},
+    responses={**_NOT_PUBLISHED, **PLAN_LIMITED, **INVALID},
 )
 @cached(period="period")
 async def read_top_sells(
     session: SessionDep,
+    entitled: EntitlementContextDep,
     period: PeriodParam = None,
     period_type: PeriodTypeParam = PeriodType.QUARTER,
     metric: FlowMetricParam = FlowMetric.VALUE,
@@ -556,7 +601,9 @@ async def read_top_sells(
 ) -> Envelope[StockFlow]:
     """Most sold first. Not paginated."""
     flows = FLOWS[period_type]
-    period = await _period(session, flows, period, what="flows")
+    period = await _period(
+        session, flows, period, what="flows", entitled=entitled, quarters=_quarters(period_type)
+    )
     rows = await session.execute(top_sells_query(flows, period, metric, limit))
     return await _flows_envelope(session, rows, period, period_type)
 
@@ -566,11 +613,12 @@ async def read_top_sells(
     operation_id="getNewPositions",
     response_model=StockFlowEnvelope,
     summary="The stocks the most tracked investors opened a position in",
-    responses={**_NOT_PUBLISHED, **INVALID},
+    responses={**_NOT_PUBLISHED, **PLAN_LIMITED, **INVALID},
 )
 @cached(period="period")
 async def read_new_positions(
     session: SessionDep,
+    entitled: EntitlementContextDep,
     period: PeriodParam = None,
     period_type: PeriodTypeParam = PeriodType.QUARTER,
     limit: LimitParam = DEFAULT_TOP,
@@ -578,7 +626,9 @@ async def read_new_positions(
     """Most often opened first, then most bought. A filer's first period is
     not counted: every position is new to us there, not bought. Not paginated."""
     flows = FLOWS[period_type]
-    period = await _period(session, flows, period, what="flows")
+    period = await _period(
+        session, flows, period, what="flows", entitled=entitled, quarters=_quarters(period_type)
+    )
     rows = await session.execute(new_positions_query(flows, period, limit))
     return await _flows_envelope(session, rows, period, period_type)
 
@@ -591,11 +641,14 @@ async def read_new_positions(
     responses={**INVALID_CURSOR, **INVALID},
 )
 @cached(Lifetime.CURRENT_PERIOD)
-async def read_market_activity(session: SessionDep, page: PageParamsDep) -> Envelope[FeedFiling]:
+async def read_market_activity(
+    session: SessionDep, page: PageParamsDep, entitled: EntitlementContextDep
+) -> Envelope[FeedFiling]:
     """Filings newest first: those a published period was built from. One
-    withheld as suspect is left out until its period is published. Each row
-    names its period, so ``meta`` names none."""
-    statement = feed_query(page)
+    withheld as suspect is left out until its period is published. None for a
+    period before the caller's plan's window. Each row names its period, so
+    ``meta`` names none."""
+    statement = feed_query(page, history_from=entitled.history_from)
     rows, page_info = page_of(list(await session.execute(statement)), FEED_KEYSET, page)
     meta = unscoped_meta()
     meta.refreshed_at = await refreshed_at(session, FILING_FEED)
@@ -609,6 +662,7 @@ async def read_market_activity(session: SessionDep, page: PageParamsDep) -> Enve
     summary="Screen stocks by what the tracked investors bought and sold",
     responses={
         **_NOT_PUBLISHED,
+        **PLAN_LIMITED,
         **INVALID_CURSOR,
         status.HTTP_422_UNPROCESSABLE_CONTENT: {
             **INVALID[status.HTTP_422_UNPROCESSABLE_CONTENT],
@@ -620,6 +674,7 @@ async def read_market_activity(session: SessionDep, page: PageParamsDep) -> Enve
 async def read_flows(
     session: SessionDep,
     page: PageParamsDep,
+    entitled: EntitlementContextDep,
     period: PeriodParam = None,
     period_type: PeriodTypeParam = PeriodType.QUARTER,
     sector: Annotated[
@@ -669,7 +724,9 @@ async def read_flows(
             "loaded, so no stock has one. Leave sector out.",
         )
     flows = FLOWS[period_type]
-    period = await _period(session, flows, period, what="flows")
+    period = await _period(
+        session, flows, period, what="flows", entitled=entitled, quarters=_quarters(period_type)
+    )
     statement, keyset = flows_query(
         flows,
         period,

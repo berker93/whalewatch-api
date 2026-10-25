@@ -394,6 +394,7 @@ async def test_the_purge_erases_the_account_and_the_audit_row_survives(
     assert deletion.erased == {
         "app_user": 1,
         "watchlist_item": 1,
+        "saved_filter": 0,
         "consent_record": 3,
         "account_token": 0,
         "subscription": 1,

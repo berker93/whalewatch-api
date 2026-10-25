@@ -53,6 +53,7 @@ from app.db.models import (
     ConsentSource,
     DeletionRequester,
     Purpose,
+    SavedFilter,
     SignupRequest,
     Subscription,
     WatchlistItem,
@@ -267,7 +268,7 @@ class Purged:
 
 #: The tables an account's rows are erased from with it, by its foreign key's
 #: CASCADE: counted first, so the audit row says what went.
-_CASCADED: Final = (WatchlistItem, ConsentRecord, AccountToken, Subscription)
+_CASCADED: Final = (WatchlistItem, SavedFilter, ConsentRecord, AccountToken, Subscription)
 
 
 async def purge_due(session: AsyncSession, *, at: datetime | None = None) -> list[Purged]:

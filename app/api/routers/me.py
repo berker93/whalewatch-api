@@ -37,6 +37,7 @@ from app.api.schemas.privacy import (
     ExportInsider,
     ExportInvestor,
     ExportLink,
+    ExportSavedFilter,
     ExportSession,
     ExportStock,
     ExportSubscription,
@@ -55,6 +56,7 @@ from app.db.models import (
     Insider,
     Plan,
     Purpose,
+    SavedFilter,
     Security,
     Subscription,
     WatchlistItem,
@@ -244,9 +246,9 @@ def _account(user: AppUser) -> ExportAccount:
 async def export_me(
     viewer: ViewerDep, session: SessionDep, store: SessionStoreDep, response: Response
 ) -> Export:
-    """The account, the watchlist, the whole consent ledger, the links and
-    sessions still live, and a list of what is held but left out (hashes,
-    logs) and why. `Content-Disposition: attachment`, so a browser saves it.
+    """The account, the watchlist, the saved filters, the whole consent
+    ledger, the links and sessions still live, and a list of what is held but
+    left out (hashes, logs) and why. `Content-Disposition: attachment`, so a browser saves it.
     The format is versioned by `format`."""
     user = viewer.user
     links = await session.scalars(
@@ -263,6 +265,12 @@ async def export_me(
         exported_at=exported_at,
         account=_account(user),
         watchlist=await _watchlist(session, user.id),
+        saved_filters=[
+            ExportSavedFilter.model_validate(row, from_attributes=True)
+            for row in await session.scalars(
+                select(SavedFilter).where(SavedFilter.user_id == user.id).order_by(SavedFilter.id)
+            )
+        ],
         consents=[
             ExportConsent.model_validate(row, from_attributes=True)
             for row in await privacy.history(session, user.id)
