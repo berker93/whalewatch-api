@@ -3,8 +3,8 @@
 ``GET /v1/me``
     Who is signed in, their plan and their entitlements, in one call: what an
     app page needs to decide what to show before it shows anything. One
-    indexed read of the user; the session is already in Redis, and the plan
-    and entitlements are worked out from the user (:mod:`app.accounts.plans`).
+    indexed read of the user; the session is already in Redis, and holds the
+    user's grant, which the plan catalog resolves (:mod:`app.accounts.entitlements`).
 ``GET`` and ``PATCH /v1/me/privacy``
     What the account's data is used for, on which lawful basis, and the two
     choices the user has: product email (objectable) and marketing email
@@ -21,9 +21,10 @@ from typing import Final
 from fastapi import APIRouter, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.accounts import privacy
-from app.accounts.plans import entitlements_for, plan_for
+from app.accounts.entitlements import entitlements, plan_of, subscription_overrides
 from app.accounts.sessions import now
 from app.api.auth import UNAUTHORIZED, NoStoreDep, SessionStoreDep, ViewerDep
 from app.api.deps import SessionDep
@@ -38,6 +39,7 @@ from app.api.schemas.privacy import (
     ExportLink,
     ExportSession,
     ExportStock,
+    ExportSubscription,
     ExportWatchlist,
     Privacy,
     PrivacyPatch,
@@ -51,8 +53,10 @@ from app.db.models import (
     ConsentRecord,
     Filer,
     Insider,
+    Plan,
     Purpose,
     Security,
+    Subscription,
     WatchlistItem,
 )
 
@@ -71,8 +75,7 @@ async def read_me(viewer: ViewerDep) -> Me:
     has ended. `entitlements.save` is false until the email is verified: the
     account reads everything and saves nothing."""
     user = viewer.user
-    plan = plan_for(user)
-    entitlements = entitlements_for(user)
+    plan = plan_of(viewer)
     return Me(
         user=MeUser(
             email=user.email,
@@ -83,9 +86,9 @@ async def read_me(viewer: ViewerDep) -> Me:
             created_at=user.created_at,
             last_seen_at=user.last_seen_at,
         ),
-        plan=MePlan(id=plan.id, name=plan.name),
-        entitlements=MeEntitlements(
-            save=entitlements.save, watchlist_max_items=entitlements.watchlist_max_items
+        plan=MePlan(id=plan.slug, name=plan.name),
+        entitlements=MeEntitlements.model_validate(
+            {"save": user.email_verified_at is not None, **entitlements(viewer)}
         ),
     )
 
@@ -198,6 +201,26 @@ async def _watchlist(session: AsyncSession, user_id: int) -> ExportWatchlist:
     )
 
 
+async def _subscriptions(session: AsyncSession, user_id: int) -> list[ExportSubscription]:
+    plan, grandfathered = aliased(Plan), aliased(Plan)
+    rows = await session.execute(
+        select(
+            plan.slug.label("plan"),
+            Subscription.status,
+            Subscription.current_period_end,
+            Subscription.cancel_at,
+            grandfathered.slug.label("grandfathered_plan"),
+            subscription_overrides().label("overrides"),
+            Subscription.created_at,
+        )
+        .join(plan, plan.id == Subscription.plan_id)
+        .outerjoin(grandfathered, grandfathered.id == Subscription.grandfathered_plan_id)
+        .where(Subscription.user_id == user_id)
+        .order_by(Subscription.id.desc())
+    )
+    return [ExportSubscription.model_validate(row, from_attributes=True) for row in rows]
+
+
 def _account(user: AppUser) -> ExportAccount:
     return ExportAccount(
         id=user.id,
@@ -249,5 +272,6 @@ async def export_me(
             ExportSession(remember=record.remember, expires_at=record.expires_at)
             for record in await store.list_for(user.id)
         ],
+        subscriptions=await _subscriptions(session, user.id),
         not_included=NOT_INCLUDED,
     )

@@ -1,0 +1,240 @@
+"""Plans, what each allows, and who is on which: entitlements as rows.
+
+A limit lives in a row, not in an ``if``, so changing what a plan allows is
+an UPDATE, not a deploy (:mod:`app.accounts.entitlements` reads them).
+
+``plan``
+    One thing a user can be on: Free, Pro, an API plan, or a private plan
+    that holds terms promised to someone (``is_public`` false). The slug is
+    what code and the session name it by. ``free`` is the plan of everyone
+    with no live subscription, signed in or not.
+``plan_entitlement``
+    One capability of one plan: a key from :data:`ENTITLEMENT_KEYS` and its
+    value. Every plan has a row for every key; the catalog refuses a set of
+    rows that misses one.
+``subscription``
+    A user on a plan. At most one live (:data:`LIVE_STATUSES`) per user.
+    ``grandfathered_plan_id`` names a plan whose terms the user keeps while
+    ``plan_id`` changes price or limits for everyone else: a launch promise is
+    a private plan and this column, not a copy of the plan table.
+``subscription_entitlement``
+    One subscription's own value for a key, above both plans: a comp, a
+    raised limit for one customer.
+
+A value is JSON. A limit (:data:`LIMIT_KEYS`) is a whole number of at least
+0, or null for no limit; a flag (:data:`FLAG_KEYS`) is true or false. The
+check on each table holds rows to that, so an UPDATE that would break a
+reader is refused by Postgres rather than discovered by a request.
+"""
+
+from datetime import datetime
+from enum import StrEnum
+from typing import Any, Final
+
+from sqlalchemy import (
+    CHAR,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    false,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.models.base import Base
+
+#: Entitlements that are a number of something, null for no limit.
+LIMIT_KEYS: Final = (
+    "history_quarters",
+    "insider_months",
+    "watchlist_items",
+    "screener_saved_filters",
+    "api_calls_month",
+)
+
+#: Entitlements that are on or off.
+FLAG_KEYS: Final = (
+    "export_enabled",
+    "alerts_instant",
+    "mcp_enabled",
+)
+
+ENTITLEMENT_KEYS: Final = LIMIT_KEYS + FLAG_KEYS
+
+
+def _quoted(keys: tuple[str, ...]) -> str:
+    return ", ".join(f"'{key}'" for key in keys)
+
+
+KEY_CHECK: Final = f"key IN ({_quoted(ENTITLEMENT_KEYS)})"
+
+#: A flag is a boolean; a limit is null or a whole number of at least 0. A
+#: CASE, so the cast to numeric only ever sees a number.
+VALUE_CHECK: Final = (
+    f"CASE WHEN key IN ({_quoted(FLAG_KEYS)}) THEN jsonb_typeof(value) = 'boolean' "
+    "WHEN jsonb_typeof(value) = 'null' THEN true "
+    "WHEN jsonb_typeof(value) = 'number' "
+    "THEN value::numeric >= 0 AND value::numeric = trunc(value::numeric) "
+    "ELSE false END"
+)
+
+
+class PlanInterval(StrEnum):
+    """How often a paid plan bills."""
+
+    MONTH = "month"
+    YEAR = "year"
+
+
+INTERVAL_CHECK: Final = "interval IN ({})".format(", ".join(f"'{i.value}'" for i in PlanInterval))
+
+
+class Plan(Base):
+    """One plan: its name and price. What it allows is in :class:`PlanEntitlement`."""
+
+    __tablename__ = "plan"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    slug: Mapped[str] = mapped_column(Text, unique=True)
+    """Stable, for a program to branch on, and what a session names it by."""
+
+    name: Mapped[str] = mapped_column(Text)
+    """For a person."""
+
+    price_cents: Mapped[int] = mapped_column(Integer)
+    """Per :attr:`interval`, in :attr:`currency`'s smallest unit. 0 for Free."""
+
+    currency: Mapped[str] = mapped_column(CHAR(3), server_default=text("'USD'"))
+
+    interval: Mapped[str | None] = mapped_column(Text)
+    """One :class:`PlanInterval` value. Null for a plan that costs nothing."""
+
+    is_public: Mapped[bool] = mapped_column(Boolean, server_default=false())
+    """Offered on the pricing page. A plan held only by grandfathered users is not."""
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("slug ~ '^[a-z][a-z0-9_]*$'", name="slug_is_a_slug"),
+        CheckConstraint("price_cents >= 0", name="price_is_not_negative"),
+        CheckConstraint(INTERVAL_CHECK, name="interval_is_known"),
+        CheckConstraint("price_cents = 0 OR interval IS NOT NULL", name="paid_has_an_interval"),
+    )
+
+
+class PlanEntitlement(Base):
+    """What one plan allows of one capability."""
+
+    __tablename__ = "plan_entitlement"
+
+    plan_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("plan.id", ondelete="CASCADE"), primary_key=True
+    )
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    """One of :data:`ENTITLEMENT_KEYS`."""
+    value: Mapped[Any] = mapped_column(JSONB)
+    """JSON: a whole number or null for a limit, a boolean for a flag."""
+
+    __table_args__ = (
+        CheckConstraint(KEY_CHECK, name="key_is_known"),
+        CheckConstraint(VALUE_CHECK, name="value_fits_key"),
+    )
+
+
+class SubscriptionStatus(StrEnum):
+    """Where a subscription is, in the words the payment provider uses."""
+
+    TRIALING = "trialing"
+    ACTIVE = "active"
+    PAST_DUE = "past_due"
+    """A payment failed and is being retried: the plan holds meanwhile."""
+    PAUSED = "paused"
+    UNPAID = "unpaid"
+    CANCELED = "canceled"
+    INCOMPLETE = "incomplete"
+    INCOMPLETE_EXPIRED = "incomplete_expired"
+
+
+#: The statuses a subscription grants its plan in. Any other is Free.
+LIVE_STATUSES: Final = (
+    SubscriptionStatus.TRIALING,
+    SubscriptionStatus.ACTIVE,
+    SubscriptionStatus.PAST_DUE,
+)
+
+SUBSCRIPTION_STATUS_CHECK: Final = "status IN ({})".format(
+    ", ".join(f"'{s.value}'" for s in SubscriptionStatus)
+)
+LIVE_CHECK: Final = "status IN ({})".format(", ".join(f"'{s.value}'" for s in LIVE_STATUSES))
+
+
+class Subscription(Base):
+    """One user on one plan, for as long as its status is live."""
+
+    __tablename__ = "subscription"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app_user.id", ondelete="CASCADE"))
+
+    plan_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("plan.id", ondelete="RESTRICT"))
+    """What the user is on: what they are billed for and what the account page names."""
+
+    status: Mapped[str] = mapped_column(Text)
+    """One :class:`SubscriptionStatus` value."""
+
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When the period paid for ends. Null for a subscription nobody pays for."""
+
+    cancel_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When it ends. From then on the user is on Free, whatever the status says."""
+
+    grandfathered_plan_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("plan.id", ondelete="RESTRICT")
+    )
+    """A plan whose terms the user keeps, above :attr:`plan_id`'s."""
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(SUBSCRIPTION_STATUS_CHECK, name="status_is_known"),
+        Index("ix_subscription_user_id", "user_id"),
+        # One live subscription per user: resolving a user's plan finds one or none.
+        Index(
+            "uq_subscription_user_live",
+            "user_id",
+            unique=True,
+            postgresql_where=text(LIVE_CHECK),
+        ),
+    )
+
+
+class SubscriptionEntitlement(Base):
+    """One subscription's own value for one key, above its plans'."""
+
+    __tablename__ = "subscription_entitlement"
+
+    subscription_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("subscription.id", ondelete="CASCADE"), primary_key=True
+    )
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[Any] = mapped_column(JSONB)
+    note: Mapped[str | None] = mapped_column(Text)
+    """Why: for whoever finds it later."""
+
+    __table_args__ = (
+        CheckConstraint(KEY_CHECK, name="key_is_known"),
+        CheckConstraint(VALUE_CHECK, name="value_fits_key"),
+    )

@@ -44,7 +44,6 @@ from typing import Annotated, Final, Literal
 from fastapi import Depends, Request, Response, status
 from redis.exceptions import RedisError
 
-from app.accounts.plans import entitlements_for
 from app.accounts.sessions import (
     SessionStore,
     SessionStoreError,
@@ -151,7 +150,7 @@ async def require_viewer(
 
 
 async def require_verified(viewer: Annotated[Viewer, Depends(require_viewer)]) -> Viewer:
-    if not entitlements_for(viewer.user).save:
+    if viewer.user.email_verified_at is None:
         raise ApiError(
             403,
             ErrorCode.EMAIL_UNVERIFIED,

@@ -27,11 +27,13 @@ from app.db.models import (
     DeletionRequester,
     Filer,
     SignupRequest,
+    Subscription,
+    SubscriptionEntitlement,
     WatchlistItem,
 )
 from tests.conftest import make_settings
 from tests.fake_redis import FakeRedis
-from tests.integration.accounts import FRONTEND, PASSWORD, Outbox, make_user, sign_in
+from tests.integration.accounts import FRONTEND, PASSWORD, Outbox, make_user, sign_in, subscribe
 
 
 def _error(response: Response) -> tuple[int, str]:
@@ -244,7 +246,10 @@ async def test_the_export_is_everything_held_and_no_secret(
         .returning(Filer.id)
     )
     db_session.add(WatchlistItem(user_id=user_id, filer_id=filer_id))
-    await db_session.flush()
+    await subscribe(db_session, user_id, "free", status="canceled")
+    await subscribe(
+        db_session, user_id, "pro", grandfathered="api_hobbyist", overrides={"mcp_enabled": False}
+    )
 
     response = await client.get("/v1/me/export")
 
@@ -266,6 +271,18 @@ async def test_the_export_is_everything_held_and_no_secret(
     # The verification link registering sent, and the session it started.
     assert [link["purpose"] for link in body["links"]] == ["email_verify"]
     assert [session["remember"] for session in body["sessions"]] == [True]
+    assert [
+        {k: s[k] for k in ("plan", "status", "grandfathered_plan", "overrides")}
+        for s in body["subscriptions"]
+    ] == [
+        {
+            "plan": "pro",
+            "status": "active",
+            "grandfathered_plan": "api_hobbyist",
+            "overrides": {"mcp_enabled": False},
+        },
+        {"plan": "free", "status": "canceled", "grandfathered_plan": None, "overrides": {}},
+    ]
     assert body["not_included"]
     password_hash = await db_session.scalar(select(AppUser.password_hash))
     token_hash = await db_session.scalar(select(AccountToken.token_hash))
@@ -350,6 +367,7 @@ async def _deleted_user(session: AsyncSession, email: str = "ada@example.com") -
         insert(Filer).values(name=f"FILER {user_id}", slug=f"filer-{user_id}").returning(Filer.id)
     )
     session.add(WatchlistItem(user_id=user_id, filer_id=filer_id))
+    await subscribe(session, user_id, "pro", overrides={"watchlist_items": 50})
     await privacy.delete_account(
         session,
         SessionStore(FakeRedis()),  # type: ignore[arg-type]
@@ -367,7 +385,7 @@ async def test_the_purge_erases_the_account_and_the_audit_row_survives(
     purged = await privacy.purge_due(db_session, at=now() + timedelta(days=30, seconds=1))
 
     assert [p.user_id for p in purged] == [user.id]
-    for model in (AppUser, WatchlistItem, ConsentRecord):
+    for model in (AppUser, WatchlistItem, ConsentRecord, Subscription, SubscriptionEntitlement):
         assert await db_session.scalar(select(func.count()).select_from(model)) == 0, model
     [deletion] = (
         await db_session.execute(select(AccountDeletion.purged_at, AccountDeletion.erased))
@@ -378,6 +396,7 @@ async def test_the_purge_erases_the_account_and_the_audit_row_survives(
         "watchlist_item": 1,
         "consent_record": 3,
         "account_token": 0,
+        "subscription": 1,
     }
 
 

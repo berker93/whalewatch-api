@@ -44,13 +44,26 @@ class FakeRedis:
         return self.ttls.get(key, -2)
 
     async def set(
-        self, key: str, value: str, ex: int | None = None, exat: int | None = None, **_: Any
-    ) -> None:
+        self,
+        key: str,
+        value: str,
+        ex: int | None = None,
+        exat: int | None = None,
+        *,
+        xx: bool = False,
+        keepttl: bool = False,
+        **_: Any,
+    ) -> bool | None:
         self._send("set")
+        if xx and key not in self.values:
+            return None
         self.values[key] = value
+        if keepttl and key in self.ttls:
+            return True
         if exat is not None:
             ex = exat - int(time.time())
         self.ttls[key] = ex if ex is not None else -1
+        return True
 
     async def delete(self, *keys: str) -> int:
         self._send("delete")

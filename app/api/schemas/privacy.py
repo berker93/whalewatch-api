@@ -202,6 +202,26 @@ class ExportConsent(BaseModel):
     recorded_at: datetime = Field(description="When.", examples=[_AT])
 
 
+class ExportSubscription(BaseModel):
+    """One subscription, live or ended, newest first."""
+
+    plan: str = Field(description="The plan's slug.", examples=["pro"])
+    status: str = Field(description="As the payment provider names it.", examples=["active"])
+    current_period_end: datetime | None = Field(
+        description="When the period paid for ends.", examples=[_AT]
+    )
+    cancel_at: datetime | None = Field(
+        description="When it ends, if it is set to.", examples=[None]
+    )
+    grandfathered_plan: str | None = Field(
+        description="The plan whose terms the account keeps, if any.", examples=[None]
+    )
+    overrides: dict[str, int | bool | None] = Field(
+        description="Entitlements set for this subscription alone.", examples=[{}]
+    )
+    created_at: datetime = Field(description="When it began.", examples=[_AT])
+
+
 class Export(BaseModel):
     """Everything WhaleWatch holds on the signed-in user."""
 
@@ -214,6 +234,9 @@ class Export(BaseModel):
     consents: list[ExportConsent] = Field(description="The whole ledger, oldest first.")
     links: list[ExportLink] = Field(description="Emailed links still waiting to be used.")
     sessions: list[ExportSession] = Field(description="Sessions still signed in.")
+    subscriptions: list[ExportSubscription] = Field(
+        description="Every subscription the account has had, newest first."
+    )
     not_included: list[str] = Field(
         description="What is held but not here, and why: a person can still ask for it.",
         examples=[["server logs: request lines (time, path, IP address)"]],

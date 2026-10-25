@@ -54,6 +54,18 @@ from app.db.models.insider_transaction import OPEN_MARKET_CODES, InsiderTransact
 from app.db.models.manual_review import REVIEW_STATUS_CHECK, ManualReview, ReviewStatus
 from app.db.models.matview_refresh import MatviewRefresh
 from app.db.models.pending_filing import PENDING_STATUS_CHECK, PendingFiling, PendingStatus
+from app.db.models.plan import (
+    ENTITLEMENT_KEYS,
+    FLAG_KEYS,
+    LIMIT_KEYS,
+    LIVE_STATUSES,
+    Plan,
+    PlanEntitlement,
+    PlanInterval,
+    Subscription,
+    SubscriptionEntitlement,
+    SubscriptionStatus,
+)
 from app.db.models.position_change import (
     ACTION_CHECK,
     CHANGE_PCT,
@@ -94,7 +106,11 @@ __all__ = [
     "CATEGORY_CHECK",
     "CHANGE_PCT",
     "CONFIDENCE_CHECK",
+    "ENTITLEMENT_KEYS",
     "FINISHED_CHECK",
+    "FLAG_KEYS",
+    "LIMIT_KEYS",
+    "LIVE_STATUSES",
     "MONEY",
     "NAMING_CONVENTION",
     "NEW_CHECK",
@@ -153,6 +169,9 @@ __all__ = [
     "ParseStatus",
     "PendingFiling",
     "PendingStatus",
+    "Plan",
+    "PlanEntitlement",
+    "PlanInterval",
     "PositionChange",
     "PositionSnapshot",
     "PriceConfidence",
@@ -170,6 +189,9 @@ __all__ = [
     "SecuritySplit",
     "SignupRequest",
     "SplitConfidence",
+    "Subscription",
+    "SubscriptionEntitlement",
+    "SubscriptionStatus",
     "TokenPurpose",
     "WatchlistItem",
 ]

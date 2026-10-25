@@ -23,7 +23,7 @@ from sqlalchemy import Select, delete, func, select, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.accounts.plans import entitlements_for
+from app.accounts.entitlements import MAX_WATCHLIST_ITEMS, limit
 from app.api.auth import UNAUTHORIZED, UNVERIFIED, NoStoreDep, VerifiedViewerDep, ViewerDep
 from app.api.deps import SessionDep
 from app.api.errors import INVALID, invalid, not_found
@@ -256,11 +256,12 @@ async def add_watchlist_item(
 ) -> Watchlist:
     """Adds `ref` at the end of its list. Already followed is no change. A ref
     that names nothing is a 404; a full watchlist (the plan's
-    `watchlist_max_items`, 500 on Free) a 422; an account whose email is not
-    verified a 403 `email_unverified`."""
+    `watchlist_items`: 10 on Free, and on a plan of no limit 500) a 422; an
+    account whose email is not verified a 403 `email_unverified`."""
     target = await resolve_ref(session, body.ref.root)
     user_id = viewer.user.id
-    most = entitlements_for(viewer.user).watchlist_max_items
+    allowed = limit(viewer, "watchlist_items")
+    most = MAX_WATCHLIST_ITEMS if allowed is None else min(allowed, MAX_WATCHLIST_ITEMS)
     count = await session.scalar(
         select(func.count()).select_from(WatchlistItem).where(WatchlistItem.user_id == user_id)
     )

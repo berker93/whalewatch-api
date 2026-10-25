@@ -52,6 +52,7 @@ from sqlalchemy.pool import NullPool
 from testcontainers.community.postgres import PostgresContainer
 
 from alembic import command
+from app.accounts import entitlements
 from app.accounts.sessions import SessionStore
 from app.api.deps import get_redis, get_session
 from app.core.config import Settings
@@ -280,7 +281,11 @@ async def client(
     every cached endpoint builds its answer, as it did before it was cached,
     and a test that publishes between two requests sees the second change. A
     test about the cache overrides ``get_redis`` with a fake of its own.
+
+    The plan catalog the lifespan keeps fresh is loaded once, from the rows
+    the migrations seeded, as the lifespan's first load would.
     """
+    entitlements.install(await entitlements.load_catalog(db_session))
     app.state.engine = migrated_engine
     app.state.session_factory = create_session_factory(migrated_engine)
     app.state.sessions = SessionStore(session_redis)  # type: ignore[arg-type]
@@ -296,6 +301,7 @@ async def client(
         # override left behind on a shared app is the kind of bug that shows up
         # three files away as a test passing for the wrong reason.
         app.dependency_overrides.clear()
+        entitlements.install(None)
 
 
 @pytest.fixture

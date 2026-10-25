@@ -3,7 +3,7 @@
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.integration.accounts import make_user, sign_in
+from tests.integration.accounts import make_user, sign_in, subscribe
 
 
 async def test_me_is_the_user_their_plan_and_what_it_allows(
@@ -28,7 +28,36 @@ async def test_me_is_the_user_their_plan_and_what_it_allows(
     assert user["created_at"] is not None
     assert user["last_seen_at"] is not None
     assert body["plan"] == {"id": "free", "name": "Free"}
-    assert body["entitlements"] == {"save": True, "watchlist_max_items": 500}
+    assert body["entitlements"] == {
+        "save": True,
+        "history_quarters": 4,
+        "insider_months": 6,
+        "watchlist_items": 10,
+        "screener_saved_filters": 3,
+        "api_calls_month": 0,
+        "export_enabled": False,
+        "alerts_instant": False,
+        "mcp_enabled": False,
+    }
+
+
+async def test_a_subscriber_sees_their_plan_and_its_terms(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    user_id = await make_user(db_session)
+    await subscribe(
+        db_session, user_id, "pro", grandfathered="api_hobbyist", overrides={"history_quarters": 40}
+    )
+    await sign_in(client)
+
+    body = (await client.get("/v1/me")).json()
+
+    # Billed for Pro; on the API Hobbyist terms promised; 40 quarters granted alone.
+    assert body["plan"] == {"id": "pro", "name": "Pro"}
+    assert body["entitlements"]["history_quarters"] == 40
+    assert body["entitlements"]["api_calls_month"] == 10_000
+    assert body["entitlements"]["mcp_enabled"] is True
+    assert body["entitlements"]["watchlist_items"] is None
 
 
 async def test_an_unverified_account_is_entitled_to_read_only(

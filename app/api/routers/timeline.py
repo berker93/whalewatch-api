@@ -76,7 +76,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.accounts.plans import MAX_WATCHLIST_ITEMS
+from app.accounts.entitlements import MAX_WATCHLIST_ITEMS
 from app.accounts.rules import DEFAULT_TIME_ZONE, time_zone_problem
 from app.api.auth import OptionalViewerDep
 from app.api.deps import SessionDep

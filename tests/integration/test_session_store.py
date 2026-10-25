@@ -14,6 +14,7 @@ from redis.asyncio import Redis
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
+from app.accounts.entitlements import Grant
 from app.accounts.sessions import (
     REMEMBERED,
     SESSION_KEY_PREFIX,
@@ -147,3 +148,29 @@ async def test_a_users_sessions_are_listed_soonest_to_end_first(redis: Redis) ->
         (digest(short.token), False),
         (digest(remembered.token), True),
     ]
+
+
+async def test_a_kept_grant_keeps_the_sessions_expiry_and_never_revives_one(redis: Redis) -> None:
+    store = SessionStore(redis)
+    started = await store.start(7, remember=False)
+    record = await store.find(started.token)
+    assert record is not None
+    key = SESSION_KEY_PREFIX + record.id
+    ttl = await redis.ttl(key)
+    grant = Grant(plan="pro", grandfathered=None, overrides={"watchlist_items": 50}, ends_at=None)
+
+    await store.keep_grant(record, grant)
+
+    found = await store.find(started.token)
+    assert found is not None and found.grant == grant and found.granted_at is not None
+    assert 0 < await redis.ttl(key) <= ttl
+
+    await store.forget_grants(7)
+    forgotten = await store.find(started.token)
+    assert forgotten is not None and (forgotten.grant, forgotten.granted_at) == (None, None)
+    assert 0 < await redis.ttl(key) <= ttl
+
+    # Ended meanwhile: the grant is not written back over the end.
+    await store.end(started.token)
+    await store.keep_grant(record, grant)
+    assert await redis.exists(key) == 0

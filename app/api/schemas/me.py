@@ -31,14 +31,19 @@ class MeUser(BaseModel):
 
 
 class MePlan(BaseModel):
-    """The plan the account is on."""
+    """The plan the account is on: what it is billed for."""
 
     id: str = Field(description="Stable, for a program to branch on.", examples=["free"])
     name: str = Field(description="For a person.", examples=["Free"])
 
 
 class MeEntitlements(BaseModel):
-    """What the account may do now: its plan's allowance, narrowed by its state."""
+    """What the account may do now: its plan's allowance, with any terms it was
+    promised and any granted to it alone, and `save` from its own state.
+
+    A limit is a whole number, or null for no limit; a flag is true or false.
+    The values are rows, not code: they change without a release, so read them
+    here rather than writing a plan's numbers into the page."""
 
     save: bool = Field(
         description=(
@@ -47,14 +52,33 @@ class MeEntitlements(BaseModel):
         ),
         examples=[True],
     )
-    watchlist_max_items: int = Field(
-        description="The most things the watchlist holds.", examples=[500]
+    history_quarters: int | None = Field(
+        description="How many of the latest quarters of holdings the account reads.",
+        examples=[4],
     )
+    insider_months: int | None = Field(
+        description="How many months of insider trades back the account reads.", examples=[6]
+    )
+    watchlist_items: int | None = Field(
+        description="The most things the watchlist holds. Null: no limit but the 500 any holds.",
+        examples=[10],
+    )
+    screener_saved_filters: int | None = Field(
+        description="How many screener filters the account may save.", examples=[3]
+    )
+    api_calls_month: int | None = Field(
+        description="API calls a month. 0: no API access.", examples=[0]
+    )
+    export_enabled: bool = Field(description="CSV export of tables.", examples=[False])
+    alerts_instant: bool = Field(
+        description="Same-day filing alerts, rather than the Monday digest.", examples=[False]
+    )
+    mcp_enabled: bool = Field(description="Access through the MCP server.", examples=[False])
 
 
 class Me(BaseModel):
     """The signed-in user, their plan and their entitlements."""
 
     user: MeUser = Field(description="Who is signed in.")
-    plan: MePlan = Field(description="Which plan the account is on: Free, for everyone today.")
+    plan: MePlan = Field(description="Which plan the account is on: Free without a subscription.")
     entitlements: MeEntitlements = Field(description="What the account may do now.")

@@ -11,16 +11,24 @@ it away.
 ``create_app`` applied to the process-wide settings.
 """
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 from starlette.middleware.cors import CORSMiddleware
 
+from app.accounts import entitlements
 from app.accounts.sessions import SessionStore, SessionStoreError
-from app.api.errors import RATE_LIMITED, http_error, sessions_unavailable, validation_error
+from app.api.errors import (
+    RATE_LIMITED,
+    entitlements_unavailable,
+    http_error,
+    sessions_unavailable,
+    validation_error,
+)
 from app.api.middleware import (
     REQUEST_ID_HEADER,
     BodySizeLimitMiddleware,
@@ -92,9 +100,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         prefix=ATTEMPTS_KEY_PREFIX,
     )
     app.state.sessions = SessionStore(app.state.redis)
+    # What every plan allows, loaded in the background and kept fresh, so no
+    # request reads it from Postgres and a Postgres down at boot does not stop
+    # the app starting.
+    catalog_refresh = asyncio.create_task(
+        entitlements.keep_fresh(app.state.session_factory, settings.entitlements_refresh_seconds)
+    )
     try:
         yield
     finally:
+        catalog_refresh.cancel()
+        with suppress(asyncio.CancelledError):
+            await catalog_refresh
         # In a finally, so an exception during serving still returns the
         # connections rather than leaving Postgres to reap them on its own.
         await app.state.engine.dispose()
@@ -180,6 +197,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.add_exception_handler(HTTPException, http_error)
     app.add_exception_handler(RequestValidationError, validation_error)
     app.add_exception_handler(SessionStoreError, sessions_unavailable)
+    app.add_exception_handler(entitlements.EntitlementsUnavailableError, entitlements_unavailable)
 
     # The probes are not rate limited; everything else documents its 429.
     app.include_router(health.router)

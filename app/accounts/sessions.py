@@ -26,6 +26,14 @@ of :data:`REMEMBERED` and a session of that length; without it, the cookie
 ends with the browser and the session after :data:`UNREMEMBERED` whatever the
 browser does. Neither slides: a session ends when it was set to.
 
+A session also keeps the user's entitlement grant
+(:class:`app.accounts.entitlements.Grant`: their plan, grandfathered plan and
+overrides), so that resolving what they may do reads nothing but the session.
+It is read from Postgres on the session's first request and again after
+:data:`app.accounts.entitlements.GRANT_EVERY`;
+:meth:`SessionStore.forget_grants` has every session of a user read it again
+on its next request, for code that has just changed their subscription.
+
 A Redis that cannot be reached raises :class:`SessionStoreError`: a
 request that needs to know who it is from is a 503, never a guess.
 
@@ -39,7 +47,7 @@ and its link stops working.
 import hashlib
 import json
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
@@ -48,6 +56,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts.entitlements import GRANT_EVERY, Grant, grant_for
 from app.db.models import AccountToken, AppUser, TokenPurpose
 
 REMEMBERED: Final = timedelta(days=30)
@@ -101,6 +110,38 @@ class SessionRecord:
     user_id: int
     remember: bool
     expires_at: datetime
+    grant: Grant | None = None
+    """The user's live subscription when it was last read: None for Free."""
+    granted_at: datetime | None = None
+    """When :attr:`grant` was read. None: it has not been, since the session
+    began or since :meth:`SessionStore.forget_grants`."""
+
+    def grant_is_stale(self, at: datetime) -> bool:
+        return self.granted_at is None or at - self.granted_at >= GRANT_EVERY
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "user_id": self.user_id,
+                "remember": self.remember,
+                "expires_at": self.expires_at.isoformat(),
+                "grant": self.grant.to_json() if self.grant else None,
+                "granted_at": self.granted_at.isoformat() if self.granted_at else None,
+            }
+        )
+
+    @classmethod
+    def from_json(cls, session_id: str, value: str) -> "SessionRecord":
+        stored = json.loads(value)
+        grant, granted_at = stored.get("grant"), stored.get("granted_at")
+        return cls(
+            id=session_id,
+            user_id=int(stored["user_id"]),
+            remember=bool(stored["remember"]),
+            expires_at=datetime.fromisoformat(stored["expires_at"]),
+            grant=Grant.from_json(grant) if grant else None,
+            granted_at=datetime.fromisoformat(granted_at) if granted_at else None,
+        )
 
 
 class SessionStore:
@@ -113,9 +154,9 @@ class SessionStore:
         token = new_secret()
         session_id = digest(token)
         expires_at = now() + (REMEMBERED if remember else UNREMEMBERED)
-        value = json.dumps(
-            {"user_id": user_id, "remember": remember, "expires_at": expires_at.isoformat()}
-        )
+        value = SessionRecord(
+            id=session_id, user_id=user_id, remember=remember, expires_at=expires_at
+        ).to_json()
         index = f"{USER_SESSIONS_PREFIX}{user_id}"
         try:
             async with self._redis.pipeline(transaction=True) as pipe:
@@ -138,17 +179,51 @@ class SessionStore:
             raise SessionStoreError from exc
         if value is None:
             return None
-        stored = json.loads(value)
-        expires_at = datetime.fromisoformat(stored["expires_at"])
+        record = SessionRecord.from_json(session_id, value)
         # Redis expires the key at the same second; this is for the second itself.
-        if expires_at <= now():
+        if record.expires_at <= now():
             return None
-        return SessionRecord(
-            id=session_id,
-            user_id=int(stored["user_id"]),
-            remember=bool(stored["remember"]),
-            expires_at=expires_at,
-        )
+        return record
+
+    async def keep_grant(self, record: SessionRecord, grant: Grant | None) -> SessionRecord:
+        """``record`` holding ``grant``, read now, in Redis and returned.
+
+        Only while the session lives (``XX``), and expiring when it did
+        (``KEEPTTL``): a session ended meanwhile stays ended.
+        """
+        kept = replace(record, grant=grant, granted_at=now())
+        try:
+            await self._redis.set(
+                SESSION_KEY_PREFIX + record.id, kept.to_json(), xx=True, keepttl=True
+            )
+        except (RedisError, OSError) as exc:
+            raise SessionStoreError from exc
+        return kept
+
+    async def forget_grants(self, user_id: int) -> None:
+        """Have every session of the user read their grant again on its next
+        request: for code that has just changed their subscription."""
+        index = f"{USER_SESSIONS_PREFIX}{user_id}"
+        try:
+            members: set[str] = await self._redis.smembers(index)  # type: ignore[misc]
+            ids = sorted(members)
+            values = await self._redis.mget([SESSION_KEY_PREFIX + member for member in ids])
+            async with self._redis.pipeline(transaction=True) as pipe:
+                for session_id, value in zip(ids, values, strict=True):
+                    if value is None:
+                        continue
+                    forgotten = replace(
+                        SessionRecord.from_json(session_id, value), grant=None, granted_at=None
+                    )
+                    pipe.set(
+                        SESSION_KEY_PREFIX + session_id,
+                        forgotten.to_json(),
+                        xx=True,
+                        keepttl=True,
+                    )
+                await pipe.execute()
+        except (RedisError, OSError) as exc:
+            raise SessionStoreError from exc
 
     async def end(self, token: str) -> None:
         """End the session ``token`` is the cookie of. Nothing when there is none."""
@@ -177,15 +252,7 @@ class SessionStore:
             # The index outlives a member that expired on its own.
             if value is None:
                 continue
-            stored = json.loads(value)
-            records.append(
-                SessionRecord(
-                    id=session_id,
-                    user_id=user_id,
-                    remember=bool(stored["remember"]),
-                    expires_at=datetime.fromisoformat(stored["expires_at"]),
-                )
-            )
+            records.append(SessionRecord.from_json(session_id, value))
         return sorted(records, key=lambda record: record.expires_at)
 
     async def end_all(self, user_id: int, *, keep: str | None) -> None:
@@ -208,16 +275,22 @@ class SessionStore:
 
 @dataclass(frozen=True, slots=True)
 class Viewer:
-    """Who a request is from: the signed-in user, and which of their sessions."""
+    """Who a request is from: the signed-in user, which of their sessions, and
+    their entitlement grant (:mod:`app.accounts.entitlements` reads it)."""
 
     user: AppUser
     session_id: str
     expires_at: datetime
+    grant: Grant | None = None
+    """The user's live subscription, as the session keeps it: None for Free."""
 
 
 async def find_session(session: AsyncSession, store: SessionStore, token: str) -> Viewer | None:
     """The live session ``token`` is the cookie of and its user, or None: the
     session is unknown, ended or expired, or its account was deleted.
+
+    The user's grant comes from the session, read from Postgres only when the
+    session's copy is missing or stale.
 
     :raises SessionStoreError: when Redis cannot be reached.
     """
@@ -231,7 +304,9 @@ async def find_session(session: AsyncSession, store: SessionStore, token: str) -
         # Deleted since it signed in: the session goes with it.
         await store.end(token)
         return None
-    return Viewer(user=user, session_id=record.id, expires_at=record.expires_at)
+    if record.grant_is_stale(now()):
+        record = await store.keep_grant(record, await grant_for(session, user.id))
+    return Viewer(user=user, session_id=record.id, expires_at=record.expires_at, grant=record.grant)
 
 
 async def touch(session: AsyncSession, user: AppUser) -> None:

@@ -321,7 +321,9 @@ The current quarter is the one that ended most recently in `tz`; `meta.period` a
 
 `Session` is `{ user: { email, email_verified }, expires_at }`. The FE's `Session` only needs `user`.
 
-`GET /v1/me` is the one call an app page needs before it renders: `user` (`email`, `name`, `time_zone`, `email_verified`, `email_verified_at`, `created_at`, `last_seen_at`), `plan` (`{ id: 'free', name: 'Free' }` for everyone today) and `entitlements` (`save`, `watchlist_max_items`). Gate the follow buttons on `entitlements.save`, not on `email_verified`, so a paid plan later changes nothing on the page.
+`GET /v1/me` is the one call an app page needs before it renders: `user` (`email`, `name`, `time_zone`, `email_verified`, `email_verified_at`, `created_at`, `last_seen_at`), `plan` (`{ id, name }`: `free`, `pro`, `api_hobbyist` or `api_pro`; `free` without a subscription) and `entitlements`. Gate the follow buttons on `entitlements.save`, not on `email_verified`.
+
+`entitlements` is every capability the account has, resolved: `save` (verified email), the limits `history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters` and `api_calls_month` (a whole number, or `null` for no limit), and the flags `export_enabled`, `alerts_instant` and `mcp_enabled`. They are rows in the database, changed without a release, so read them from here and never write a plan's numbers into the page. A change to a plan reaches a signed-in session within about a minute, and a change to one account's subscription within five. Today only `watchlist_items` is enforced by the API (a full watchlist is a 422); the rest are for the page to gate on until their endpoints do.
 
 `remember: false` gives a cookie without `Max-Age`, which ends with the browser, and a server-side session of 12 hours. `remember: true` gives 30 days.
 

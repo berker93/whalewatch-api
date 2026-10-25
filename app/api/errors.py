@@ -159,6 +159,20 @@ async def validation_error(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+async def entitlements_unavailable(request: Request, exc: Exception) -> JSONResponse:
+    """The 503 for a route that asked what someone may do before any plan
+    catalog had loaded (:mod:`app.accounts.entitlements`): Postgres has not
+    answered since the process started. Never a guess at the answer."""
+    logger.error("entitlements.unavailable")
+    return problem(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCode.UNAVAILABLE,
+        "This is unavailable for a moment. Try again shortly.",
+        scope=request.scope,
+        headers={"retry-after": "5"},
+    )
+
+
 async def sessions_unavailable(request: Request, exc: Exception) -> JSONResponse:
     """The 503 for a route that needed a session while Redis could not be reached.
 

@@ -121,6 +121,11 @@ class Settings(BaseSettings):
     auth_attempt_limit: int = Field(default=5, ge=1)
     auth_attempt_window_seconds: int = Field(default=15 * 60, ge=1)
 
+    # How often each API process reloads what every plan allows
+    # (app/accounts/entitlements.py): how long an UPDATE to plan_entitlement
+    # takes to reach every request.
+    entitlements_refresh_seconds: float = Field(default=60.0, gt=0)
+
     # The other credential calls (a password change, the emailed links' tokens)
     # per client IP per minute, on top of rate_limit_per_minute.
     auth_rate_limit_per_minute: int = Field(default=10, ge=1)

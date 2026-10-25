@@ -4,8 +4,9 @@
     argon2id hashing, in a thread.
 ``sessions``
     Sessions in Redis and the emailed links' tokens in Postgres, both hashed.
-``plans``
-    What each plan lets an account do: what ``GET /v1/me`` calls entitlements.
+``entitlements``
+    What each plan lets an account do, from rows, and the one place it is
+    asked: ``limit(viewer, key)`` and ``can(viewer, key)``.
 ``rules``
     What a name, an email, a password and a time zone must be: the frontend's
     rules or looser.

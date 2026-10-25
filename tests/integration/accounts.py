@@ -1,15 +1,16 @@
 """Helpers for the account, auth, watchlist and timeline tests: users, sign-ins, and mail."""
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from httpx import AsyncClient
-from sqlalchemy import func, insert
+from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.mail import Message
 from app.accounts.passwords import hash_password_sync
-from app.db.models import AppUser
+from app.db.models import AppUser, Plan, Subscription, SubscriptionEntitlement
 
 PASSWORD = "correct horse 42"
 
@@ -41,6 +42,40 @@ async def make_user(
     )
     assert user_id is not None
     return user_id
+
+
+async def subscribe(
+    session: AsyncSession,
+    user_id: int,
+    plan: str,
+    *,
+    status: str = "active",
+    grandfathered: str | None = None,
+    cancel_at: datetime | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> int:
+    """Put the user on ``plan``, by slug, as a payment would; with its own
+    ``overrides`` when given."""
+
+    def plan_id(slug: str) -> Any:
+        return select(Plan.id).where(Plan.slug == slug).scalar_subquery()
+
+    subscription_id = await session.scalar(
+        insert(Subscription)
+        .values(
+            user_id=user_id,
+            plan_id=plan_id(plan),
+            status=status,
+            grandfathered_plan_id=plan_id(grandfathered) if grandfathered else None,
+            cancel_at=cancel_at,
+        )
+        .returning(Subscription.id)
+    )
+    assert subscription_id is not None
+    for key, value in (overrides or {}).items():
+        session.add(SubscriptionEntitlement(subscription_id=subscription_id, key=key, value=value))
+    await session.flush()
+    return subscription_id
 
 
 async def sign_in(

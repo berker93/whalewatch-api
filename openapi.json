@@ -4143,7 +4143,7 @@
           "watchlist"
         ],
         "summary": "Follow a stock, an investor or an insider",
-        "description": "Adds `ref` at the end of its list. Already followed is no change. A ref\nthat names nothing is a 404; a full watchlist (the plan's\n`watchlist_max_items`, 500 on Free) a 422; an account whose email is not\nverified a 403 `email_unverified`.",
+        "description": "Adds `ref` at the end of its list. Already followed is no change. A ref\nthat names nothing is a 404; a full watchlist (the plan's\n`watchlist_items`: 10 on Free, and on a plan of no limit 500) a 422; an\naccount whose email is not verified a 403 `email_unverified`.",
         "operationId": "addWatchlistItem",
         "requestBody": {
           "content": {
@@ -5539,6 +5539,14 @@
             "title": "Sessions",
             "description": "Sessions still signed in."
           },
+          "subscriptions": {
+            "items": {
+              "$ref": "#/components/schemas/ExportSubscription"
+            },
+            "type": "array",
+            "title": "Subscriptions",
+            "description": "Every subscription the account has had, newest first."
+          },
           "not_included": {
             "items": {
               "type": "string"
@@ -5562,6 +5570,7 @@
           "consents",
           "links",
           "sessions",
+          "subscriptions",
           "not_included"
         ],
         "title": "Export",
@@ -5976,6 +5985,115 @@
         ],
         "title": "ExportStock",
         "description": "A followed stock."
+      },
+      "ExportSubscription": {
+        "properties": {
+          "plan": {
+            "type": "string",
+            "title": "Plan",
+            "description": "The plan's slug.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "As the payment provider names it.",
+            "examples": [
+              "active"
+            ]
+          },
+          "current_period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Period End",
+            "description": "When the period paid for ends.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "cancel_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel At",
+            "description": "When it ends, if it is set to.",
+            "examples": [
+              null
+            ]
+          },
+          "grandfathered_plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grandfathered Plan",
+            "description": "The plan whose terms the account keeps, if any.",
+            "examples": [
+              null
+            ]
+          },
+          "overrides": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Overrides",
+            "description": "Entitlements set for this subscription alone.",
+            "examples": [
+              {}
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it began.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan",
+          "status",
+          "current_period_end",
+          "cancel_at",
+          "grandfathered_plan",
+          "overrides",
+          "created_at"
+        ],
+        "title": "ExportSubscription",
+        "description": "One subscription, live or ended, newest first."
       },
       "ExportWatchlist": {
         "properties": {
@@ -9553,7 +9671,7 @@
           },
           "plan": {
             "$ref": "#/components/schemas/MePlan",
-            "description": "Which plan the account is on: Free, for everyone today."
+            "description": "Which plan the account is on: Free without a subscription."
           },
           "entitlements": {
             "$ref": "#/components/schemas/MeEntitlements",
@@ -9579,22 +9697,120 @@
               true
             ]
           },
-          "watchlist_max_items": {
-            "type": "integer",
-            "title": "Watchlist Max Items",
-            "description": "The most things the watchlist holds.",
+          "history_quarters": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "History Quarters",
+            "description": "How many of the latest quarters of holdings the account reads.",
             "examples": [
-              500
+              4
+            ]
+          },
+          "insider_months": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Insider Months",
+            "description": "How many months of insider trades back the account reads.",
+            "examples": [
+              6
+            ]
+          },
+          "watchlist_items": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watchlist Items",
+            "description": "The most things the watchlist holds. Null: no limit but the 500 any holds.",
+            "examples": [
+              10
+            ]
+          },
+          "screener_saved_filters": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screener Saved Filters",
+            "description": "How many screener filters the account may save.",
+            "examples": [
+              3
+            ]
+          },
+          "api_calls_month": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Calls Month",
+            "description": "API calls a month. 0: no API access.",
+            "examples": [
+              0
+            ]
+          },
+          "export_enabled": {
+            "type": "boolean",
+            "title": "Export Enabled",
+            "description": "CSV export of tables.",
+            "examples": [
+              false
+            ]
+          },
+          "alerts_instant": {
+            "type": "boolean",
+            "title": "Alerts Instant",
+            "description": "Same-day filing alerts, rather than the Monday digest.",
+            "examples": [
+              false
+            ]
+          },
+          "mcp_enabled": {
+            "type": "boolean",
+            "title": "Mcp Enabled",
+            "description": "Access through the MCP server.",
+            "examples": [
+              false
             ]
           }
         },
         "type": "object",
         "required": [
           "save",
-          "watchlist_max_items"
+          "history_quarters",
+          "insider_months",
+          "watchlist_items",
+          "screener_saved_filters",
+          "api_calls_month",
+          "export_enabled",
+          "alerts_instant",
+          "mcp_enabled"
         ],
         "title": "MeEntitlements",
-        "description": "What the account may do now: its plan's allowance, narrowed by its state."
+        "description": "What the account may do now: its plan's allowance, with any terms it was\npromised and any granted to it alone, and `save` from its own state.\n\nA limit is a whole number, or null for no limit; a flag is true or false.\nThe values are rows, not code: they change without a release, so read them\nhere rather than writing a plan's numbers into the page."
       },
       "MePlan": {
         "properties": {
@@ -9621,7 +9837,7 @@
           "name"
         ],
         "title": "MePlan",
-        "description": "The plan the account is on."
+        "description": "The plan the account is on: what it is billed for."
       },
       "MeUser": {
         "properties": {
