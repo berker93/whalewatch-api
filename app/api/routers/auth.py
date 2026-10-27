@@ -49,7 +49,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.accounts import privacy, rules
+from app.accounts import activity, privacy, rules
 from app.accounts.mail import (
     Message,
     deliver,
@@ -201,6 +201,7 @@ async def login(
     if needs_rehash(user.password_hash):
         user.password_hash = await hash_password(body.password)
     user.last_seen_at = now()
+    await activity.mark_active(session, user.id, user.last_seen_at)
     await session.commit()
     started = await store.start(user.id, remember=body.remember)
     set_session_cookie(response, settings, started)
@@ -324,12 +325,13 @@ async def register(
 
     if await session.scalar(_live_user(email).with_only_columns(AppUser.id)) is not None:
         raise _email_taken()
+    joined = now()
     user = AppUser(
         email=email,
         name=name,
         password_hash=await hash_password(body.password),
         time_zone=time_zone,
-        last_seen_at=now(),
+        last_seen_at=joined,
     )
     session.add(user)
     try:
@@ -341,6 +343,7 @@ async def register(
     privacy.record_signup(
         session, user.id, marketing_email=body.marketing_email, source=ConsentSource.REGISTER
     )
+    await activity.mark_active(session, user.id, joined)
     await privacy.forget_signup_request(session, email)
     token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
     await session.commit()

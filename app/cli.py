@@ -2,7 +2,7 @@
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
 fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user,
-delete-user, restore-user, purge-accounts, billing.
+delete-user, restore-user, purge-accounts, billing, create-admin, disable-admin, snapshot-metrics.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -49,6 +49,9 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli restore-user --email ada@example.com
     uv run python -m app.cli purge-accounts
     uv run python -m app.cli billing
+    uv run python -m app.cli create-admin --email ops@whalewatch.io --name "Grace Hopper"
+    uv run python -m app.cli disable-admin --email ops@whalewatch.io
+    uv run python -m app.cli snapshot-metrics
 
 Every run is recorded
 ---------------------
@@ -57,8 +60,9 @@ Every verb that touches the database runs its body inside
 it starts and its outcome as it ends, and binds the row's id as ``run_id`` on
 every log line in between. ``runs`` lists them. The exceptions are ``runs``
 itself, which reads the record, ``verify-investors``, which has no database
-to write it to, and ``create-user``, ``delete-user`` and ``restore-user``,
-whose rows would hold a person's email. A
+to write it to, and ``create-user``, ``delete-user``, ``restore-user``,
+``create-admin`` and ``disable-admin``, whose rows would hold a person's
+email. The two admin verbs are logged in ``admin_action`` instead. A
 test fails if a new verb is neither tracked nor one of those.
 A verb that publishes (``recompute``, ``detect-splits``, and ``ingest-filing``
 or ``backfill`` when they load something) then runs ``refresh-views`` as a
@@ -143,6 +147,7 @@ from app.accounts.paddle import PaddleClient, http_client
 from app.accounts.passwords import hash_password
 from app.accounts.rules import DEFAULT_TIME_ZONE
 from app.accounts.sessions import SessionStore, SessionStoreError
+from app.admin.auth import AdminError, admin_store, create_admin, disable_admin
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
@@ -275,7 +280,7 @@ from app.ingestion.parsers.thirteen_f_list import (
     parse_13f_list,
 )
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
-from app.jobs.accounts import purge_accounts, run_billing
+from app.jobs.accounts import purge_accounts, run_billing, snapshot_metrics
 from app.jobs.cache import invalidate_cache
 from app.jobs.derived import recompute_positions, refresh_matviews
 from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
@@ -2020,6 +2025,112 @@ async def _billing() -> None:
         + (f" ({cancelled.failed:,} failed)" if cancelled.failed else "")
         + f"  {_count(dunning.reminded, 'reminder')}  {_count(dunning.downgraded, 'downgrade')}"
     )
+
+
+# --- create-admin, disable-admin, snapshot-metrics -------------------------------
+
+
+@app.command("create-admin")
+def create_admin_command(
+    email: Annotated[str, typer.Option("--email", help="The admin's login.")],
+    name: Annotated[str, typer.Option("--name", help="Their name.")],
+    password_stdin: Annotated[
+        bool,
+        typer.Option(
+            "--password-stdin",
+            help="Read the password from stdin rather than prompting, for scripts.",
+        ),
+    ] = False,
+) -> None:
+    """Make an admin of the console: an account of its own, not a user's.
+
+    The password is prompted for, twice and hidden, or read from stdin, as
+    create-user's is, and follows the same rules. Logged in admin_action as
+    done from the CLI. Untracked: a run row would hold the admin's email.
+    """
+    if password_stdin:
+        password = sys.stdin.readline().rstrip("\n")
+    else:
+        password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
+    try:
+        asyncio.run(_create_admin(email, name, password))
+    except CommandError as exc:
+        typer.echo(f"create-admin: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
+async def _create_admin(email: str, name: str, password: str) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    async with session_scope(settings) as session:
+        try:
+            admin = await create_admin(session, email, name, password)
+        except AdminError as exc:
+            raise CommandError(str(exc)) from None
+        email, name = admin.email, admin.name
+    typer.echo(f"create-admin  {email}  ({name})")
+
+
+@app.command("disable-admin")
+def disable_admin_command(
+    email: Annotated[str, typer.Option("--email", help="The admin's login.")],
+) -> None:
+    """Take the console away from an admin, and sign them out everywhere.
+
+    The row stays, for the actions and overrides that name it; the address
+    cannot be made an admin again. Logged in admin_action as done from the
+    CLI. Untracked, as create-admin is.
+    """
+    try:
+        asyncio.run(_disable_admin(email))
+    except CommandError as exc:
+        typer.echo(f"disable-admin: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
+async def _disable_admin(email: str) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    redis = create_redis(settings)
+    try:
+        async with session_scope(settings) as session:
+            try:
+                admin = await disable_admin(session, admin_store(redis, settings), email)
+            except AdminError as exc:
+                raise CommandError(str(exc)) from None
+            except SessionStoreError:
+                raise CommandError(
+                    "Redis cannot be reached, so the admin's sessions cannot be ended: "
+                    "nothing was disabled"
+                ) from None
+            email = admin.email
+    finally:
+        await redis.aclose()
+    typer.echo(f"disable-admin  {email}")
+
+
+@app.command("snapshot-metrics")
+def snapshot_metrics_command() -> None:
+    """Write the admin console's daily numbers: signups, deletions, actives
+    and plan mix, for every UTC day since the last written, through yesterday.
+
+    Only the day just ended gets a plan mix: it is now's, and filed under an
+    older day would be wrong. Beat runs this just after midnight UTC.
+    """
+    asyncio.run(_snapshot_metrics())
+
+
+async def _snapshot_metrics() -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    try:
+        ran = await snapshot_metrics(settings)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
+    days = ran.value
+    span = f"  {days[0]} to {days[-1]}" if days else ""
+    typer.echo(f"snapshot-metrics  {_count(len(days), 'day')} written{span}")
 
 
 @app.command("seed-investors")

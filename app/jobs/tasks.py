@@ -18,6 +18,7 @@ task                       CLI verb                    job
 ``refresh_matviews``       ``refresh-views``           app/jobs/derived.py
 ``purge_accounts``         ``purge-accounts``          app/jobs/accounts.py
 ``run_billing``            ``billing``                 app/jobs/accounts.py
+``snapshot_metrics``       ``snapshot-metrics``        app/jobs/accounts.py
 =========================  ==========================  ==============================
 
 What a task adds is only what a message needs: arguments that are JSON
@@ -290,6 +291,13 @@ def run_billing(self: Task[Any, Any]) -> Summary:
     """``billing``: deleted accounts' subscriptions cancelled, and the
     reminders and downgrade emails of unpaid renewals."""
     return _run(self, accounts.run_billing)
+
+
+@shared_task(bind=True, queue=COMPUTE_QUEUE, max_retries=MAX_RETRIES)
+def snapshot_metrics(self: Task[Any, Any]) -> Summary:
+    """``snapshot-metrics``: the admin console's signups, actives and plan mix
+    for the days since the last written."""
+    return _run(self, accounts.snapshot_metrics)
 
 
 # --- chains ------------------------------------------------------------------

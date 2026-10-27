@@ -118,6 +118,7 @@ def test_every_entry_names_a_task_that_exists(name: str) -> None:
         ("refresh-matviews", "refresh_matviews", crontab(minute=0, hour=4)),
         ("purge-accounts", "purge_accounts", crontab(minute=0, hour=5)),
         ("billing", "run_billing", crontab(minute=15)),
+        ("snapshot-metrics", "snapshot_metrics", crontab(minute=5, hour=20)),
     ],
 )
 def test_each_entry_runs_when_the_ticket_says(name: str, task: str, when: crontab) -> None:
@@ -135,6 +136,7 @@ _SECONDS_BETWEEN_SENDS = {
     "refresh-matviews": 24 * 60 * 60,
     "purge-accounts": 24 * 60 * 60,
     "billing": 60 * 60,
+    "snapshot-metrics": 24 * 60 * 60,
 }
 
 

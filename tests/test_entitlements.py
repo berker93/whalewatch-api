@@ -210,6 +210,93 @@ def test_a_grant_survives_the_session_json() -> None:
     assert Grant.from_json(grant.to_json()) == grant
 
 
+# --- admin overrides ----------------------------------------------------------------
+
+LATER = datetime.now(UTC) + timedelta(days=30)
+EARLIER = datetime.now(UTC) - timedelta(days=1)
+
+
+def _overridden(override: str, plan: str | None = None, **kwargs: Any) -> Someone:
+    return Someone(
+        Grant(
+            plan=plan,
+            grandfathered=kwargs.get("grandfathered"),
+            overrides=kwargs.get("overrides", {}),
+            ends_at=kwargs.get("ends_at"),
+            override=override,
+            override_ends_at=kwargs.get("override_ends_at", LATER),
+        )
+    )
+
+
+def test_an_override_needs_no_subscription() -> None:
+    friend = _overridden("pro")
+
+    assert limit(friend, "history_quarters") == 20
+    assert can(friend, "export_enabled") is True
+    assert plan_of(friend).slug == "pro"
+
+
+def test_an_override_wins_whole_over_a_subscription_and_its_own_values() -> None:
+    """Above the subscription's per-key values too: an override gives a plan, whole."""
+    support = _overridden(
+        "pro_launch", plan="pro", overrides={"history_quarters": 8}, grandfathered="pro"
+    )
+
+    assert limit(support, "history_quarters") == 24
+    assert plan_of(support).slug == "pro_launch"
+
+
+def test_an_expired_override_gives_the_subscription_back() -> None:
+    lapsed = _overridden("pro_launch", plan="pro", override_ends_at=EARLIER)
+
+    assert limit(lapsed, "history_quarters") == 20
+    assert plan_of(lapsed).slug == "pro"
+
+
+def test_an_expired_override_without_a_subscription_is_free() -> None:
+    lapsed = _overridden("pro", override_ends_at=EARLIER)
+
+    assert entitlements.entitlements(lapsed) == entitlements.entitlements(None)
+    assert plan_of(lapsed).slug == "free"
+
+
+def test_an_override_outlives_a_cancelled_subscription() -> None:
+    kept = _overridden("pro", plan="pro_launch", ends_at=EARLIER)
+
+    assert limit(kept, "history_quarters") == 20
+    assert plan_of(kept).slug == "pro"
+
+
+def test_an_override_the_catalog_does_not_know_yet_falls_to_the_subscription() -> None:
+    """A snapshot made in another process, before this one's next reload."""
+    unknown = _overridden("pro_20261027", plan="pro")
+
+    assert limit(unknown, "history_quarters") == 20
+
+
+def test_a_grant_with_an_override_survives_the_session_json() -> None:
+    grant = Grant(
+        plan=None,
+        grandfathered=None,
+        overrides={},
+        ends_at=None,
+        started_at=datetime(2026, 1, 5, tzinfo=UTC),
+        override="pro",
+        override_ends_at=datetime(2027, 1, 1, tzinfo=UTC),
+    )
+
+    assert Grant.from_json(grant.to_json()) == grant
+
+
+def test_a_grant_kept_before_overrides_reads_as_none() -> None:
+    """A session's JSON from before 0041 has no override keys."""
+    stored = Grant(plan="pro", grandfathered=None, overrides={}, ends_at=None).to_json()
+    del stored["override"], stored["override_ends_at"]
+
+    assert Grant.from_json(stored).override is None
+
+
 async def test_a_reload_that_fails_keeps_the_catalog_it_had(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

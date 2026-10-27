@@ -24,11 +24,15 @@ ending one is deleting a key.
 ``saved_filter``
     One screener filter one user saved: a name, and ``GET /v1/flows``'s
     parameters.
+``user_activity_day``
+    One UTC day one user was active, signed in or with an API key, and how
+    many data exports they took that day: what the admin console counts
+    actives and exports from (:mod:`app.accounts.activity`).
 
 See :mod:`app.accounts` for the rules these are written by.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -37,9 +41,11 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Text,
     false,
     func,
@@ -252,4 +258,23 @@ class SavedFilter(Base):
         ),
         CheckConstraint("jsonb_typeof(query) = 'object'", name="query_is_an_object"),
         Index("ix_saved_filter_user_id", "user_id", "id"),
+    )
+
+
+class UserActivityDay(Base):
+    """One UTC day one user did something: what actives are counted from."""
+
+    __tablename__ = "user_activity_day"
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True
+    )
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    data_exports: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    """``GET /v1/me/export`` downloads that day."""
+
+    __table_args__ = (
+        CheckConstraint("data_exports >= 0", name="data_exports_is_not_negative"),
+        # The day's actives, counted across users.
+        Index("ix_user_activity_day_day", "day"),
     )

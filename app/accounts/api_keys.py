@@ -27,6 +27,7 @@ from typing import Final
 from sqlalchemy import ColumnElement, and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts import activity
 from app.accounts.entitlements import Grant, grant_for
 from app.accounts.sessions import digest, now
 from app.db.models import ApiKey, AppUser
@@ -64,7 +65,8 @@ class KeyHolder:
 async def find_key(session: AsyncSession, token: str) -> KeyHolder | None:
     """The live key ``token`` is and its account, or None: unknown, revoked,
     or its account deleted. Marks the key used, at most every
-    :data:`LAST_USED_EVERY`, and commits when it does."""
+    :data:`LAST_USED_EVERY` or on a new UTC day, and the account active that
+    day (:mod:`app.accounts.activity`), and commits when it does."""
     if not token.startswith(KEY_PREFIX):
         return None
     row = (
@@ -82,8 +84,9 @@ async def find_key(session: AsyncSession, token: str) -> KeyHolder | None:
         return None
     key_id, last_used_at, user = row
     used = now()
-    if last_used_at is None or used - last_used_at >= LAST_USED_EVERY:
+    if activity.due(last_used_at, used, LAST_USED_EVERY):
         await session.execute(update(ApiKey).where(ApiKey.id == key_id).values(last_used_at=used))
+        await activity.mark_active(session, user.id, used)
         await session.commit()
     return KeyHolder(user=user, key_id=key_id, grant=await grant_for(session, user.id))
 

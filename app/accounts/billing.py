@@ -290,6 +290,8 @@ async def _apply_subscription(
     scheduled = data.get("scheduled_change") or {}
     new = row.id is None
     previous = row.status
+    if row.grandfathered_plan_id is not None and row.plan_id != plan.id:
+        await _end_snapshot(session, row, plan)
     row.plan_id = plan.id
     row.status = status
     row.paddle_customer_id = data.get("customer_id") or row.paddle_customer_id
@@ -319,6 +321,26 @@ async def _apply_subscription(
         _end_dunning(row)
     await session.flush()
     return handled
+
+
+async def _end_snapshot(session: AsyncSession, row: Subscription, plan: Plan) -> None:
+    """Stop grandfathering ``row`` to a snapshot of a plan it is no longer on.
+
+    A snapshot pins the terms of the plan the user had (:mod:`app.admin.plans`).
+    Kept after an upgrade, it would win whole over the plan just bought. A
+    grandfathered plan that is not a snapshot, a launch promise made by hand,
+    is the promise whatever the plan, and stays.
+    """
+    snapshot_of = await session.scalar(
+        select(Plan.snapshot_of_plan_id).where(Plan.id == row.grandfathered_plan_id)
+    )
+    if snapshot_of is not None and snapshot_of != plan.id:
+        logger.info(
+            "billing.grandfathering_ended",
+            subscription=row.paddle_subscription_id,
+            plan=plan.slug,
+        )
+        row.grandfathered_plan_id = None
 
 
 # --- failed payments -------------------------------------------------------------------

@@ -146,4 +146,13 @@ BEAT_SCHEDULE: Final[dict[str, dict[str, Any]]] = {
         "schedule": crontab(minute=15),
         "options": {"expires": 60 * 60.0},
     },
+    # The admin console's numbers for the UTC day just ended. 20:05 here is
+    # 00:05 or 01:05 UTC, so the day is over, and expiring after an hour keeps
+    # its plan mix close to the day's end. A day missed is caught up by the
+    # next run, without a plan mix.
+    "snapshot-metrics": {
+        "task": "app.jobs.tasks.snapshot_metrics",
+        "schedule": crontab(minute=5, hour=20),
+        "options": {"expires": 60 * 60.0},
+    },
 }

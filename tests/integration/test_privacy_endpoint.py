@@ -400,6 +400,8 @@ async def test_the_purge_erases_the_account_and_the_audit_row_survives(
         "subscription": 1,
         "api_key": 0,
         "usage_counter": 0,
+        "plan_override": 0,
+        "user_activity_day": 0,
     }
 
 

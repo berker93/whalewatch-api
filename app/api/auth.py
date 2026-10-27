@@ -289,7 +289,7 @@ async def auth_rate_limited(request: Request) -> None:
         )
 
 
-Attempt = Literal["login", "register", "password_reset", "verify_email"]
+Attempt = Literal["login", "register", "password_reset", "verify_email", "admin_login"]
 
 
 def email_key(email: str) -> str:

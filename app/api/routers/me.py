@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from app.accounts import privacy
+from app.accounts import activity, privacy
 from app.accounts.entitlements import entitlements, plan_of, subscription_overrides
 from app.accounts.sessions import now
 from app.api.auth import UNAUTHORIZED, NoStoreDep, SessionStoreDep, ViewerDep
@@ -36,11 +36,13 @@ from app.api.schemas.me import Me, MeEntitlements, MePlan, MeUser
 from app.api.schemas.privacy import (
     Export,
     ExportAccount,
+    ExportActivityDay,
     ExportApiKey,
     ExportConsent,
     ExportInsider,
     ExportInvestor,
     ExportLink,
+    ExportPlanOverride,
     ExportSavedFilter,
     ExportSession,
     ExportStock,
@@ -61,11 +63,13 @@ from app.db.models import (
     Filer,
     Insider,
     Plan,
+    PlanOverride,
     Purpose,
     SavedFilter,
     Security,
     Subscription,
     UsageCounter,
+    UserActivityDay,
     WatchlistItem,
 )
 
@@ -182,6 +186,8 @@ NOT_INCLUDED: Final = [
     "server logs: request lines (time, path, IP address) and email delivery failures, kept "
     "for operations; ask for them by email",
     "sign-in attempt counters: a hash of the email and the IP address, gone after 15 minutes",
+    "the admin log's entries about this account (changes staff made to its plan, and why): "
+    "ask for them by email",
 ]
 
 
@@ -260,16 +266,19 @@ async def export_me(
 ) -> Export:
     """The account, the watchlist, the saved filters, the whole consent
     ledger, the links and sessions still live, the subscriptions, the API keys
-    (never the keys themselves) and each month's quota usage, and a list of what is held but
-    left out (hashes, logs) and why. `Content-Disposition: attachment`, so a browser saves it.
-    The format is versioned by `format`."""
+    (never the keys themselves), each month's quota usage, the plans staff gave the account
+    and why, the days it was used, and a list of what is held but left out (hashes, logs)
+    and why. Each export is counted on its day. `Content-Disposition: attachment`, so a
+    browser saves it. The format is versioned by `format`."""
     user = viewer.user
+    exported_at = now()
+    await activity.count_export(session, user.id, exported_at)
+    await session.commit()
     links = await session.scalars(
         select(AccountToken)
         .where(AccountToken.user_id == user.id, AccountToken.expires_at > now())
         .order_by(AccountToken.id)
     )
-    exported_at = now()
     response.headers["content-disposition"] = (
         f'attachment; filename="whalewatch-export-{exported_at:%Y-%m-%d}.json"'
     )
@@ -306,6 +315,29 @@ async def export_me(
                 select(UsageCounter)
                 .where(UsageCounter.user_id == user.id)
                 .order_by(UsageCounter.period.desc(), UsageCounter.key)
+            )
+        ],
+        plan_overrides=[
+            ExportPlanOverride(
+                plan=slug,
+                reason=row.reason,
+                starts_at=row.starts_at,
+                expires_at=row.expires_at,
+                ended_at=row.ended_at,
+            )
+            for row, slug in await session.execute(
+                select(PlanOverride, Plan.slug)
+                .join(Plan, Plan.id == PlanOverride.plan_id)
+                .where(PlanOverride.user_id == user.id)
+                .order_by(PlanOverride.id.desc())
+            )
+        ],
+        activity=[
+            ExportActivityDay.model_validate(row, from_attributes=True)
+            for row in await session.scalars(
+                select(UserActivityDay)
+                .where(UserActivityDay.user_id == user.id)
+                .order_by(UserActivityDay.day.desc())
             )
         ],
         not_included=NOT_INCLUDED,

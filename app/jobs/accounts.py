@@ -5,7 +5,9 @@ of renewals whose payment failed.
 ``purge-accounts`` is :func:`purge_accounts` with a summary, and the
 ``purge_accounts`` task is it in ``asyncio.run``, sent by beat once a day
 (app/jobs/schedule.py). ``billing`` and the ``run_billing`` task are
-:func:`run_billing`, sent by beat every hour.
+:func:`run_billing`, sent by beat every hour. ``snapshot-metrics`` and the
+``snapshot_metrics`` task are :func:`snapshot_metrics`, the admin console's
+daily numbers, sent by beat just after midnight UTC.
 
 The run row records how many accounts were erased and how many rows of each
 table went with them, never who: a run log that named people would be one
@@ -17,13 +19,14 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from app.accounts.billing import Cancelled, DunningRun, cancel_for_deleted
 from app.accounts.billing import run_dunning as due_dunning
 from app.accounts.mail import deliver, mailer_for
 from app.accounts.paddle import PaddleClient, http_client
 from app.accounts.privacy import Purged, purge_due
+from app.admin import metrics
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.session import session_scope
@@ -86,3 +89,15 @@ async def run_billing(run: TrackedRun, settings: Settings) -> BillingRun:
     )
     logger.info("billing.upkeep", **run.metrics)
     return BillingRun(cancelled=cancelled, dunning=dunning)
+
+
+@tracked_task("snapshot-metrics")
+async def snapshot_metrics(run: TrackedRun, settings: Settings) -> list[date]:
+    """Write the admin console's numbers for every UTC day since the last
+    written, through yesterday: the days written. Counts only, never who."""
+    async with session_scope(settings) as session:
+        written = await metrics.snapshot(session, metrics.utc_today())
+    run.items_seen = run.items_written = len(written)
+    run.metrics["days"] = [day.isoformat() for day in written]
+    logger.info("admin.metrics_snapshot", days=len(written))
+    return written

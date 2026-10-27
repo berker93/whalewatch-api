@@ -9,21 +9,26 @@ Who
 ---
 ``viewer`` is the signed-in :class:`app.accounts.sessions.Viewer`, or None for
 someone signed out. Signed out is Free: there is one way through, not one per
-kind of visitor. So is a signed-in account with no live subscription, one
-whose subscription's ``cancel_at`` has passed, and one whose unpaid renewal's
-grace has (``grace_ends_at``, :mod:`app.accounts.billing`).
+kind of visitor. So is a signed-in account with no live subscription and no
+live override, one whose subscription's ``cancel_at`` has passed, and one
+whose unpaid renewal's grace has (``grace_ends_at``, :mod:`app.accounts.billing`).
 
 Resolving a key
 ---------------
-For a user with a live subscription, the first of these that has the key:
+For a user with a live subscription or a live override, the first of these
+that has the key:
 
-1. the subscription's own value (``subscription_entitlement``);
-2. its grandfathered plan's, the terms promised to the user;
-3. its plan's.
+1. the override's plan: one an admin gave the user, until it expires
+   (``plan_override``, :mod:`app.admin.plans`);
+2. the subscription's own value (``subscription_entitlement``);
+3. its grandfathered plan's, the terms promised to the user;
+4. its plan's.
 
-Every plan has every key, so a grandfathered plan's terms win whole; the
-plan's are there for a grandfathered plan that does not have a key, which the
-catalog does not allow today.
+Every plan has every key, so an override's plan wins whole, and so does a
+grandfathered plan's terms over the plan's; the later ones are there for a
+plan that does not have a key, which the catalog does not allow today. An
+override needs no subscription, and a subscription keeps running under one:
+when the override ends, the subscription's terms are back.
 
 No database on the way
 ----------------------
@@ -51,7 +56,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Literal, Protocol, get_args
 
-from sqlalchemy import ScalarSelect, func, or_, select, text
+from sqlalchemy import ColumnElement, ScalarSelect, and_, func, or_, select, text, true
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -63,8 +68,10 @@ from app.db.models import (
     FLAG_KEYS,
     LIMIT_KEYS,
     LIVE_STATUSES,
+    AppUser,
     Plan,
     PlanEntitlement,
+    PlanOverride,
     Subscription,
     SubscriptionEntitlement,
 )
@@ -247,21 +254,38 @@ async def keep_fresh(factory: async_sessionmaker[AsyncSession], every: float) ->
 
 @dataclass(frozen=True, slots=True)
 class Grant:
-    """What one user's live subscription gives them, by plan slug: what a
-    session keeps, so a request resolves a key without Postgres."""
+    """What one user has above Free, by plan slug: their live subscription,
+    their live override, or both. What a session keeps, so a request resolves
+    a key without Postgres."""
 
-    plan: str
+    plan: str | None
+    """The subscription's plan. None: no live subscription, only an override."""
     grandfathered: str | None
     overrides: Mapping[str, Value]
+    """The subscription's own values, by key."""
     ends_at: datetime | None
-    """The sooner of ``cancel_at`` and ``grace_ends_at``: from then on, Free."""
+    """The sooner of ``cancel_at`` and ``grace_ends_at``: from then on, the
+    subscription grants nothing."""
     started_at: datetime | None = None
-    """When the subscription began: its anniversary is when its quota months
-    start (:mod:`app.accounts.usage`). None only in a grant a session kept
-    from before it was read, which the session reads again."""
+    """When the subscription began, or for a user with none the account: its
+    anniversary is when its quota months start (:mod:`app.accounts.usage`).
+    None only in a grant a session kept from before it was read, which the
+    session reads again."""
+    override: str | None = None
+    """The plan an admin gave the user, whole, above the subscription's."""
+    override_ends_at: datetime | None = None
+    """When the override expires: from then on, the subscription's terms, or Free."""
+
+    def subscribed(self, at: datetime) -> bool:
+        return self.plan is not None and (self.ends_at is None or at < self.ends_at)
+
+    def overridden(self, at: datetime) -> bool:
+        return self.override is not None and (
+            self.override_ends_at is None or at < self.override_ends_at
+        )
 
     def live(self, at: datetime) -> bool:
-        return self.ends_at is None or at < self.ends_at
+        return self.subscribed(at) or self.overridden(at)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -270,17 +294,24 @@ class Grant:
             "overrides": dict(self.overrides),
             "ends_at": self.ends_at.isoformat() if self.ends_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            "override": self.override,
+            "override_ends_at": self.override_ends_at.isoformat()
+            if self.override_ends_at
+            else None,
         }
 
     @classmethod
     def from_json(cls, stored: dict[str, Any]) -> "Grant":
         ends_at, started_at = stored["ends_at"], stored.get("started_at")
+        override_ends_at = stored.get("override_ends_at")
         return cls(
             plan=stored["plan"],
             grandfathered=stored["grandfathered"],
             overrides=stored["overrides"],
             ends_at=datetime.fromisoformat(ends_at) if ends_at else None,
             started_at=datetime.fromisoformat(started_at) if started_at else None,
+            override=stored.get("override"),
+            override_ends_at=datetime.fromisoformat(override_ends_at) if override_ends_at else None,
         )
 
 
@@ -300,39 +331,83 @@ def subscription_overrides() -> ScalarSelect[Any]:
     )
 
 
+def subscription_is_live() -> ColumnElement[bool]:
+    """A ``subscription`` row that grants its plan now: a live status, and
+    neither its ``cancel_at`` nor its grace passed."""
+    return and_(
+        Subscription.status.in_(LIVE_STATUSES),
+        or_(Subscription.cancel_at.is_(None), Subscription.cancel_at > func.now()),
+        or_(Subscription.grace_ends_at.is_(None), Subscription.grace_ends_at > func.now()),
+    )
+
+
+def override_is_live() -> ColumnElement[bool]:
+    """A ``plan_override`` row that grants its plan now: begun, not expired,
+    not ended."""
+    return and_(
+        PlanOverride.ended_at.is_(None),
+        PlanOverride.starts_at <= func.now(),
+        PlanOverride.expires_at > func.now(),
+    )
+
+
 async def grant_for(session: AsyncSession, user_id: int) -> Grant | None:
-    """The user's live subscription as a :class:`Grant`, or None: Free. One query."""
-    plan, grandfathered = aliased(Plan), aliased(Plan)
+    """The user's live subscription and live override as a :class:`Grant`, or
+    None: Free. One query."""
+    sub = (
+        select(
+            Subscription.plan_id,
+            Subscription.grandfathered_plan_id,
+            # LEAST ignores nulls: null only when neither is set.
+            func.least(Subscription.cancel_at, Subscription.grace_ends_at).label("ends_at"),
+            Subscription.created_at,
+            subscription_overrides().label("overrides"),
+        )
+        .where(Subscription.user_id == AppUser.id, subscription_is_live())
+        .lateral("sub")
+    )
+    override = (
+        select(PlanOverride.plan_id, PlanOverride.expires_at)
+        .where(PlanOverride.user_id == AppUser.id, override_is_live())
+        # One is live at a time; the newest, should two ever overlap.
+        .order_by(PlanOverride.id.desc())
+        .limit(1)
+        .lateral("override")
+    )
+    plan, grandfathered, overriding = aliased(Plan), aliased(Plan), aliased(Plan)
     row = (
         await session.execute(
             select(
                 plan.slug,
                 grandfathered.slug,
-                # LEAST ignores nulls: null only when neither is set.
-                func.least(Subscription.cancel_at, Subscription.grace_ends_at),
-                Subscription.created_at,
-                subscription_overrides(),
+                sub.c.ends_at,
+                func.coalesce(sub.c.created_at, AppUser.created_at),
+                sub.c.overrides,
+                overriding.slug,
+                override.c.expires_at,
             )
-            .select_from(Subscription)
-            .join(plan, plan.id == Subscription.plan_id)
-            .outerjoin(grandfathered, grandfathered.id == Subscription.grandfathered_plan_id)
-            .where(
-                Subscription.user_id == user_id,
-                Subscription.status.in_(LIVE_STATUSES),
-                or_(Subscription.cancel_at.is_(None), Subscription.cancel_at > func.now()),
-                or_(Subscription.grace_ends_at.is_(None), Subscription.grace_ends_at > func.now()),
-            )
+            .select_from(AppUser)
+            .outerjoin(sub, true())
+            .outerjoin(plan, plan.id == sub.c.plan_id)
+            .outerjoin(grandfathered, grandfathered.id == sub.c.grandfathered_plan_id)
+            .outerjoin(override, true())
+            .outerjoin(overriding, overriding.id == override.c.plan_id)
+            .where(AppUser.id == user_id)
         )
     ).one_or_none()
     if row is None:
         return None
-    plan_slug, grandfathered_slug, ends_at, created_at, values = row
+    plan_slug, grandfathered_slug, ends_at, started_at, values, override_slug, expires_at = row
+    if plan_slug is None and override_slug is None:
+        return None
     return Grant(
         plan=plan_slug,
         grandfathered=grandfathered_slug,
-        overrides=values,
+        overrides=values or {},
         ends_at=ends_at,
-        started_at=created_at,
+        started_at=started_at,
+        override=override_slug,
+        override_ends_at=expires_at,
     )
 
 
@@ -347,27 +422,40 @@ class Entitled(Protocol):
 
 
 def live_grant(who: Entitled | None) -> Grant | None:
-    """``who``'s grant while it is live; None for Free."""
+    """``who``'s grant while some part of it is live; None for Free."""
     grant = who.grant if who is not None else None
     if grant is None or not grant.live(datetime.now(UTC)):
         return None
     return grant
 
 
+def _terms(catalog: Catalog, slug: str) -> PlanTerms | None:
+    terms = catalog.plans.get(slug)
+    if terms is None:
+        # A plan made since the catalog loaded: passed over until the next load.
+        logger.warning("entitlements.unknown_plan", plan=slug)
+    return terms
+
+
 def _resolve(catalog: Catalog, grant: Grant | None, key: str) -> Value:
     if grant is None:
+        return catalog.free.values[key]
+    at = datetime.now(UTC)
+    subscribed = grant.subscribed(at)
+    if grant.overridden(at):
+        assert grant.override is not None
+        terms = _terms(catalog, grant.override)
+        if terms is not None and key in terms.values:
+            return terms.values[key]
+    if not subscribed:
         return catalog.free.values[key]
     if key in grant.overrides:
         return grant.overrides[key]
     for slug in (grant.grandfathered, grant.plan):
         if slug is None:
             continue
-        terms = catalog.plans.get(slug)
-        if terms is None:
-            # A plan made since the catalog loaded: Free until the next load.
-            logger.warning("entitlements.unknown_plan", plan=slug)
-            continue
-        if key in terms.values:
+        terms = _terms(catalog, slug)
+        if terms is not None and key in terms.values:
             return terms.values[key]
     return catalog.free.values[key]
 
@@ -419,9 +507,13 @@ def lifting_plan(key: LimitKey, needed: int) -> PlanTerms | None:
 
 
 def plan_of(who: Entitled | None) -> PlanTerms:
-    """The plan ``who`` is on: what they are billed for, not the terms they
-    keep. Free for anyone without a live subscription."""
+    """The plan ``who`` is on: an override's while it lasts, else what they
+    are billed for, not the terms they keep. Free for anyone with neither."""
     catalog, grant = current(), live_grant(who)
     if grant is None:
         return catalog.free
-    return catalog.plans.get(grant.plan, catalog.free)
+    at = datetime.now(UTC)
+    slug = grant.override if grant.overridden(at) else grant.plan if grant.subscribed(at) else None
+    if slug is None:
+        return catalog.free
+    return catalog.plans.get(slug, catalog.free)

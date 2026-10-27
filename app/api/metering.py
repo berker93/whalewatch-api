@@ -39,7 +39,7 @@ that does not run the lifespan, counts nothing.
 """
 
 from contextlib import suppress
-from typing import Final
+from typing import Final, Protocol
 
 from fastapi import BackgroundTasks, Depends, Request, status
 from redis.exceptions import RedisError
@@ -50,8 +50,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.accounts import entitlements
 from app.accounts.api_keys import KeyHolder
+from app.accounts.entitlements import Grant
 from app.accounts.mail import deliver, mailer_for, quota_warning
-from app.accounts.sessions import Viewer, now
+from app.accounts.sessions import now
 from app.accounts.usage import (
     QUOTA_NAMES,
     MeteredKey,
@@ -70,6 +71,7 @@ from app.api.schemas.error import ErrorCode
 from app.api.schemas.usage import QuotaDetail, QuotaProblem, QuotaUsage, Usage
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.db.models import AppUser
 
 logger = get_logger(__name__)
 
@@ -225,9 +227,18 @@ async def _warn(
     )
 
 
-async def usage_of(
-    meter: UsageMeter | None, session: AsyncSession, who: Viewer | KeyHolder
-) -> Usage:
+class Holder(Protocol):
+    """An account and its grant: a viewer, an API key's caller, or an account
+    an admin is looking at (:class:`app.admin.users.Subject`)."""
+
+    @property
+    def user(self) -> AppUser: ...
+
+    @property
+    def grant(self) -> Grant | None: ...
+
+
+async def usage_of(meter: UsageMeter | None, session: AsyncSession, who: Holder) -> Usage:
     """What ``who``'s account has spent of each quota this month: what the
     account page shows before the 429 does."""
     period = quota_period(anchor_of(who.user, entitlements.live_grant(who)), now())

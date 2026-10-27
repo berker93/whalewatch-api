@@ -22,15 +22,16 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 from pydantic import SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts import privacy
 from app.accounts.billing import cancel_for_deleted, run_dunning
 from app.accounts.paddle import PaddleClient, http_client, sign
+from app.admin import plans as admin_plans
 from app.api.routers.billing import WEBHOOK_PATH, get_optional_paddle, get_paddle
 from app.core.config import Settings
-from app.db.models import PaddleEvent, Subscription
+from app.db.models import AdminUser, PaddleEvent, Subscription
 from tests.integration.accounts import (
     FRONTEND,
     PASSWORD,
@@ -409,6 +410,41 @@ async def test_paddle_down_is_a_503_not_a_500(
     response = await client.post("/v1/billing/checkout", json={"plan": "pro"}, headers=FRONTEND)
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "billing_unavailable"
+
+
+# --- grandfathering ---------------------------------------------------------------------
+
+
+async def test_a_plan_change_ends_grandfathering_to_a_snapshot_of_the_old_plan(
+    client: AsyncClient, db_session: AsyncSession, ada: int
+) -> None:
+    """A snapshot of Pro, kept after an upgrade, would win whole over API Pro:
+    the user would pay for API Pro and get Pro. A renewal on Pro keeps it."""
+    t = now() - timedelta(minutes=10)
+    await accepted(client, subscription_event("subscription.created", t, user_id=ada))
+    admin_id = await db_session.scalar(
+        insert(AdminUser)
+        .values(email="ops@whalewatch.io", name="Grace Hopper", password_hash="x")
+        .returning(AdminUser.id)
+    )
+    assert admin_id is not None
+    _, snapshot = await admin_plans.grandfather(db_session, user_id=ada, admin_id=admin_id)
+
+    await accepted(client, subscription_event("subscription.updated", t + timedelta(minutes=1)))
+    row = await db_session.scalar(select(Subscription).where(Subscription.user_id == ada))
+    assert row is not None
+    await db_session.refresh(row)
+    assert row.grandfathered_plan_id == snapshot.plan.id
+
+    await accepted(
+        client,
+        subscription_event(
+            "subscription.updated", t + timedelta(minutes=2), price=PRICES["api_pro"]
+        ),
+    )
+    await db_session.refresh(row)
+    assert row.grandfathered_plan_id is None
+    assert await plan_of(client) == "api_pro"
 
 
 # --- the lifecycle ----------------------------------------------------------------------

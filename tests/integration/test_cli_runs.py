@@ -84,6 +84,8 @@ TRACKED: Final = {
     "purge-accounts": ("purge-accounts", [], "success"),
     # Nobody's renewal has failed, and billing is not configured.
     "billing": ("billing", [], "success"),
+    # No account, so the days since are counted from yesterday: one written.
+    "snapshot-metrics": ("snapshot-metrics", [], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.
@@ -93,6 +95,8 @@ UNTRACKED: Final = {
     "create-user": "account administration: its row would put a person's email in the run log",
     "delete-user": "account administration, as create-user",
     "restore-user": "account administration, as create-user",
+    "create-admin": "admin administration: logged in admin_action, which names no email",
+    "disable-admin": "admin administration, as create-admin",
 }
 
 
@@ -127,7 +131,7 @@ def _truncate(engine: AsyncEngine) -> None:
         engine,
         text(
             "TRUNCATE ingestion_run, matview_refresh, pending_filing, position_snapshot, "
-            "holding, filing, security, filer_cik, filer, sec_13f_security "
+            "holding, filing, security, filer_cik, filer, sec_13f_security, metric_day "
             "RESTART IDENTITY CASCADE"
         ),
         *(text(f"REFRESH MATERIALIZED VIEW {view.name}") for view in MATERIALISED_VIEWS),

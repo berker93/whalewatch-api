@@ -17,6 +17,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin.auth import admin_store
 from app.api.deps import get_redis
 from app.core.config import Settings
 from app.db.models import Filer, FilerCik, Filing, Holding, Security, SecurityQuote
@@ -25,6 +26,7 @@ from app.derived.scope import EVERYTHING
 from app.derived.views import refresh_views
 from tests.fake_redis import FakeRedis
 from tests.integration.accounts import make_user, sign_in
+from tests.integration.test_admin import admin_in, make_admin
 
 Q1: Final = date(2024, 3, 31)
 Q2: Final = date(2024, 6, 30)
@@ -91,16 +93,17 @@ async def _publish_two_quarters(session: AsyncSession) -> None:
     await refresh_views(session)
 
 
-def _gets(app: FastAPI) -> list[tuple[str, dict[str, Any]]]:
+def _gets(app: FastAPI, **given: Any) -> list[tuple[str, dict[str, Any]]]:
     """Every GET in the document, its path filled in and its required query
     parameters given."""
+    parameters = {**PARAMETERS, **given}
     calls = []
     for template, item in app.openapi()["paths"].items():
         if "get" not in item:
             continue
         required = [p for p in item["get"].get("parameters", []) if p.get("required")]
-        path = template.format(**{p["name"]: PARAMETERS[p["name"]] for p in required})
-        query = {p["name"]: PARAMETERS[p["name"]] for p in required if p["in"] == "query"}
+        path = template.format(**{p["name"]: parameters[p["name"]] for p in required})
+        query = {p["name"]: parameters[p["name"]] for p in required if p["in"] == "query"}
         calls.append((path, query))
     return calls
 
@@ -110,10 +113,14 @@ async def test_every_endpoint_answers_200(
 ) -> None:
     app.dependency_overrides[get_redis] = lambda: _ReadyRedis()
     await _publish_two_quarters(db_session)
-    # Signed in, so /v1/account and /v1/watchlist answer too.
-    await make_user(db_session)
+    # Signed in, so /v1/account and /v1/watchlist answer too; and as an admin,
+    # so the console's pages do, the account's included.
+    user_id = await make_user(db_session)
     await sign_in(client)
-    calls = _gets(app)
+    app.state.admin_sessions = admin_store(FakeRedis(), settings)  # type: ignore[arg-type]
+    await make_admin(db_session)
+    assert (await admin_in(client)).status_code == 200
+    calls = _gets(app, user_id=user_id)
 
     responses = {path: await client.get(path, params=query) for path, query in calls}
 

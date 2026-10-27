@@ -114,6 +114,13 @@ class Settings(BaseSettings):
     session_cookie_name: str = "ww_session"
     session_cookie_domain: str | None = None
 
+    # The admin console's own session (app/admin/auth.py): another cookie,
+    # never shared across subdomains (no domain), sent only to /admin, and
+    # SameSite=Strict. It ends after this many hours however busy the admin
+    # is, and with the browser before that.
+    admin_session_cookie_name: str = "ww_admin"
+    admin_session_hours: float = Field(default=8.0, gt=0, le=24)
+
     # Logins, registrations and password reset requests: this many attempts in
     # this many seconds, counted per client IP and per email address, each
     # action on its own. A password is guessed one request at a time, from one

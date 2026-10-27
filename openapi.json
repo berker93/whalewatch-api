@@ -4993,7 +4993,7 @@
           "account"
         ],
         "summary": "Everything WhaleWatch holds on the signed-in user, as a JSON download",
-        "description": "The account, the watchlist, the saved filters, the whole consent\nledger, the links and sessions still live, the subscriptions, the API keys\n(never the keys themselves) and each month's quota usage, and a list of what is held but\nleft out (hashes, logs) and why. `Content-Disposition: attachment`, so a browser saves it.\nThe format is versioned by `format`.",
+        "description": "The account, the watchlist, the saved filters, the whole consent\nledger, the links and sessions still live, the subscriptions, the API keys\n(never the keys themselves), each month's quota usage, the plans staff gave the account\nand why, the days it was used, and a list of what is held but left out (hashes, logs)\nand why. Each export is counted on its day. `Content-Disposition: attachment`, so a\nbrowser saves it. The format is versioned by `format`.",
         "operationId": "exportMe",
         "responses": {
           "200": {
@@ -6182,6 +6182,1233 @@
           }
         }
       }
+    },
+    "/admin/auth/login": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Sign in to the admin console",
+        "description": "Sets the admin cookie, for `ADMIN_SESSION_HOURS`. A wrong email and a wrong\npassword are the same 403 `invalid_credentials`, and take as long. At most 5\nattempts in 15 minutes from one address, and for one email. A user's\naccount does not sign in here, whatever its email.",
+        "operationId": "adminLogin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSession"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`invalid_credentials`, or `forbidden_origin`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/auth/logout": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Sign out of the admin console",
+        "description": "Ends the session and clears the cookie. A 204 without one, too.",
+        "operationId": "adminLogout",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/auth/session": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Who the admin cookie is for",
+        "description": "A 401 without a live admin session, so the console can show its sign-in.",
+        "operationId": "adminSession",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSessionState"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The user list, filtered",
+        "description": "Newest signup first by default; never-seen accounts last on `sort=last_seen`.",
+        "operationId": "adminListUsers",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Part of the email or name.",
+              "title": "Q"
+            },
+            "description": "Part of the email or name."
+          },
+          {
+            "name": "plan",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The plan the account resolves to, by slug: `free` included.",
+              "title": "Plan"
+            },
+            "description": "The plan the account resolves to, by slug: `free` included."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "active",
+                "unverified",
+                "deleted",
+                "all"
+              ],
+              "type": "string",
+              "description": "`active`: not deleted. `unverified`: not deleted, email unverified.",
+              "default": "active",
+              "title": "Status"
+            },
+            "description": "`active`: not deleted. `unverified`: not deleted, email unverified."
+          },
+          {
+            "name": "signed_up_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "UTC day, inclusive.",
+              "title": "Signed Up From"
+            },
+            "description": "UTC day, inclusive."
+          },
+          {
+            "name": "signed_up_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "UTC day, inclusive.",
+              "title": "Signed Up To"
+            },
+            "description": "UTC day, inclusive."
+          },
+          {
+            "name": "seen_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "UTC day, inclusive.",
+              "title": "Seen From"
+            },
+            "description": "UTC day, inclusive."
+          },
+          {
+            "name": "seen_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "UTC day, inclusive.",
+              "title": "Seen To"
+            },
+            "description": "UTC day, inclusive."
+          },
+          {
+            "name": "comped",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether the plan comes from an override.",
+              "title": "Comped"
+            },
+            "description": "Whether the plan comes from an override."
+          },
+          {
+            "name": "grandfathered",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether the live subscription is grandfathered.",
+              "title": "Grandfathered"
+            },
+            "description": "Whether the live subscription is grandfathered."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "signed_up",
+                "last_seen",
+                "email"
+              ],
+              "type": "string",
+              "description": "What to order by.",
+              "default": "signed_up",
+              "title": "Sort"
+            },
+            "description": "What to order by."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string",
+              "description": "Which way.",
+              "default": "desc",
+              "title": "Order"
+            },
+            "description": "Which way."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Accounts per page.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Accounts per page."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100000,
+              "minimum": 0,
+              "description": "How many matches to skip.",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "How many matches to skip."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserPage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{user_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "One account: plan, subscriptions, overrides, usage, admin actions",
+        "description": "A deleted account too, until the purge erases it.",
+        "operationId": "adminGetUser",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The account's id, from the user list.",
+              "title": "User Id"
+            },
+            "description": "The account's id, from the user list."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserDetail"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such account, or it is deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{user_id}/override": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Give the account a plan, with a reason and an expiry",
+        "description": "The plan's terms, whole, above the account's subscription, until `expires_at`;\nany override it had ends. Paddle is not told: the subscription, if any, runs on,\nand its terms are back when this ends. `unknown_plan` (422) for a slug no plan has;\n`validation_error` (422) for a reason under 3 characters or an expiry not ahead.",
+        "operationId": "adminSetOverride",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The account's id, from the user list.",
+              "title": "User Id"
+            },
+            "description": "The account's id, from the user list."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OverrideRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverrideSet"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such account, or it is deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{user_id}/override/end": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "End the account's override before its expiry",
+        "description": "A 404 `not_found` when none is running.",
+        "operationId": "adminEndOverride",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The account's id, from the user list.",
+              "title": "User Id"
+            },
+            "description": "The account's id, from the user list."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OverrideEnded"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such account, or it is deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{user_id}/grandfather": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Pin the account's subscription to its plan's terms today",
+        "description": "The subscription's plan is copied to a private snapshot, or one with the same\nterms reused, and the subscription keeps those terms whatever the plan's become.\nIts price is Paddle's, per subscription, and unchanged. A 409 `no_subscription`\nwithout a live one; `already_grandfathered` when pinned already.",
+        "operationId": "adminGrandfather",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The account's id, from the user list.",
+              "title": "User Id"
+            },
+            "description": "The account's id, from the user list."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Grandfathered"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such account, or it is deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`no_subscription` or `already_grandfathered`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{user_id}/grandfather/end": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Put the account's subscription back on its plan's current terms",
+        "description": "A 404 `not_found` when it is not grandfathered.",
+        "operationId": "adminUngrandfather",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The account's id, from the user list.",
+              "title": "User Id"
+            },
+            "description": "The account's id, from the user list."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ungrandfathered"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such account, or it is deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`no_subscription` or `already_grandfathered`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/plans": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Every plan, private ones and snapshots included",
+        "description": "In the order they were made, from the tables, not the catalog: a plan made a\nmoment ago is here.",
+        "operationId": "adminListPlans",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdminPlan"
+                  },
+                  "type": "array",
+                  "title": "Response Adminlistplans"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/actions": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The admin log, newest first",
+        "description": "Every sign-in and every change, console and CLI. Append-only: nothing here\nis ever edited or removed.",
+        "operationId": "adminListActions",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "About this account.",
+              "title": "User Id"
+            },
+            "description": "About this account."
+          },
+          {
+            "name": "admin_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "By this admin.",
+              "title": "Admin Id"
+            },
+            "description": "By this admin."
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Older than this action id.",
+              "title": "Before"
+            },
+            "description": "Older than this action id."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Actions per page.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Actions per page."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminActionPage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/metrics": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Signups, actives and plan mix over time",
+        "description": "From the daily snapshots, with today as it stands so far. By default the last\n90 days, 26 weeks or 12 months. At most three years at once.",
+        "operationId": "adminMetrics",
+        "parameters": [
+          {
+            "name": "every",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "type": "string",
+              "description": "A point per UTC day, ISO week or calendar month.",
+              "default": "day",
+              "title": "Every"
+            },
+            "description": "A point per UTC day, ISO week or calendar month."
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "First UTC day, inclusive.",
+              "title": "Start"
+            },
+            "description": "First UTC day, inclusive."
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Last UTC day, inclusive: today.",
+              "title": "End"
+            },
+            "description": "Last UTC day, inclusive: today."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricSeries"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` without the admin cookie, `session_expired` when its session has ended or the admin was disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6692,6 +7919,1157 @@
         ],
         "title": "ActivityEnvelope",
         "description": "One investor's changes, newest period first."
+      },
+      "AdminActionPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminActionRow"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "The actions on this page."
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before",
+            "description": "Pass as `before` for the next page; null on the last.",
+            "examples": [
+              68
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_before"
+        ],
+        "title": "AdminActionPage",
+        "description": "One page of the admin log, newest first."
+      },
+      "AdminActionRow": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The action's id: `before` pages by it.",
+            "examples": [
+              118
+            ]
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At",
+            "description": "When.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "console",
+              "cli"
+            ],
+            "title": "Source",
+            "description": "`console`: an admin, signed in. `cli`: a shell on a server.",
+            "examples": [
+              "console"
+            ]
+          },
+          "admin_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admin Id",
+            "description": "Who, from the console; null from the CLI.",
+            "examples": [
+              1
+            ]
+          },
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "description": "`login`, `logout`, `override_set`, `override_ended`, `grandfathered`, `ungrandfathered`, `admin_created` or `admin_disabled`.",
+            "examples": [
+              "override_set"
+            ]
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id",
+            "description": "The account acted on, if any.",
+            "examples": [
+              42
+            ]
+          },
+          "target_admin_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Admin Id",
+            "description": "The admin acted on, by `admin_created` and `admin_disabled`.",
+            "examples": [
+              null
+            ]
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id",
+            "description": "The request it was made in, to find its log lines by.",
+            "examples": [
+              "3f2c9a7e5b1d4c0e8a6f2d9b7c5e1a30"
+            ]
+          },
+          "detail": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Detail",
+            "description": "What changed: plans by slug, the reason, the expiry.",
+            "examples": [
+              {
+                "plan": "pro",
+                "reason": "beta tester"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "source",
+          "admin_id",
+          "action",
+          "user_id",
+          "target_admin_id",
+          "request_id",
+          "detail"
+        ],
+        "title": "AdminActionRow",
+        "description": "One logged admin action."
+      },
+      "AdminApiKeys": {
+        "properties": {
+          "live": {
+            "type": "integer",
+            "title": "Live",
+            "description": "Keys that work.",
+            "examples": [
+              1
+            ]
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At",
+            "description": "The last request made with any of them.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "live",
+          "last_used_at"
+        ],
+        "title": "AdminApiKeys",
+        "description": "The account's API keys."
+      },
+      "AdminCount": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "description": "Held now.",
+            "examples": [
+              3
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "The plan's; null for no limit.",
+            "examples": [
+              3
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "count",
+          "limit"
+        ],
+        "title": "AdminCount",
+        "description": "How many of something the account holds, against its plan."
+      },
+      "AdminExports": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Taken ever.",
+            "examples": [
+              2
+            ]
+          },
+          "last_on": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last On",
+            "description": "The last UTC day one was taken.",
+            "examples": [
+              "2026-10-20"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "last_on"
+        ],
+        "title": "AdminExports",
+        "description": "The account's data exports (`GET /v1/me/export`)."
+      },
+      "AdminLoginRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 320,
+            "title": "Email",
+            "description": "The admin's login.",
+            "examples": [
+              "ops@whalewatch.io"
+            ]
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 1024,
+            "title": "Password",
+            "description": "The admin's password.",
+            "examples": [
+              "correct horse 42"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "AdminLoginRequest",
+        "description": "An admin's credentials: not a user's."
+      },
+      "AdminOverride": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The override's id.",
+            "examples": [
+              3
+            ]
+          },
+          "plan": {
+            "type": "string",
+            "title": "Plan",
+            "description": "The plan it gives, whole.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why it was given.",
+            "examples": [
+              "friend of the founders"
+            ]
+          },
+          "starts_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Starts At",
+            "description": "When it began.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At",
+            "description": "When it ends on its own.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At",
+            "description": "When it was ended early, or replaced by another.",
+            "examples": [
+              null
+            ]
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By",
+            "description": "The admin who gave it.",
+            "examples": [
+              "ops@whalewatch.io"
+            ]
+          },
+          "ended_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended By",
+            "description": "The admin who ended it.",
+            "examples": [
+              null
+            ]
+          },
+          "live": {
+            "type": "boolean",
+            "title": "Live",
+            "description": "Granting its plan now.",
+            "examples": [
+              true
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "plan",
+          "reason",
+          "starts_at",
+          "expires_at",
+          "ended_at",
+          "created_by",
+          "ended_by",
+          "live"
+        ],
+        "title": "AdminOverride",
+        "description": "One override the account was given, newest first."
+      },
+      "AdminPlan": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "What overrides name it by.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "For a person.",
+            "examples": [
+              "Pro"
+            ]
+          },
+          "price_cents": {
+            "type": "integer",
+            "title": "Price Cents",
+            "description": "Per interval, in cents.",
+            "examples": [
+              1400
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "description": "ISO 4217.",
+            "examples": [
+              "USD"
+            ]
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval",
+            "description": "`month` or `year`; null for a plan that costs nothing.",
+            "examples": [
+              "month"
+            ]
+          },
+          "is_public": {
+            "type": "boolean",
+            "title": "Is Public",
+            "description": "Offered on the pricing page.",
+            "examples": [
+              true
+            ]
+          },
+          "snapshot_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Of",
+            "description": "The plan this is a grandfathering snapshot of.",
+            "examples": [
+              null
+            ]
+          },
+          "snapshot_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot At",
+            "description": "When the snapshot was taken.",
+            "examples": [
+              null
+            ]
+          },
+          "values": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Values",
+            "description": "What it allows, every key.",
+            "examples": [
+              {
+                "export_enabled": true,
+                "history_quarters": 20
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "name",
+          "price_cents",
+          "currency",
+          "interval",
+          "is_public",
+          "snapshot_of",
+          "snapshot_at",
+          "values"
+        ],
+        "title": "AdminPlan",
+        "description": "One plan, public, private or a grandfathering snapshot."
+      },
+      "AdminSession": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The admin's login.",
+            "examples": [
+              "ops@whalewatch.io"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The admin's name.",
+            "examples": [
+              "Grace Hopper"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At",
+            "description": "When the session ends, however busy the admin is.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "name",
+          "expires_at"
+        ],
+        "title": "AdminSession",
+        "description": "Who is signed in to the console, and until when."
+      },
+      "AdminSessionState": {
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/AdminSession",
+            "description": "Who, and until when."
+          }
+        },
+        "type": "object",
+        "required": [
+          "session"
+        ],
+        "title": "AdminSessionState",
+        "description": "The console's session, when the admin cookie names a live one."
+      },
+      "AdminSubscription": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The subscription's id.",
+            "examples": [
+              7
+            ]
+          },
+          "plan": {
+            "type": "string",
+            "title": "Plan",
+            "description": "What it is billed as.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "As Paddle names it.",
+            "examples": [
+              "active"
+            ]
+          },
+          "grandfathered_plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grandfathered Plan",
+            "description": "The plan whose terms it keeps, if any.",
+            "examples": [
+              null
+            ]
+          },
+          "current_period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Period End",
+            "description": "When the period paid for ends.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          },
+          "cancel_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel At",
+            "description": "When it is set to end.",
+            "examples": [
+              null
+            ]
+          },
+          "past_due_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Past Due Since",
+            "description": "When a renewal's payment first failed, while unpaid.",
+            "examples": [
+              null
+            ]
+          },
+          "grace_ends_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grace Ends At",
+            "description": "When an unpaid renewal stops granting its plan.",
+            "examples": [
+              null
+            ]
+          },
+          "paddle_subscription_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paddle Subscription Id",
+            "description": "Open it in Paddle's dashboard for payments and invoices.",
+            "examples": [
+              "sub_01hv8x2k3m"
+            ]
+          },
+          "paddle_customer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paddle Customer Id",
+            "description": "Who pays, in Paddle.",
+            "examples": [
+              "ctm_01hv8x2k3m"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it began.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "plan",
+          "status",
+          "grandfathered_plan",
+          "current_period_end",
+          "cancel_at",
+          "past_due_since",
+          "grace_ends_at",
+          "paddle_subscription_id",
+          "paddle_customer_id",
+          "created_at"
+        ],
+        "title": "AdminSubscription",
+        "description": "One subscription the account has had, newest first."
+      },
+      "AdminUsage": {
+        "properties": {
+          "quotas": {
+            "$ref": "#/components/schemas/Usage",
+            "description": "This quota month's calls, live from the meter."
+          },
+          "months": {
+            "items": {
+              "$ref": "#/components/schemas/AdminUsageMonth"
+            },
+            "type": "array",
+            "title": "Months",
+            "description": "The last twelve quota months as flushed, newest first."
+          },
+          "saved_filters": {
+            "$ref": "#/components/schemas/AdminCount",
+            "description": "Screener filters saved."
+          },
+          "watchlist_items": {
+            "$ref": "#/components/schemas/AdminCount",
+            "description": "Things followed."
+          },
+          "api_keys": {
+            "$ref": "#/components/schemas/AdminApiKeys",
+            "description": "API keys."
+          },
+          "data_exports": {
+            "$ref": "#/components/schemas/AdminExports",
+            "description": "Data exports taken."
+          },
+          "active_days_30": {
+            "type": "integer",
+            "title": "Active Days 30",
+            "description": "Days active in the last 30, signed in or by API key.",
+            "examples": [
+              12
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "quotas",
+          "months",
+          "saved_filters",
+          "watchlist_items",
+          "api_keys",
+          "data_exports",
+          "active_days_30"
+        ],
+        "title": "AdminUsage",
+        "description": "What the account has used."
+      },
+      "AdminUsageMonth": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "description": "`api_calls_month` or `mcp_calls_month`.",
+            "examples": [
+              "api_calls_month"
+            ]
+          },
+          "period": {
+            "type": "string",
+            "format": "date",
+            "title": "Period",
+            "description": "The quota month's first day.",
+            "examples": [
+              "2026-10-14"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "description": "Calls counted.",
+            "examples": [
+              8125
+            ]
+          },
+          "warned_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warned At",
+            "description": "When the 80% email went that month.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "period",
+          "count",
+          "warned_at"
+        ],
+        "title": "AdminUsageMonth",
+        "description": "One quota month of one metered thing, as last flushed."
+      },
+      "AdminUserDetail": {
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/AdminUserRow",
+            "description": "Its row of the user list."
+          },
+          "entitlements": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Entitlements",
+            "description": "Every key as the account resolves it now.",
+            "examples": [
+              {
+                "export_enabled": true,
+                "history_quarters": 20
+              }
+            ]
+          },
+          "subscriptions": {
+            "items": {
+              "$ref": "#/components/schemas/AdminSubscription"
+            },
+            "type": "array",
+            "title": "Subscriptions",
+            "description": "Every one it has had."
+          },
+          "overrides": {
+            "items": {
+              "$ref": "#/components/schemas/AdminOverride"
+            },
+            "type": "array",
+            "title": "Overrides",
+            "description": "Every one it was given."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AdminUsage",
+            "description": "What it has used."
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/AdminActionRow"
+            },
+            "type": "array",
+            "title": "Actions",
+            "description": "The last 50 admin actions about it."
+          }
+        },
+        "type": "object",
+        "required": [
+          "account",
+          "entitlements",
+          "subscriptions",
+          "overrides",
+          "usage",
+          "actions"
+        ],
+        "title": "AdminUserDetail",
+        "description": "One account: who, on what, given what, and using what."
+      },
+      "AdminUserPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminUserRow"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "The accounts on this page."
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "How many accounts match, on every page.",
+            "examples": [
+              1204
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "The page size asked for.",
+            "examples": [
+              50
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "How many matches came before this page.",
+            "examples": [
+              0
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "AdminUserPage",
+        "description": "One page of the user list."
+      },
+      "AdminUserRow": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The account's id: what the other routes take.",
+            "examples": [
+              42
+            ]
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The login.",
+            "examples": [
+              "ada@example.com"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The name on the account.",
+            "examples": [
+              "Ada Lovelace"
+            ]
+          },
+          "plan": {
+            "type": "string",
+            "title": "Plan",
+            "description": "The plan the account's entitlements come from: its override's, else its live subscription's, else `free`.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "billed_plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billed Plan",
+            "description": "The live subscription's plan, whatever an override says.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "subscription_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscription Status",
+            "description": "The live subscription's status.",
+            "examples": [
+              "active"
+            ]
+          },
+          "grandfathered_plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grandfathered Plan",
+            "description": "The snapshot or promise the live subscription keeps the terms of.",
+            "examples": [
+              null
+            ]
+          },
+          "override_plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Plan",
+            "description": "The live override's plan: set, the plan is a comp.",
+            "examples": [
+              null
+            ]
+          },
+          "override_expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Expires At",
+            "description": "When the live override ends on its own.",
+            "examples": [
+              null
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When the account signed up.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At",
+            "description": "The last request signed in or with an API key, to within five minutes.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          },
+          "email_verified_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email Verified At",
+            "description": "When the email was verified; null while it is not.",
+            "examples": [
+              "2026-10-27T14:03:00Z"
+            ]
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At",
+            "description": "When it was deleted: it is erased 30 days on.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "name",
+          "plan",
+          "billed_plan",
+          "subscription_status",
+          "grandfathered_plan",
+          "override_plan",
+          "override_expires_at",
+          "created_at",
+          "last_seen_at",
+          "email_verified_at",
+          "deleted_at"
+        ],
+        "title": "AdminUserRow",
+        "description": "One account, as a row of the user list."
       },
       "AmendmentKind": {
         "type": "string",
@@ -7464,6 +9842,9 @@
           "billing_unavailable",
           "already_subscribed",
           "invalid_signature",
+          "unknown_plan",
+          "no_subscription",
+          "already_grandfathered",
           "http_error"
         ],
         "title": "ErrorCode",
@@ -7553,6 +9934,22 @@
             "title": "Usage",
             "description": "What was counted of each monthly quota, by month, newest first."
           },
+          "plan_overrides": {
+            "items": {
+              "$ref": "#/components/schemas/ExportPlanOverride"
+            },
+            "type": "array",
+            "title": "Plan Overrides",
+            "description": "Every plan staff gave the account, newest first."
+          },
+          "activity": {
+            "items": {
+              "$ref": "#/components/schemas/ExportActivityDay"
+            },
+            "type": "array",
+            "title": "Activity",
+            "description": "Every day the account was used, newest first: this export's included."
+          },
           "not_included": {
             "items": {
               "type": "string"
@@ -7580,6 +9977,8 @@
           "subscriptions",
           "api_keys",
           "usage",
+          "plan_overrides",
+          "activity",
           "not_included"
         ],
         "title": "Export",
@@ -7683,6 +10082,34 @@
         ],
         "title": "ExportAccount",
         "description": "The account row, all of it but the password's hash."
+      },
+      "ExportActivityDay": {
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day",
+            "description": "The day, in UTC.",
+            "examples": [
+              "2026-10-27"
+            ]
+          },
+          "data_exports": {
+            "type": "integer",
+            "title": "Data Exports",
+            "description": "Exports like this one taken that day.",
+            "examples": [
+              1
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "day",
+          "data_exports"
+        ],
+        "title": "ExportActivityDay",
+        "description": "One day the account was used, signed in or with an API key, newest first."
       },
       "ExportApiKey": {
         "properties": {
@@ -7977,6 +10404,70 @@
         ],
         "title": "ExportLink",
         "description": "An emailed link not yet used. The token itself is not kept, so not exported."
+      },
+      "ExportPlanOverride": {
+        "properties": {
+          "plan": {
+            "type": "string",
+            "title": "Plan",
+            "description": "The plan's slug.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why it was given.",
+            "examples": [
+              "beta tester"
+            ]
+          },
+          "starts_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Starts At",
+            "description": "When it began.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At",
+            "description": "When it ends on its own.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At",
+            "description": "When it was ended early, if it was.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan",
+          "reason",
+          "starts_at",
+          "expires_at",
+          "ended_at"
+        ],
+        "title": "ExportPlanOverride",
+        "description": "A plan given to the account by WhaleWatch's staff, newest first."
       },
       "ExportSavedFilter": {
         "properties": {
@@ -9077,6 +11568,42 @@
         ],
         "title": "FreshnessKind",
         "description": "Whether a freshness row is a materialised view or a job."
+      },
+      "Grandfathered": {
+        "properties": {
+          "plan": {
+            "type": "string",
+            "title": "Plan",
+            "description": "The plan the subscription is on.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "snapshot": {
+            "type": "string",
+            "title": "Snapshot",
+            "description": "The private plan holding its terms as of now.",
+            "examples": [
+              "pro_20261027"
+            ]
+          },
+          "snapshot_created": {
+            "type": "boolean",
+            "title": "Snapshot Created",
+            "description": "False: an earlier snapshot with the same terms was reused.",
+            "examples": [
+              true
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan",
+          "snapshot",
+          "snapshot_created"
+        ],
+        "title": "Grandfathered",
+        "description": "The snapshot the subscription now keeps the terms of."
       },
       "HealthResponse": {
         "properties": {
@@ -12252,6 +14779,185 @@
         "title": "Meta",
         "description": "What the rows in ``data`` describe, and when this answer was produced."
       },
+      "MetricPoint": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date",
+            "title": "Start",
+            "description": "Its first UTC day in the range.",
+            "examples": [
+              "2026-10-01"
+            ]
+          },
+          "end": {
+            "type": "string",
+            "format": "date",
+            "title": "End",
+            "description": "Its last UTC day in the range: today, for the one still running.",
+            "examples": [
+              "2026-10-27"
+            ]
+          },
+          "signups": {
+            "type": "integer",
+            "title": "Signups",
+            "description": "Accounts made.",
+            "examples": [
+              41
+            ]
+          },
+          "deletions": {
+            "type": "integer",
+            "title": "Deletions",
+            "description": "Accounts whose deletion was asked for.",
+            "examples": [
+              2
+            ]
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active",
+            "description": "Accounts active, signed in or by API key: that day for `every=day`, the 7 days ending `end` for a week, the 30 for a month. Null before activity was recorded.",
+            "examples": [
+              310
+            ]
+          },
+          "accounts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accounts",
+            "description": "Accounts not deleted, at its last snapshot.",
+            "examples": [
+              1204
+            ]
+          },
+          "plan_mix": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Mix",
+            "description": "Those accounts by plan slug, `free` included.",
+            "examples": [
+              {
+                "api_hobbyist": 6,
+                "free": 1100,
+                "pro": 98
+              }
+            ]
+          },
+          "comped": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comped",
+            "description": "Of those, how many have their plan by override.",
+            "examples": [
+              4
+            ]
+          },
+          "partial": {
+            "type": "boolean",
+            "title": "Partial",
+            "description": "Today is in it, or a day has no snapshot: not final.",
+            "examples": [
+              false
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "signups",
+          "deletions",
+          "active",
+          "accounts",
+          "plan_mix",
+          "comped",
+          "partial"
+        ],
+        "title": "MetricPoint",
+        "description": "One day, week or month."
+      },
+      "MetricSeries": {
+        "properties": {
+          "every": {
+            "type": "string",
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ],
+            "title": "Every",
+            "description": "What each point is: a day, an ISO week, a calendar month.",
+            "examples": [
+              "week"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date",
+            "title": "Start",
+            "description": "The range's first UTC day.",
+            "examples": [
+              "2026-05-04"
+            ]
+          },
+          "end": {
+            "type": "string",
+            "format": "date",
+            "title": "End",
+            "description": "The range's last UTC day.",
+            "examples": [
+              "2026-10-27"
+            ]
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/MetricPoint"
+            },
+            "type": "array",
+            "title": "Points",
+            "description": "Oldest first."
+          }
+        },
+        "type": "object",
+        "required": [
+          "every",
+          "start",
+          "end",
+          "points"
+        ],
+        "title": "MetricSeries",
+        "description": "Signups, actives and plan mix over a range of UTC days."
+      },
       "NewApiKey": {
         "properties": {
           "name": {
@@ -12333,6 +15039,95 @@
         ],
         "title": "OtherHolders",
         "description": "Everyone holding the stock in a quarter who is not one of the five."
+      },
+      "OverrideEnded": {
+        "properties": {
+          "ended": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Ended",
+            "description": "Their ids.",
+            "examples": [
+              [
+                3
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "ended"
+        ],
+        "title": "OverrideEnded",
+        "description": "The overrides ended."
+      },
+      "OverrideRequest": {
+        "properties": {
+          "plan": {
+            "type": "string",
+            "title": "Plan",
+            "description": "The plan's slug: `GET /admin/plans`.",
+            "examples": [
+              "pro"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Reason",
+            "description": "Why, at least 3 characters: kept with it and in the log.",
+            "examples": [
+              "beta tester"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At",
+            "description": "When it ends on its own: in the future, with a time zone.",
+            "examples": [
+              "2027-01-31T23:59:59Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan",
+          "reason",
+          "expires_at"
+        ],
+        "title": "OverrideRequest",
+        "description": "A plan to give an account, why, and until when."
+      },
+      "OverrideSet": {
+        "properties": {
+          "override": {
+            "$ref": "#/components/schemas/AdminOverride",
+            "description": "The override, as the account's page lists it."
+          },
+          "replaced": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Replaced",
+            "description": "The overrides this one ended.",
+            "examples": [
+              [
+                2
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "override",
+          "replaced"
+        ],
+        "title": "OverrideSet",
+        "description": "The override given."
       },
       "OwnershipPoint": {
         "properties": {
@@ -12803,7 +15598,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
             "examples": [
               "not_found"
             ]
@@ -13482,7 +16277,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
             "examples": [
               "not_found"
             ]
@@ -13678,7 +16473,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
             "examples": [
               "not_found"
             ]
@@ -13826,6 +16621,29 @@
         ],
         "title": "ReadinessResponse",
         "description": "``checks`` maps dependency name to ``\"ok\"`` or ``\"error: <reason>\"``."
+      },
+      "ReasonRequest": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why, kept in the log.",
+            "examples": [
+              "support ticket 412"
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ReasonRequest",
+        "description": "Why, for the log. Optional."
       },
       "Recorded": {
         "properties": {
@@ -14815,7 +17633,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
             "examples": [
               "not_found"
             ]
@@ -15728,6 +18546,24 @@
         "title": "TransactionCode",
         "description": "A transaction code, and what it means."
       },
+      "Ungrandfathered": {
+        "properties": {
+          "snapshot": {
+            "type": "string",
+            "title": "Snapshot",
+            "description": "The plan whose terms it kept until now.",
+            "examples": [
+              "pro_20261027"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "snapshot"
+        ],
+        "title": "Ungrandfathered",
+        "description": "The terms the subscription no longer keeps."
+      },
       "UpcomingFiling": {
         "properties": {
           "ref": {
@@ -16013,7 +18849,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
             "examples": [
               "not_found"
             ]

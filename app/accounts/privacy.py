@@ -61,11 +61,13 @@ from app.db.models import (
     ConsentRecord,
     ConsentSource,
     DeletionRequester,
+    PlanOverride,
     Purpose,
     SavedFilter,
     SignupRequest,
     Subscription,
     UsageCounter,
+    UserActivityDay,
     WatchlistItem,
 )
 
@@ -289,6 +291,8 @@ _CASCADED: Final = (
     Subscription,
     ApiKey,
     UsageCounter,
+    PlanOverride,
+    UserActivityDay,
 )
 
 

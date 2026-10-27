@@ -261,6 +261,25 @@ class ExportUsage(BaseModel):
     )
 
 
+class ExportPlanOverride(BaseModel):
+    """A plan given to the account by WhaleWatch's staff, newest first."""
+
+    plan: str = Field(description="The plan's slug.", examples=["pro"])
+    reason: str = Field(description="Why it was given.", examples=["beta tester"])
+    starts_at: datetime = Field(description="When it began.", examples=[_AT])
+    expires_at: datetime = Field(description="When it ends on its own.", examples=[_AT])
+    ended_at: datetime | None = Field(
+        description="When it was ended early, if it was.", examples=[None]
+    )
+
+
+class ExportActivityDay(BaseModel):
+    """One day the account was used, signed in or with an API key, newest first."""
+
+    day: date = Field(description="The day, in UTC.", examples=["2026-10-27"])
+    data_exports: int = Field(description="Exports like this one taken that day.", examples=[1])
+
+
 class Export(BaseModel):
     """Everything WhaleWatch holds on the signed-in user."""
 
@@ -282,6 +301,12 @@ class Export(BaseModel):
     api_keys: list[ExportApiKey] = Field(description="Every API key made, oldest first.")
     usage: list[ExportUsage] = Field(
         description="What was counted of each monthly quota, by month, newest first."
+    )
+    plan_overrides: list[ExportPlanOverride] = Field(
+        description="Every plan staff gave the account, newest first."
+    )
+    activity: list[ExportActivityDay] = Field(
+        description="Every day the account was used, newest first: this export's included."
     )
     not_included: list[str] = Field(
         description="What is held but not here, and why: a person can still ask for it.",

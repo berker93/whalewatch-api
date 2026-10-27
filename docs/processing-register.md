@@ -1,8 +1,8 @@
 # Processing register
 
 GDPR Art. 30: what WhaleWatch stores about people, why, on what basis, for how
-long, and who else handles it. Written from the code as of migration 0039
-(2026-10-25). Change this file in the same commit as the code it describes.
+long, and who else handles it. Written from the code as of migration 0041
+(2026-10-27). Change this file in the same commit as the code it describes.
 
 Items marked **OPEN** are not decided or not done. They are also listed in the
 [last section](#open-items).
@@ -35,10 +35,13 @@ The people who sign up. Every table below is in Postgres unless it says Redis.
 | Lawful-basis ledger: purpose, basis, granted, terms/privacy version, source, time | `consent_record` | Proof of consent, objection and terms acceptance (Art. 7(1)) | Legal obligation (Art. 6(1)(c)) | Life of the account + 30 days |
 | Deletion audit: former user id, who asked, when asked, when purged or restored, row counts erased. No email, no name | `account_deletion` | Proof the erasure happened (Art. 5(2)) | Legal obligation | **Indefinitely**. It holds a bare id that matches nothing once purged. **OPEN**: confirm, or set e.g. 6 years |
 | API keys: name, the first 11 characters, SHA-256 of the key, made, last used (to 5 min), revoked | `api_key` | Programmatic access the paid API plans sell | Contract | Life of the account + 30 days. Revoked on deletion |
+| Plan overrides: the plan an admin gave the account, the reason they wrote, start, expiry, when it was ended and by which admin | `plan_override`; a copy of the grant in the Redis session | Support and comps: giving one account a plan without a payment | Legitimate interest: running the service and supporting its users | Life of the account + 30 days |
+| Days active (UTC dates, signed in or by API key) and data exports taken per day | `user_activity_day` | Counting active accounts for the admin console; seeing one account's usage when supporting it | Legitimate interest: running and improving the service | Life of the account + 30 days. **OPEN**: a shorter limit (e.g. 13 months) once the daily snapshot is trusted |
 | Monthly call counts per quota and quota month, and when the 80% email went | `usage_counter`; the live count in Redis `ww:usage:*` | Enforcing the plan's monthly quota, showing usage on the account page | Contract | Postgres: life of the account + 30 days. Redis: the quota month + 7 days |
 | Sign-in attempt counters: SHA-256 of the email, client IP | Redis `ww:rl:attempts:*` | Stopping password guessing | Legitimate interest (Art. 6(1)(f)): security | 15 minutes |
 | Request log lines: time, method, path, status, client IP, request id | API stdout (structlog JSON) | Operations, abuse, debugging | Legitimate interest: security and operations | **OPEN**: depends on where logs are shipped. Suggest 30 days |
 | Mail failure log lines: recipient, subject | API stdout | Knowing a reset or verify mail did not arrive | Legitimate interest | Same as request logs |
+| Admin log: what an admin did to the account (an override set or ended, grandfathering), when, the reason given. The account by id only, never by email | `admin_action` | Accountability for every change staff make to an account (Art. 5(2)) | Legitimate interest: security and accountability | **Indefinitely**, append-only (Postgres refuses edits). Outlives the account's purge with a bare id that matches nothing. **OPEN**: confirm, or set a period; a reason an admin wrote may name the person, so admins write reasons without personal details |
 
 Development only: `EMAIL_BACKEND=log` writes each email, link included, to the
 log. Staging and prod refuse to start with it.
@@ -67,9 +70,9 @@ one. **OPEN**: an endpoint and UI to accept new terms when the version changes.
 
 | Right | How |
 |---|---|
-| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, saved filters, the whole consent ledger, live links and sessions, every subscription, every API key (never the key) and each month's call counts, and a list of what's left out and why (hashes, logs). Logs on request by email. |
+| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, saved filters, the whole consent ledger, live links and sessions, every subscription, every API key (never the key), each month's call counts, every plan override and its reason, and the days the account was active, and a list of what's left out and why (hashes, logs). Logs and the admin log's rows about the account on request by email. |
 | Rectification (Art. 16) | `PATCH /v1/account`: name, time zone, email (confirmed by link) |
-| Erasure (Art. 17) | `DELETE /v1/account` with the password, or `delete-user --email` by an operator for a request by email. The account is soft-deleted at once: signed out everywhere, links dead, login refused, address free for a new account. The `purge-accounts` job (beat, daily 05:00 New York) hard-deletes it 30 days later with its watchlist, saved filters, consent records, tokens, subscriptions, API keys and usage counts, and writes the counts to `account_deletion`. `restore-user --email` undoes it within the 30 days. |
+| Erasure (Art. 17) | `DELETE /v1/account` with the password, or `delete-user --email` by an operator for a request by email. The account is soft-deleted at once: signed out everywhere, links dead, login refused, address free for a new account. The `purge-accounts` job (beat, daily 05:00 New York) hard-deletes it 30 days later with its watchlist, saved filters, consent records, tokens, subscriptions, API keys, usage counts, plan overrides and days active, and writes the counts to `account_deletion`. `restore-user --email` undoes it within the 30 days. |
 | Withdraw consent, object (Art. 7(3), 21) | `PATCH /v1/me/privacy` |
 | Restriction (Art. 18) | **OPEN**: no mechanism. Handle by hand (operator) if asked |
 
@@ -86,6 +89,23 @@ row is deleted when the account is created (`register` with signups open, or
 `create-user`), and its answers move into `consent_record`.
 **OPEN**: requests never turned into accounts are kept with no limit. Suggest
 deleting them after 12 months, or when signups open.
+
+### Aggregates
+
+`metric_day`: per UTC day, counts of signups, deletions, active accounts and
+accounts per plan. Counts only, no ids: not personal data. Kept indefinitely.
+
+## 1a · Admins
+
+The staff who run the admin console. Their accounts are separate from user
+accounts (`admin_user`), made and disabled from the CLI only.
+
+| Data | Where | Why | Lawful basis | Kept for |
+|---|---|---|---|---|
+| Email, name, password hash (argon2id), created, last sign-in, disabled | `admin_user` | Signing in to the console | Contract (employment or engagement) | Indefinitely: the admin log names the admin by id. Disabled, not deleted |
+| Admin session: admin id, expiry. Cookie stored as SHA-256 only | Redis `ww:admin-session:*`, `ww:admin-sessions:*` | Staying signed in to the console | Contract | `ADMIN_SESSION_HOURS` (8 h by default); ended at once on sign-out or when disabled |
+| Admin log: sign-ins, sign-outs and every change, with the request id | `admin_action` | Accountability | Legitimate interest: security | Indefinitely, append-only |
+| Login attempt counters: SHA-256 of the email, client IP | Redis `ww:rl:attempts:admin_login:*` | Stopping password guessing | Legitimate interest: security | 15 minutes |
 
 ## 2 · People in SEC filings
 
@@ -123,6 +143,7 @@ EU-US Data Privacy Framework, and list it here.
 | Name | Set by | Kind | Purpose | Lifetime |
 |---|---|---|---|---|
 | `ww_session` | API | Cookie, httpOnly, SameSite=Lax, Secure where deployed | Keeps the user signed in | Browser session, or 30 days with "keep me signed in" |
+| `ww_admin` | API | Cookie, httpOnly, SameSite=Strict, Path=/admin, host-only, Secure where deployed | Keeps an admin signed in to the console (staff only) | Browser session, and at most `ADMIN_SESSION_HOURS` |
 | `ww:density` | Web | localStorage | Remembers the table density the user picked | Until cleared |
 | `ww:watchlist` | Web | localStorage | Signed-out watchlist, kept on the device only | Until cleared |
 | `ww:mock-session`, `ww:account` | Web | localStorage | Mock auth, development builds only | Until cleared |
@@ -139,6 +160,7 @@ here and add a banner in the same change.
 - Sessions revocable at once (Redis). All sessions end on password reset and on deletion.
 - Login, register, reset and verify-resend limited to 5 per 15 minutes per IP and per email.
 - `Cache-Control: no-store` on every per-user response. Writes refused from origins not on the CORS list.
+- Admin console: separate admin accounts (not a flag on a user), made only from the CLI; their own cookie and sessions; every change and sign-in in an append-only log. **OPEN**: a second factor (TOTP) for admins, and restricting `/admin` to a VPN or IP allow-list at the proxy.
 - **OPEN**: encryption at rest and in transit for the deployed database and Redis, backups, and access control on who can run CLI verbs in prod.
 
 ## Open items
@@ -153,3 +175,4 @@ From the privacy checklist (2026-10-24), what the API cannot do itself:
 6. Unsubscribe links (no session) in product and marketing email, before the first one is sent.
 7. Re-accepting changed terms (endpoint and UI).
 8. The SEC-filings section of the privacy policy (Art. 14), and a process for objections.
+9. Admin console: a second factor for admins, network restriction of `/admin`, retention of the admin log and of days active.

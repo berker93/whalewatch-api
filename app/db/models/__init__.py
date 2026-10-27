@@ -13,7 +13,15 @@ from app.db.models.account import (
     SavedFilter,
     SignupRequest,
     TokenPurpose,
+    UserActivityDay,
     WatchlistItem,
+)
+from app.db.models.admin import (
+    ActionSource,
+    AdminAction,
+    AdminActionKind,
+    AdminUser,
+    MetricDay,
 )
 from app.db.models.base import NAMING_CONVENTION, Base
 from app.db.models.crawl_watermark import CrawlWatermark
@@ -66,6 +74,7 @@ from app.db.models.plan import (
     Plan,
     PlanEntitlement,
     PlanInterval,
+    PlanOverride,
     Subscription,
     SubscriptionEntitlement,
     SubscriptionStatus,
@@ -155,6 +164,10 @@ __all__ = [
     "WEIGHT_PCT",
     "AccountDeletion",
     "AccountToken",
+    "ActionSource",
+    "AdminAction",
+    "AdminActionKind",
+    "AdminUser",
     "AmendmentKind",
     "ApiKey",
     "AppUser",
@@ -181,6 +194,7 @@ __all__ = [
     "ListStatus",
     "ManualReview",
     "MatviewRefresh",
+    "MetricDay",
     "OverlapPolicy",
     "PaddleEvent",
     "PaddleEventOutcome",
@@ -190,6 +204,7 @@ __all__ = [
     "Plan",
     "PlanEntitlement",
     "PlanInterval",
+    "PlanOverride",
     "PositionChange",
     "PositionSnapshot",
     "PriceConfidence",
@@ -213,5 +228,6 @@ __all__ = [
     "SubscriptionStatus",
     "TokenPurpose",
     "UsageCounter",
+    "UserActivityDay",
     "WatchlistItem",
 ]

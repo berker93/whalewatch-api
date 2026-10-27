@@ -20,6 +20,10 @@ an UPDATE, not a deploy (:mod:`app.accounts.entitlements` reads them).
 ``subscription_entitlement``
     One subscription's own value for a key, above both plans: a comp, a
     raised limit for one customer.
+``plan_override``
+    A plan given to one user by an admin, with a reason and an expiry: for
+    support, for friends. Above the subscription, and needing none: Paddle
+    knows nothing of it, so it never collides with a payment.
 ``paddle_event``
     Every Paddle webhook event, once, by its ``event_id``: what makes a
     redelivered event a no-op (:mod:`app.accounts.billing`).
@@ -124,6 +128,16 @@ class Plan(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, server_default=false())
     """Offered on the pricing page. A plan held only by grandfathered users is not."""
 
+    snapshot_of_plan_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("plan.id", ondelete="RESTRICT")
+    )
+    """The plan this is a copy of, as its terms stood at :attr:`snapshot_at`:
+    what grandfathering pins a subscription to (:mod:`app.admin.plans`). A
+    subscription moved to another plan stops being grandfathered to a snapshot
+    of this one (:mod:`app.accounts.billing`)."""
+
+    snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
@@ -131,6 +145,10 @@ class Plan(Base):
         CheckConstraint("price_cents >= 0", name="price_is_not_negative"),
         CheckConstraint(INTERVAL_CHECK, name="interval_is_known"),
         CheckConstraint("price_cents = 0 OR interval IS NOT NULL", name="paid_has_an_interval"),
+        CheckConstraint(
+            "(snapshot_of_plan_id IS NULL) = (snapshot_at IS NULL)", name="snapshot_says_when"
+        ),
+        CheckConstraint("snapshot_of_plan_id IS NULL OR NOT is_public", name="snapshot_is_private"),
     )
 
 
@@ -284,6 +302,61 @@ class SubscriptionEntitlement(Base):
     __table_args__ = (
         CheckConstraint(KEY_CHECK, name="key_is_known"),
         CheckConstraint(VALUE_CHECK, name="value_fits_key"),
+    )
+
+
+#: The shortest reason an override may give.
+MIN_OVERRIDE_REASON: Final = 3
+
+
+class PlanOverride(Base):
+    """One user given one plan by an admin, from :attr:`starts_at` until the
+    sooner of :attr:`expires_at` and :attr:`ended_at`.
+
+    At most one is live per user: setting one ends the one before
+    (:mod:`app.admin.plans`). An override that ran out stays, as the history
+    of what the user was given and why.
+    """
+
+    __tablename__ = "plan_override"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app_user.id", ondelete="CASCADE"))
+
+    plan_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("plan.id", ondelete="RESTRICT"))
+    """The plan whose terms the user has meanwhile, whole, above their subscription's."""
+
+    reason: Mapped[str] = mapped_column(Text)
+    """Why, for whoever finds it later: "friend of the founders", "ticket 412"."""
+
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    """When it ends on its own. Every override has one: a comp nobody remembers
+    giving is a comp nobody ends."""
+
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When an admin ended it early, or replaced it with another."""
+
+    created_by: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("admin_user.id", ondelete="RESTRICT")
+    )
+
+    ended_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("admin_user.id", ondelete="RESTRICT")
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            f"reason = btrim(reason) AND length(reason) >= {MIN_OVERRIDE_REASON}",
+            name="reason_is_given",
+        ),
+        CheckConstraint("expires_at > starts_at", name="expires_after_it_starts"),
+        CheckConstraint("(ended_at IS NULL) = (ended_by IS NULL)", name="ending_says_who"),
+        Index("ix_plan_override_user_id", "user_id", "id"),
     )
 
 

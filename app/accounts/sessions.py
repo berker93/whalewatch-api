@@ -56,6 +56,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts import activity
 from app.accounts.entitlements import GRANT_EVERY, Grant, grant_for
 from app.db.models import AccountToken, AppUser, TokenPurpose
 
@@ -148,22 +149,38 @@ class SessionRecord:
 
 
 class SessionStore:
-    """The live sessions, in Redis, by the hash of their cookie."""
+    """The live sessions, in Redis, by the hash of their cookie.
 
-    def __init__(self, redis: Redis) -> None:
+    The users' by default. The admin console's are another store over the
+    same Redis, under other keys and with a lifetime of its own
+    (:mod:`app.admin.auth`): a user's cookie names no key there, nor an
+    admin's one here.
+    """
+
+    def __init__(
+        self,
+        redis: Redis,
+        *,
+        prefix: str = SESSION_KEY_PREFIX,
+        index_prefix: str = USER_SESSIONS_PREFIX,
+        unremembered: timedelta = UNREMEMBERED,
+    ) -> None:
         self._redis = redis
+        self._prefix = prefix
+        self._index_prefix = index_prefix
+        self._unremembered = unremembered
 
     async def start(self, user_id: int, *, remember: bool) -> StartedSession:
         token = new_secret()
         session_id = digest(token)
-        expires_at = now() + (REMEMBERED if remember else UNREMEMBERED)
+        expires_at = now() + (REMEMBERED if remember else self._unremembered)
         value = SessionRecord(
             id=session_id, user_id=user_id, remember=remember, expires_at=expires_at
         ).to_json()
-        index = f"{USER_SESSIONS_PREFIX}{user_id}"
+        index = f"{self._index_prefix}{user_id}"
         try:
             async with self._redis.pipeline(transaction=True) as pipe:
-                pipe.set(SESSION_KEY_PREFIX + session_id, value, exat=int(expires_at.timestamp()))
+                pipe.set(self._prefix + session_id, value, exat=int(expires_at.timestamp()))
                 pipe.sadd(index, session_id)
                 # As long as the longest a session can be, from now: never
                 # shorter than any member's remaining life.
@@ -177,7 +194,7 @@ class SessionStore:
         """The live session ``token`` is the cookie of, or None: unknown, ended or expired."""
         session_id = digest(token)
         try:
-            value = await self._redis.get(SESSION_KEY_PREFIX + session_id)
+            value = await self._redis.get(self._prefix + session_id)
         except (RedisError, OSError) as exc:
             raise SessionStoreError from exc
         if value is None:
@@ -196,9 +213,7 @@ class SessionStore:
         """
         kept = replace(record, grant=grant, granted_at=now())
         try:
-            await self._redis.set(
-                SESSION_KEY_PREFIX + record.id, kept.to_json(), xx=True, keepttl=True
-            )
+            await self._redis.set(self._prefix + record.id, kept.to_json(), xx=True, keepttl=True)
         except (RedisError, OSError) as exc:
             raise SessionStoreError from exc
         return kept
@@ -206,11 +221,11 @@ class SessionStore:
     async def forget_grants(self, user_id: int) -> None:
         """Have every session of the user read their grant again on its next
         request: for code that has just changed their subscription."""
-        index = f"{USER_SESSIONS_PREFIX}{user_id}"
+        index = f"{self._index_prefix}{user_id}"
         try:
             members: set[str] = await self._redis.smembers(index)  # type: ignore[misc]
             ids = sorted(members)
-            values = await self._redis.mget([SESSION_KEY_PREFIX + member for member in ids])
+            values = await self._redis.mget([self._prefix + member for member in ids])
             async with self._redis.pipeline(transaction=True) as pipe:
                 for session_id, value in zip(ids, values, strict=True):
                     if value is None:
@@ -219,7 +234,7 @@ class SessionStore:
                         SessionRecord.from_json(session_id, value), grant=None, granted_at=None
                     )
                     pipe.set(
-                        SESSION_KEY_PREFIX + session_id,
+                        self._prefix + session_id,
                         forgotten.to_json(),
                         xx=True,
                         keepttl=True,
@@ -235,19 +250,19 @@ class SessionStore:
             return
         try:
             async with self._redis.pipeline(transaction=True) as pipe:
-                pipe.delete(SESSION_KEY_PREFIX + record.id)
-                pipe.srem(f"{USER_SESSIONS_PREFIX}{record.user_id}", record.id)
+                pipe.delete(self._prefix + record.id)
+                pipe.srem(f"{self._index_prefix}{record.user_id}", record.id)
                 await pipe.execute()
         except (RedisError, OSError) as exc:
             raise SessionStoreError from exc
 
     async def list_for(self, user_id: int) -> list[SessionRecord]:
         """The user's live sessions, soonest to end first: what an export lists."""
-        index = f"{USER_SESSIONS_PREFIX}{user_id}"
+        index = f"{self._index_prefix}{user_id}"
         try:
             members: set[str] = await self._redis.smembers(index)  # type: ignore[misc]
             ids = sorted(members)
-            values = await self._redis.mget([SESSION_KEY_PREFIX + member for member in ids])
+            values = await self._redis.mget([self._prefix + member for member in ids])
         except (RedisError, OSError) as exc:
             raise SessionStoreError from exc
         records = []
@@ -260,7 +275,7 @@ class SessionStore:
 
     async def end_all(self, user_id: int, *, keep: str | None) -> None:
         """Sign the user out everywhere, but for session ``keep`` when given."""
-        index = f"{USER_SESSIONS_PREFIX}{user_id}"
+        index = f"{self._index_prefix}{user_id}"
         try:
             # redis-py types the set commands as sync-or-async; on the asyncio
             # client they are always awaitable.
@@ -269,7 +284,7 @@ class SessionStore:
             if not ending:
                 return
             async with self._redis.pipeline(transaction=True) as pipe:
-                pipe.delete(*(SESSION_KEY_PREFIX + member for member in ending))
+                pipe.delete(*(self._prefix + member for member in ending))
                 pipe.srem(index, *ending)
                 await pipe.execute()
         except (RedisError, OSError) as exc:
@@ -313,12 +328,14 @@ async def find_session(session: AsyncSession, store: SessionStore, token: str) -
 
 
 async def touch(session: AsyncSession, user: AppUser) -> None:
-    """Mark ``user`` seen now, when :data:`LAST_SEEN_EVERY` has passed since
-    the last time. Commits: the request may be a read that commits nothing."""
+    """Mark ``user`` seen now, and active today, when :data:`LAST_SEEN_EVERY`
+    has passed since the last time or the UTC day has changed. Commits: the
+    request may be a read that commits nothing."""
     seen = now()
-    if user.last_seen_at is not None and seen - user.last_seen_at < LAST_SEEN_EVERY:
+    if not activity.due(user.last_seen_at, seen, LAST_SEEN_EVERY):
         return
     await session.execute(update(AppUser).where(AppUser.id == user.id).values(last_seen_at=seen))
+    await activity.mark_active(session, user.id, seen)
     await session.commit()
     user.last_seen_at = seen
 

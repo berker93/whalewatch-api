@@ -23,6 +23,7 @@ from starlette.middleware.cors import CORSMiddleware
 from app.accounts import entitlements, usage
 from app.accounts.sessions import SessionStore, SessionStoreError
 from app.accounts.usage import UsageMeter
+from app.admin.auth import admin_store
 from app.api.entitlements import GatedResponseMiddleware
 from app.api.errors import (
     RATE_LIMITED,
@@ -50,6 +51,7 @@ from app.api.rate_limit import (
 )
 from app.api.routers import (
     account,
+    admin,
     api_keys,
     auth,
     billing,
@@ -106,6 +108,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         prefix=ATTEMPTS_KEY_PREFIX,
     )
     app.state.sessions = SessionStore(app.state.redis)
+    # The admin console's, under other keys: a user's cookie names none of them.
+    app.state.admin_sessions = admin_store(app.state.redis, settings)
     # What every plan allows, loaded in the background and kept fresh, so no
     # request reads it from Postgres and a Postgres down at boot does not stop
     # the app starting.
@@ -239,6 +243,8 @@ def create_app(settings: Settings) -> FastAPI:
         )
     for router in (auth, me, account, watchlist, saved_filters, api_keys, billing):
         app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)
+    # The admin console: outside /v1, which is the product's, and on its own sessions.
+    app.include_router(admin.router, responses=RATE_LIMITED)
     # Paddle's, not a client's: outside /v1, the OpenAPI document and the rate limit.
     app.include_router(billing.webhook_router)
 

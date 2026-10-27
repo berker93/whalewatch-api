@@ -54,6 +54,9 @@ class ErrorCode(StrEnum):
     BILLING_UNAVAILABLE = "billing_unavailable"
     ALREADY_SUBSCRIBED = "already_subscribed"
     INVALID_SIGNATURE = "invalid_signature"
+    UNKNOWN_PLAN = "unknown_plan"
+    NO_SUBSCRIPTION = "no_subscription"
+    ALREADY_GRANDFATHERED = "already_grandfathered"
     #: Any other status. Nothing in this API raises one on purpose; it is here
     #: so that an exception from a dependency still answers in this shape.
     HTTP_ERROR = "http_error"
@@ -94,7 +97,10 @@ class ProblemError(BaseModel):
             "payment provider could not be reached; `already_subscribed` (409): a "
             "checkout for an account already on a plan, which changes plan in the "
             "customer portal instead. `invalid_signature` (400) answers only a webhook "
-            "that is not the payment provider's."
+            "that is not the payment provider's. Admin console: `unknown_plan` (422): "
+            "no plan has that slug; `no_subscription` (409): grandfathering an account "
+            "with no live subscription; `already_grandfathered` (409): grandfathering "
+            "one already pinned to a snapshot."
         ),
         examples=["not_found"],
     )
