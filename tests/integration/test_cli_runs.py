@@ -82,6 +82,8 @@ TRACKED: Final = {
     "detect-clusters": ("detect-clusters", [], "success"),
     # No account is deleted, so none is due.
     "purge-accounts": ("purge-accounts", [], "success"),
+    # Nobody's renewal has failed, and billing is not configured.
+    "billing": ("billing", [], "success"),
 }
 
 #: The verbs that do not record a run, and why. Keep this short.

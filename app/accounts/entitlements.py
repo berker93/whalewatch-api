@@ -9,8 +9,9 @@ Who
 ---
 ``viewer`` is the signed-in :class:`app.accounts.sessions.Viewer`, or None for
 someone signed out. Signed out is Free: there is one way through, not one per
-kind of visitor. So is a signed-in account with no live subscription, and one
-whose subscription's ``cancel_at`` has passed.
+kind of visitor. So is a signed-in account with no live subscription, one
+whose subscription's ``cancel_at`` has passed, and one whose unpaid renewal's
+grace has (``grace_ends_at``, :mod:`app.accounts.billing`).
 
 Resolving a key
 ---------------
@@ -253,7 +254,7 @@ class Grant:
     grandfathered: str | None
     overrides: Mapping[str, Value]
     ends_at: datetime | None
-    """``cancel_at``: from then on, Free."""
+    """The sooner of ``cancel_at`` and ``grace_ends_at``: from then on, Free."""
     started_at: datetime | None = None
     """When the subscription began: its anniversary is when its quota months
     start (:mod:`app.accounts.usage`). None only in a grant a session kept
@@ -307,7 +308,8 @@ async def grant_for(session: AsyncSession, user_id: int) -> Grant | None:
             select(
                 plan.slug,
                 grandfathered.slug,
-                Subscription.cancel_at,
+                # LEAST ignores nulls: null only when neither is set.
+                func.least(Subscription.cancel_at, Subscription.grace_ends_at),
                 Subscription.created_at,
                 subscription_overrides(),
             )
@@ -318,17 +320,18 @@ async def grant_for(session: AsyncSession, user_id: int) -> Grant | None:
                 Subscription.user_id == user_id,
                 Subscription.status.in_(LIVE_STATUSES),
                 or_(Subscription.cancel_at.is_(None), Subscription.cancel_at > func.now()),
+                or_(Subscription.grace_ends_at.is_(None), Subscription.grace_ends_at > func.now()),
             )
         )
     ).one_or_none()
     if row is None:
         return None
-    plan_slug, grandfathered_slug, cancel_at, created_at, values = row
+    plan_slug, grandfathered_slug, ends_at, created_at, values = row
     return Grant(
         plan=plan_slug,
         grandfathered=grandfathered_slug,
         overrides=values,
-        ends_at=cancel_at,
+        ends_at=ends_at,
         started_at=created_at,
     )
 

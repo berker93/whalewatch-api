@@ -65,8 +65,10 @@ AUTH_KEY_PREFIX: Final = "ww:rl:auth:"
 ATTEMPTS_KEY_PREFIX: Final = "ww:rl:attempts:"
 
 #: The load balancer's and the orchestrator's probes, which come from a few
-#: addresses many times a minute and would spend those addresses' budgets.
-EXEMPT_PATHS: Final = frozenset({"/health", "/ready"})
+#: addresses many times a minute and would spend those addresses' budgets;
+#: and Paddle's webhooks (app/api/routers/billing.py), which come from a few
+#: addresses in bursts, are signed, and are retried for days if refused.
+EXEMPT_PATHS: Final = frozenset({"/health", "/ready", "/webhooks/paddle"})
 
 # KEYS[1]: the address's sorted set. ARGV: window ms, limit, a unique member.
 # Returns {admitted 0|1, remaining, ms until the next request would be admitted}.

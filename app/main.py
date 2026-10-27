@@ -52,6 +52,7 @@ from app.api.routers import (
     account,
     api_keys,
     auth,
+    billing,
     filings,
     health,
     insiders,
@@ -236,8 +237,10 @@ def create_app(settings: Settings) -> FastAPI:
             responses={**RATE_LIMITED, **METERED},
             dependencies=[MeteredDep],
         )
-    for router in (auth, me, account, watchlist, saved_filters, api_keys):
+    for router in (auth, me, account, watchlist, saved_filters, api_keys, billing):
         app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)
+    # Paddle's, not a client's: outside /v1, the OpenAPI document and the rate limit.
+    app.include_router(billing.webhook_router)
 
     return app
 

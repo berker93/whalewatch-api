@@ -2,7 +2,7 @@
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
 fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user,
-delete-user, restore-user, purge-accounts.
+delete-user, restore-user, purge-accounts, billing.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -48,6 +48,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli delete-user --email ada@example.com
     uv run python -m app.cli restore-user --email ada@example.com
     uv run python -m app.cli purge-accounts
+    uv run python -m app.cli billing
 
 Every run is recorded
 ---------------------
@@ -136,7 +137,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts import privacy
 from app.accounts import rules as account_rules
+from app.accounts.billing import Cancelled, cancel_for_deleted
 from app.accounts.mail import account_deleted, deliver, mailer_for
+from app.accounts.paddle import PaddleClient, http_client
 from app.accounts.passwords import hash_password
 from app.accounts.rules import DEFAULT_TIME_ZONE
 from app.accounts.sessions import SessionStore, SessionStoreError
@@ -272,7 +275,7 @@ from app.ingestion.parsers.thirteen_f_list import (
     parse_13f_list,
 )
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
-from app.jobs.accounts import purge_accounts
+from app.jobs.accounts import purge_accounts, run_billing
 from app.jobs.cache import invalidate_cache
 from app.jobs.derived import recompute_positions, refresh_matviews
 from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
@@ -1901,6 +1904,7 @@ async def _delete_user(email: str) -> None:
             )
             if user is None:
                 raise CommandError(f"no account has the login {email}")
+            user_id = user.id
             try:
                 deletion = await privacy.delete_account(
                     session, SessionStore(redis), user, requested_by=DeletionRequester.OPERATOR
@@ -1913,8 +1917,28 @@ async def _delete_user(email: str) -> None:
             purge_after = deletion.purge_after
     finally:
         await redis.aclose()
-    await deliver(mailer_for(settings), account_deleted(to=email, purge_after=purge_after.date()))
+    cancelled = await _cancel_billing(settings, user_id)
+    await deliver(
+        mailer_for(settings),
+        account_deleted(to=email, purge_after=purge_after.date(), cancelled_plans=cancelled.plans),
+    )
     typer.echo(f"delete-user  {email}  erased after {_instant(purge_after)}")
+    for plan in cancelled.plans:
+        typer.echo(f"  {plan} subscription cancelled in Paddle")
+    if cancelled.failed:
+        typer.echo(
+            f"  {_count(cancelled.failed, 'subscription')} not cancelled yet: Paddle refused or "
+            "could not be reached; the hourly billing job tries again",
+            err=True,
+        )
+
+
+async def _cancel_billing(settings: Settings, user_id: int) -> Cancelled:
+    """Cancel the deleted user's Paddle subscriptions, after the deletion committed."""
+    if not settings.billing_enabled:
+        return Cancelled(plans=[], failed=0)
+    async with session_scope(settings) as session, http_client(settings) as http:
+        return await cancel_for_deleted(session, PaddleClient(http), user_id=user_id)
 
 
 @app.command("restore-user")
@@ -1967,6 +1991,35 @@ async def _purge_accounts() -> None:
         _echo_locked(locked)
         return
     typer.echo(f"purge-accounts  {_count(len(ran.value), 'account')} erased")
+
+
+@app.command("billing")
+def billing_command() -> None:
+    """Cancel deleted accounts' Paddle subscriptions, and send the dunning emails due.
+
+    Deleting an account cancels its subscription at once; this retries one
+    Paddle refused or could not be reached for. Then, for renewals whose
+    payment failed, the reminder BILLING_REMINDER_DAYS before the grace
+    ends and the notice once it has, each sent once. The plan ends at the end
+    of the grace whether this runs or not. Beat runs this hourly.
+    """
+    asyncio.run(_billing())
+
+
+async def _billing() -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    try:
+        ran = await run_billing(settings)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
+    cancelled, dunning = ran.value.cancelled, ran.value.dunning
+    typer.echo(
+        f"billing  {_count(len(cancelled.plans), 'subscription')} cancelled"
+        + (f" ({cancelled.failed:,} failed)" if cancelled.failed else "")
+        + f"  {_count(dunning.reminded, 'reminder')}  {_count(dunning.downgraded, 'downgrade')}"
+    )
 
 
 @app.command("seed-investors")

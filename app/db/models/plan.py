@@ -20,6 +20,9 @@ an UPDATE, not a deploy (:mod:`app.accounts.entitlements` reads them).
 ``subscription_entitlement``
     One subscription's own value for a key, above both plans: a comp, a
     raised limit for one customer.
+``paddle_event``
+    Every Paddle webhook event, once, by its ``event_id``: what makes a
+    redelivered event a no-op (:mod:`app.accounts.billing`).
 
 A value is JSON. A limit (:data:`LIMIT_KEYS`) is a whole number of at least
 0, or null for no limit; a flag (:data:`FLAG_KEYS`) is true or false. The
@@ -177,8 +180,26 @@ SUBSCRIPTION_STATUS_CHECK: Final = "status IN ({})".format(
 LIVE_CHECK: Final = "status IN ({})".format(", ".join(f"'{s.value}'" for s in LIVE_STATUSES))
 
 
+class DunningStep(StrEnum):
+    """The last email a failed renewal's dunning sent (:mod:`app.accounts.billing`)."""
+
+    PAYMENT_FAILED = "payment_failed"
+    GRACE_ENDING = "grace_ending"
+    DOWNGRADED = "downgraded"
+
+
+DUNNING_STEP_CHECK: Final = "dunning_notified IS NULL OR dunning_notified IN ({})".format(
+    ", ".join(f"'{s.value}'" for s in DunningStep)
+)
+
+
 class Subscription(Base):
-    """One user on one plan, for as long as its status is live."""
+    """One user on one plan, for as long as its status is live.
+
+    A paid one mirrors a Paddle subscription: its status, plan and period are
+    whatever Paddle's last webhook said, never what a checkout redirect did.
+    One made by hand (a comp) has no Paddle ids.
+    """
 
     __tablename__ = "subscription"
 
@@ -203,6 +224,26 @@ class Subscription(Base):
     )
     """A plan whose terms the user keeps, above :attr:`plan_id`'s."""
 
+    paddle_subscription_id: Mapped[str | None] = mapped_column(Text, unique=True)
+    """``sub_...``: the Paddle subscription this mirrors. Null for one made by hand."""
+
+    paddle_customer_id: Mapped[str | None] = mapped_column(Text)
+    """``ctm_...``: who pays, in Paddle. What a customer portal session is opened for."""
+
+    paddle_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """``occurred_at`` of the last Paddle event applied: an older one arriving
+    later changes nothing."""
+
+    past_due_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When a renewal's payment first failed, for as long as it stays unpaid."""
+
+    grace_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When an unpaid renewal stops granting its plan: from then on, Free,
+    whatever the status says. Set with :attr:`past_due_since`."""
+
+    dunning_notified: Mapped[str | None] = mapped_column(Text)
+    """One :class:`DunningStep` value: the last dunning email sent."""
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     updated_at: Mapped[datetime] = mapped_column(
@@ -211,7 +252,12 @@ class Subscription(Base):
 
     __table_args__ = (
         CheckConstraint(SUBSCRIPTION_STATUS_CHECK, name="status_is_known"),
+        CheckConstraint(DUNNING_STEP_CHECK, name="dunning_step_is_known"),
+        CheckConstraint(
+            "(past_due_since IS NULL) = (grace_ends_at IS NULL)", name="grace_has_a_start"
+        ),
         Index("ix_subscription_user_id", "user_id"),
+        Index("ix_subscription_paddle_customer_id", "paddle_customer_id"),
         # One live subscription per user: resolving a user's plan finds one or none.
         Index(
             "uq_subscription_user_live",
@@ -239,3 +285,44 @@ class SubscriptionEntitlement(Base):
         CheckConstraint(KEY_CHECK, name="key_is_known"),
         CheckConstraint(VALUE_CHECK, name="value_fits_key"),
     )
+
+
+class PaddleEventOutcome(StrEnum):
+    """What a webhook event did."""
+
+    APPLIED = "applied"
+    STALE = "stale"
+    """Older than what its subscription already reflects: changed nothing."""
+    IGNORED = "ignored"
+    """A type not acted on, or a failed payment for no subscription of ours."""
+    UNMATCHED = "unmatched"
+    """A subscription no account could be found for: one not bought through
+    our checkout. Logged as an error, for a person to look at."""
+
+
+PADDLE_EVENT_OUTCOME_CHECK: Final = "outcome IN ({})".format(
+    ", ".join(f"'{o.value}'" for o in PaddleEventOutcome)
+)
+
+
+class PaddleEvent(Base):
+    """One Paddle webhook event, received once. No payload: nothing personal."""
+
+    __tablename__ = "paddle_event"
+
+    event_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    """``evt_...``: the same on every delivery of one event."""
+
+    event_type: Mapped[str] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    entity_id: Mapped[str | None] = mapped_column(Text, index=True)
+    """The ``sub_...`` or ``txn_...`` it was about."""
+
+    outcome: Mapped[str] = mapped_column(Text)
+    """One :class:`PaddleEventOutcome` value."""
+
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (CheckConstraint(PADDLE_EVENT_OUTCOME_CHECK, name="outcome_is_known"),)

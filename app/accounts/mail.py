@@ -1,5 +1,6 @@
 """Account emails: verify an address, confirm an email change, tell the old address,
-reset a password, say an account was deleted, warn that a monthly quota is 80% spent.
+reset a password, say an account was deleted, warn that a monthly quota is 80% spent,
+and each step of a failed renewal's dunning.
 
 Two backends, by ``EMAIL_BACKEND``. ``log`` writes each message to the log,
 link included, and sends nothing: in development the link is in the API's log
@@ -14,8 +15,9 @@ which posts the token back to the API.
 
 import asyncio
 import smtplib
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from email.message import EmailMessage
 from typing import Protocol
 from urllib.parse import urlencode
@@ -143,7 +145,13 @@ def password_reset(settings: Settings, *, to: str, token: str, minutes: int) -> 
     )
 
 
-def account_deleted(*, to: str, purge_after: date) -> Message:
+def account_deleted(*, to: str, purge_after: date, cancelled_plans: Sequence[str] = ()) -> Message:
+    """:param cancelled_plans: The paid plans whose subscriptions the deletion cancelled."""
+    cancelled = "".join(
+        f"Your {plan} subscription is cancelled: it won't renew, and you won't be "
+        "charged again.\n\n"
+        for plan in cancelled_plans
+    )
     return Message(
         to=to,
         subject="Your WhaleWatch account is deleted",
@@ -151,6 +159,7 @@ def account_deleted(*, to: str, purge_after: date) -> Message:
             "Your WhaleWatch account was deleted, and you were signed out everywhere. "
             f"What it held is erased for good on {purge_after:%d %B %Y}; until then "
             "WhaleWatch support can restore it on request.\n\n"
+            f"{cancelled}"
             "If you didn't delete it, contact support now: whoever did knew your password."
         ),
     )
@@ -170,5 +179,70 @@ def quota_warning(
             f"Your usage, and the plans with more, are on your account page:\n"
             f"{settings.web_url}{ACCOUNT_PATH}\n\n"
             "This is the only warning this month."
+        ),
+    )
+
+
+# --- dunning: a renewal whose payment failed ------------------------------------------
+#
+# Each links to the account page, which opens Paddle's customer portal: a
+# portal link expires within the day, so none is put in an email.
+
+
+def _day(at: datetime) -> str:
+    return f"{at:%d %B %Y} (UTC)"
+
+
+def payment_failed(settings: Settings, *, to: str, plan: str, grace_ends_at: datetime) -> Message:
+    return Message(
+        to=to,
+        subject="Your WhaleWatch payment didn't go through",
+        body=(
+            f"We couldn't take the payment to renew your WhaleWatch {plan} plan. "
+            "Our payment provider, Paddle, will try the card again over the coming days.\n\n"
+            f"You keep {plan} until {_day(grace_ends_at)}. To keep it after that, "
+            "update your card from your account page:\n"
+            f"{settings.web_url}{ACCOUNT_PATH}\n\n"
+            "If the payment hasn't gone through by then, your account moves to Free. "
+            "Nothing you've saved is deleted."
+        ),
+    )
+
+
+def grace_ending(settings: Settings, *, to: str, plan: str, grace_ends_at: datetime) -> Message:
+    return Message(
+        to=to,
+        subject=f"Your WhaleWatch {plan} plan ends on {grace_ends_at:%d %B}",
+        body=(
+            f"The payment to renew your WhaleWatch {plan} plan still hasn't gone "
+            f"through. On {_day(grace_ends_at)} your account moves to Free.\n\n"
+            f"Update your card from your account page to keep {plan}:\n"
+            f"{settings.web_url}{ACCOUNT_PATH}"
+        ),
+    )
+
+
+def downgraded(settings: Settings, *, to: str, plan: str) -> Message:
+    return Message(
+        to=to,
+        subject="Your WhaleWatch account is now on Free",
+        body=(
+            f"The payment to renew your WhaleWatch {plan} plan didn't go through, so "
+            "your account is on Free from today. Nothing you've saved is deleted.\n\n"
+            f"If the payment goes through later, {plan} comes back by itself. You can "
+            f"update your card, or choose a plan again, from your account page:\n"
+            f"{settings.web_url}{ACCOUNT_PATH}"
+        ),
+    )
+
+
+def payment_recovered(settings: Settings, *, to: str, plan: str) -> Message:
+    return Message(
+        to=to,
+        subject="Your WhaleWatch payment went through",
+        body=(
+            f"Thanks: the payment for your WhaleWatch {plan} plan went through, and "
+            f"{plan} is yours again with nothing lost.\n\n"
+            f"Your plan and payments are on your account page:\n{settings.web_url}{ACCOUNT_PATH}"
         ),
     )

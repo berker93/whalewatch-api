@@ -17,6 +17,7 @@ task                       CLI verb                    job
 ``recompute_positions``    ``recompute``               app/jobs/derived.py
 ``refresh_matviews``       ``refresh-views``           app/jobs/derived.py
 ``purge_accounts``         ``purge-accounts``          app/jobs/accounts.py
+``run_billing``            ``billing``                 app/jobs/accounts.py
 =========================  ==========================  ==============================
 
 What a task adds is only what a message needs: arguments that are JSON
@@ -282,6 +283,13 @@ def refresh_matviews(
 def purge_accounts(self: Task[Any, Any]) -> Summary:
     """``purge-accounts``: erase every deleted account past its thirty days."""
     return _run(self, accounts.purge_accounts)
+
+
+@shared_task(bind=True, queue=COMPUTE_QUEUE, max_retries=MAX_RETRIES)
+def run_billing(self: Task[Any, Any]) -> Summary:
+    """``billing``: deleted accounts' subscriptions cancelled, and the
+    reminders and downgrade emails of unpaid renewals."""
+    return _run(self, accounts.run_billing)
 
 
 # --- chains ------------------------------------------------------------------

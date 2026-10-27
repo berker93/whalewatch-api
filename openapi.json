@@ -5091,7 +5091,7 @@
           "account"
         ],
         "summary": "Delete the account: signed out at once, erased after 30 days",
-        "description": "Every session ends, this one too, and the cookie is cleared. From then\non the login signs nobody in, and its address may make a new account. The\nwatchlist, the consent records and the account itself are erased 30 days\nlater; until then an operator can restore it on request. A record that the\naccount was deleted, and when, is kept, with nothing else about it. A\nnotice goes to the address. Works unverified: an account that cannot save\nmay still go.",
+        "description": "Every session ends, this one too, and the cookie is cleared. From then\non the login signs nobody in, and its address may make a new account. The\nwatchlist, the consent records and the account itself are erased 30 days\nlater; until then an operator can restore it on request. A record that the\naccount was deleted, and when, is kept, with nothing else about it. A\nnotice goes to the address. A paid subscription is cancelled at once and\nis not charged again; restoring the account does not bring it back. Works\nunverified: an account that cannot save may still go.",
         "operationId": "deleteAccount",
         "requestBody": {
           "content": {
@@ -5962,6 +5962,226 @@
           }
         }
       }
+    },
+    "/v1/billing": {
+      "get": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "The account's subscription, and whether payments work",
+        "description": "`subscription` is null for an account that never had one. Read from\nthe payment provider's webhooks: after a checkout, ask again until it\nshows the plan bought.",
+        "operationId": "getBilling",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Billing"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/checkout": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "A checkout link for a plan",
+        "description": "Open `url`. The account is on the plan once the payment provider\nconfirms the payment by webhook, usually within seconds: `GET\n/v1/billing` says when. A plan that is not for sale is a 422; an account\nwhose email is not verified, a 403.",
+        "operationId": "createCheckout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutLink"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`billing_unavailable`: payments are not set up here, or Paddle could not be reached. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`already_subscribed`: the account has a subscription. Change plan, or fix a failed payment, in the portal (`POST /v1/billing/portal`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/billing/portal": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "A link into the payment provider's customer portal",
+        "description": "Change plan, update the card, cancel, or download invoices there. The\nlinks work for a short while: ask for new ones each time. What changes\nreaches the account by webhook, as a checkout does.",
+        "operationId": "createPortalSession",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalLink"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`billing_unavailable`: payments are not set up here, or Paddle could not be reached. Try again shortly.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The account has never paid: there is nothing to manage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6597,6 +6817,138 @@
         "title": "Basis",
         "description": "The lawful basis (GDPR Art. 6(1)) a purpose rests on."
       },
+      "Billing": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "description": "Whether checkout and the portal work. False: payments are not set up.",
+            "examples": [
+              true
+            ]
+          },
+          "subscription": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BillingSubscription"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The live subscription, else the latest one; null for an account that never had one. After a checkout this changes once the payment provider's webhook has arrived, not when the buyer is sent back: ask again until it does."
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "subscription"
+        ],
+        "title": "Billing",
+        "description": "Whether payments work, and the account's subscription."
+      },
+      "BillingSubscription": {
+        "properties": {
+          "plan": {
+            "$ref": "#/components/schemas/MePlan",
+            "description": "The plan it is for."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "trialing",
+              "active",
+              "past_due",
+              "paused",
+              "unpaid",
+              "canceled",
+              "incomplete",
+              "incomplete_expired"
+            ],
+            "title": "Status",
+            "description": "`active` or `trialing`: paid for. `past_due`: a renewal's payment failed and is being retried; the plan holds until `grace_ends_at`. `paused` and `canceled`: it grants nothing.",
+            "examples": [
+              "active"
+            ]
+          },
+          "current_period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Period End",
+            "description": "When the period paid for ends. Null when nothing is being paid for.",
+            "examples": [
+              "2026-11-27T10:00:00Z"
+            ]
+          },
+          "cancel_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel At",
+            "description": "When a cancellation takes effect: the plan holds until then. Null for none.",
+            "examples": [
+              null
+            ]
+          },
+          "grace_ends_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grace Ends At",
+            "description": "While a renewal is unpaid: when the account moves to Free unless it is paid by then. Null otherwise.",
+            "examples": [
+              null
+            ]
+          },
+          "grants_plan": {
+            "type": "boolean",
+            "title": "Grants Plan",
+            "description": "Whether it gives the account its plan now: false once cancelled, paused, or past its grace. `GET /v1/me` says what the account is on.",
+            "examples": [
+              true
+            ]
+          },
+          "manageable": {
+            "type": "boolean",
+            "title": "Manageable",
+            "description": "Whether `POST /v1/billing/portal` opens it: paid through Paddle, not given by hand.",
+            "examples": [
+              true
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan",
+          "status",
+          "current_period_end",
+          "cancel_at",
+          "grace_ends_at",
+          "grants_plan",
+          "manageable"
+        ],
+        "title": "BillingSubscription",
+        "description": "The account's subscription as Paddle's last word on it left it."
+      },
       "ChangeAction": {
         "type": "string",
         "enum": [
@@ -6653,6 +7005,53 @@
         ],
         "title": "ChangeCounts",
         "description": "Positions opened, added to, trimmed and exited in one filing's quarter."
+      },
+      "CheckoutLink": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "Paddle's checkout for this account and plan. Open it; the account changes plan when the payment is confirmed by webhook, not on return from it.",
+            "examples": [
+              "https://whalewatch.io/pay?_ptxn=txn_01hv8wptq8987qeep44cyrewp9"
+            ]
+          },
+          "transaction_id": {
+            "type": "string",
+            "title": "Transaction Id",
+            "description": "Paddle's transaction, for support.",
+            "examples": [
+              "txn_01hv8wptq8987qeep44cyrewp9"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "transaction_id"
+        ],
+        "title": "CheckoutLink",
+        "description": "Where to send the buyer to pay."
+      },
+      "CheckoutRequest": {
+        "properties": {
+          "plan": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Plan",
+            "description": "A public paid plan's id, as `plan_limit` refusals and `GET /v1/me` name them.",
+            "examples": [
+              "pro"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan"
+        ],
+        "title": "CheckoutRequest",
+        "description": "Which plan to buy."
       },
       "ClusterInsider": {
         "properties": {
@@ -7062,6 +7461,9 @@
           "plan_limit",
           "invalid_api_key",
           "quota_exceeded",
+          "billing_unavailable",
+          "already_subscribed",
+          "invalid_signature",
           "http_error"
         ],
         "title": "ErrorCode",
@@ -12401,7 +12803,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
             "examples": [
               "not_found"
             ]
@@ -12523,6 +12925,56 @@
         ],
         "title": "PlanOffer",
         "description": "A plan that allows what was refused: the cheapest public one."
+      },
+      "PortalLink": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "The portal: change plan, update the card, cancel, download invoices.",
+            "examples": [
+              "https://customer-portal.paddle.com/cpl_01j7zbyqs3vah3aafp4jf62qaw?token=..."
+            ]
+          },
+          "cancel_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Url",
+            "description": "Straight to cancelling. Null with no live subscription.",
+            "examples": [
+              null
+            ]
+          },
+          "update_payment_method_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update Payment Method Url",
+            "description": "Straight to replacing the card. Null with no live subscription.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "url",
+          "cancel_url",
+          "update_payment_method_url"
+        ],
+        "title": "PortalLink",
+        "description": "Links into Paddle's customer portal. Each works for a short while: open\nit now, and ask for a new one next time."
       },
       "PortfolioPosition": {
         "properties": {
@@ -13030,7 +13482,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
             "examples": [
               "not_found"
             ]
@@ -13226,7 +13678,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
             "examples": [
               "not_found"
             ]
@@ -14363,7 +14815,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
             "examples": [
               "not_found"
             ]
@@ -15561,7 +16013,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's.",
             "examples": [
               "not_found"
             ]

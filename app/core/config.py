@@ -155,6 +155,32 @@ class Settings(BaseSettings):
     smtp_password: SecretStr | None = None
     smtp_starttls: bool = True
 
+    # --- billing (Paddle) ------------------------------------------------------
+    # Paddle is the merchant of record: it takes the payment, the tax and the
+    # invoice, and tells this API what happened by webhook (app/accounts/billing.py).
+    # Unset, billing is off: the checkout, portal and webhook answer 503.
+    # "sandbox" is sandbox-api.paddle.com and its test cards; production
+    # refuses it, as it refuses a key that would take no one's money.
+    paddle_environment: Literal["sandbox", "production"] = "sandbox"
+    paddle_api_key: SecretStr | None = None
+    # The notification destination's secret key, which signs every webhook.
+    paddle_webhook_secret: SecretStr | None = None
+    # Which Paddle price each plan is bought at, by plan slug, comma-separated:
+    # PADDLE_PRICES=pro=pri_01h...,api_hobbyist=pri_01h... In the environment
+    # rather than on the plan row because a sandbox and a live account have
+    # different ids, and travel with the account's key and secret.
+    paddle_prices: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+    # How far a webhook's signed timestamp may be from now. Paddle's own SDKs
+    # allow five seconds; a redelivery is signed afresh, so a refused one is
+    # retried with a new timestamp.
+    paddle_signature_tolerance_seconds: int = Field(default=5, ge=1)
+
+    # A renewal whose payment failed keeps its plan this long, while Paddle
+    # retries the card and the user is told to update it; then it is Free.
+    billing_grace_days: int = Field(default=7, ge=0)
+    # The reminder that the grace is ending goes this long before it ends.
+    billing_reminder_days: int = Field(default=2, ge=0)
+
     # --- SEC / EDGAR ---------------------------------------------------------
     # No default, on purpose. SEC's fair-access policy requires a real contact
     # address in the User-Agent of every EDGAR request and blocks traffic that
@@ -244,6 +270,36 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("paddle_api_key", "paddle_webhook_secret", mode="before")
+    @classmethod
+    def _blank_secret_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("paddle_prices", mode="before")
+    @classmethod
+    def _split_prices(cls, value: object) -> object:
+        """``pro=pri_1,api_pro=pri_2`` to ``{"pro": "pri_1", "api_pro": "pri_2"}``."""
+        if not isinstance(value, str):
+            return value
+        prices: dict[str, str] = {}
+        for pair in filter(None, (part.strip() for part in value.split(","))):
+            slug, sep, price = (piece.strip() for piece in pair.partition("="))
+            if not sep or not slug or not price:
+                raise ValueError(f"PADDLE_PRICES entry {pair!r} is not plan=price_id")
+            prices[slug] = price
+        return prices
+
+    @field_validator("paddle_prices")
+    @classmethod
+    def _one_plan_per_price(cls, value: dict[str, str]) -> dict[str, str]:
+        """A webhook names a price, and finds its plan by it: two plans on one
+        price would make that a guess."""
+        if len(set(value.values())) != len(value):
+            raise ValueError("PADDLE_PRICES gives two plans the same price")
+        return value
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:
@@ -288,6 +344,32 @@ class Settings(BaseSettings):
                 "for redistribution. Production runs QUOTE_PROVIDER=null"
             )
         return self
+
+    @model_validator(mode="after")
+    def _billing_is_whole(self) -> Self:
+        """Half a Paddle configuration fails at the first checkout or the
+        first webhook, in front of a customer; refuse it at boot."""
+        if (self.paddle_api_key is None) != (self.paddle_webhook_secret is None):
+            raise ValueError(
+                "PADDLE_API_KEY and PADDLE_WEBHOOK_SECRET are set together or not at all"
+            )
+        if (
+            self.paddle_api_key is not None
+            and self.paddle_environment == "sandbox"
+            and self.environment == "production"
+        ):
+            raise ValueError(
+                "PADDLE_ENVIRONMENT=sandbox takes no one's money; production needs "
+                "PADDLE_ENVIRONMENT=production"
+            )
+        if self.billing_reminder_days > self.billing_grace_days:
+            raise ValueError("BILLING_REMINDER_DAYS cannot be longer than BILLING_GRACE_DAYS")
+        return self
+
+    @property
+    def billing_enabled(self) -> bool:
+        """Whether Paddle is configured: checkout, portal and webhooks work."""
+        return self.paddle_api_key is not None and self.paddle_webhook_secret is not None
 
     @model_validator(mode="after")
     def _raw_store_is_complete(self) -> Self:

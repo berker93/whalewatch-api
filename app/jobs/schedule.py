@@ -136,4 +136,14 @@ BEAT_SCHEDULE: Final[dict[str, dict[str, Any]]] = {
         "schedule": crontab(minute=0, hour=5),
         "options": {"expires": DAILY_EXPIRES_SECONDS},
     },
+    # Billing's upkeep, hourly: a deleted account's subscription that Paddle
+    # could not cancel at the deletion, tried again; and for renewals whose
+    # payment failed, the reminder before the grace ends and the email saying
+    # it has. The plan itself ends on time without it. A run that expired
+    # unsent is caught up by the next, since each takes everything due.
+    "billing": {
+        "task": "app.jobs.tasks.run_billing",
+        "schedule": crontab(minute=15),
+        "options": {"expires": 60 * 60.0},
+    },
 }

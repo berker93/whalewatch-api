@@ -34,6 +34,11 @@ stay for :data:`DELETION_GRACE`, in which an operator can undo it
 (:func:`restore_account`). Then :func:`purge_due` erases the account and
 everything that hangs off it, and the ``account_deletion`` row that recorded
 the request records the purge, and outlives it.
+
+A paid subscription is cancelled in Paddle as the account is deleted
+(:func:`app.accounts.billing.cancel_for_deleted`), by the caller once the
+deletion has committed. Until Paddle has cancelled it, the account is not
+purged: its subscription row is the only record of what to cancel.
 """
 
 from dataclasses import dataclass
@@ -44,7 +49,9 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.api_keys import revoke_all
+from app.accounts.billing import still_billing
 from app.accounts.sessions import SessionStore, now
+from app.core.logging import get_logger
 from app.db.models import (
     BASES,
     AccountDeletion,
@@ -61,6 +68,8 @@ from app.db.models import (
     UsageCounter,
     WatchlistItem,
 )
+
+logger = get_logger(__name__)
 
 #: The terms of service in force: the date whalewatch-web's took effect.
 TERMS_VERSION: Final = "2026-10-24"
@@ -288,9 +297,22 @@ async def purge_due(session: AsyncSession, *, at: datetime | None = None) -> lis
     purge on its deletion row. Does not commit.
 
     ``SKIP LOCKED``, so two runs never purge one account twice, nor wait on a
-    restore holding its row.
+    restore holding its row. An account whose Paddle subscription is not
+    cancelled yet waits, logged, for the run after it is.
     """
     at = at or now()
+    held = (
+        await session.scalars(
+            select(AccountDeletion.user_id).where(
+                AccountDeletion.purge_after <= at,
+                AccountDeletion.purged_at.is_(None),
+                AccountDeletion.restored_at.is_(None),
+                still_billing(AccountDeletion.user_id),
+            )
+        )
+    ).all()
+    if held:
+        logger.error("accounts.purge_held_for_billing", user_ids=list(held))
     due = (
         await session.scalars(
             select(AccountDeletion)
@@ -298,6 +320,7 @@ async def purge_due(session: AsyncSession, *, at: datetime | None = None) -> lis
                 AccountDeletion.purge_after <= at,
                 AccountDeletion.purged_at.is_(None),
                 AccountDeletion.restored_at.is_(None),
+                ~still_billing(AccountDeletion.user_id),
             )
             .order_by(AccountDeletion.id)
             .with_for_update(skip_locked=True)

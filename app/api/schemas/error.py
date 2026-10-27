@@ -51,6 +51,9 @@ class ErrorCode(StrEnum):
     PLAN_LIMIT = "plan_limit"
     INVALID_API_KEY = "invalid_api_key"
     QUOTA_EXCEEDED = "quota_exceeded"
+    BILLING_UNAVAILABLE = "billing_unavailable"
+    ALREADY_SUBSCRIBED = "already_subscribed"
+    INVALID_SIGNATURE = "invalid_signature"
     #: Any other status. Nothing in this API raises one on purpose; it is here
     #: so that an exception from a dependency still answers in this shape.
     HTTP_ERROR = "http_error"
@@ -86,7 +89,12 @@ class ProblemError(BaseModel):
             "`detail` names the limit and the plan that lifts it. API keys: "
             "`invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, "
             "or the key is unknown or revoked; `quota_exceeded` (429): the month's "
-            "quota of calls is spent; `X-RateLimit-Reset` says when it resets."
+            "quota of calls is spent; `X-RateLimit-Reset` says when it resets. "
+            "Billing: `billing_unavailable` (503): payments are not set up, or the "
+            "payment provider could not be reached; `already_subscribed` (409): a "
+            "checkout for an account already on a plan, which changes plan in the "
+            "customer portal instead. `invalid_signature` (400) answers only a webhook "
+            "that is not the payment provider's."
         ),
         examples=["not_found"],
     )

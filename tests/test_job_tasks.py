@@ -403,6 +403,7 @@ def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -
         "recompute_positions": COMPUTE_QUEUE,
         "refresh_matviews": COMPUTE_QUEUE,
         "purge_accounts": COMPUTE_QUEUE,
+        "run_billing": COMPUTE_QUEUE,
         "poll_13f": COMPUTE_QUEUE,
         "daily_form4": COMPUTE_QUEUE,
         "ping": COMPUTE_QUEUE,
