@@ -52,14 +52,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts import activity, privacy, rules
-from app.accounts.mail import (
-    Message,
-    deliver,
-    email_verification,
-    mailer_for,
-    password_reset,
-    registration_attempt,
-)
+from app.accounts.delivery import Courier
+from app.accounts.mail import Message, email_verification, password_reset, registration_attempt
 from app.accounts.passwords import DUMMY_HASH, hash_password, needs_rehash, verify_password
 from app.accounts.sessions import (
     EMAIL_VERIFY_TTL,
@@ -82,7 +76,7 @@ from app.api.auth import (
     session_token,
     set_session_cookie,
 )
-from app.api.deps import SessionDep, SettingsDep
+from app.api.deps import CourierDep, SessionDep, SettingsDep
 from app.api.errors import INVALID, RATE_LIMITED, ApiError, Responses
 from app.api.schemas.auth import (
     CheckEmail,
@@ -162,17 +156,23 @@ def _live_user(email: str) -> Select[tuple[AppUser]]:
 
 
 def _send_verification(
-    background: BackgroundTasks, settings: Settings, *, to: str, token: str
+    background: BackgroundTasks,
+    courier: Courier,
+    settings: Settings,
+    *,
+    user: AppUser,
+    token: str,
 ) -> None:
     hours = int(EMAIL_VERIFY_TTL.total_seconds() // 3600)
-    _send_later(background, settings, email_verification(settings, to=to, token=token, hours=hours))
+    message = email_verification(settings, to=user.email, user_id=user.id, token=token, hours=hours)
+    _send_later(background, courier, message)
 
 
-def _send_later(background: BackgroundTasks, settings: Settings, message: Message) -> None:
-    """Send ``message`` once the answer has gone: SMTP takes seconds, and an
-    answer that waited for it would take longer when an address has an
+def _send_later(background: BackgroundTasks, courier: Courier, message: Message) -> None:
+    """Send ``message`` once the answer has gone: the provider takes a moment,
+    and an answer that waited for it would take longer when an address has an
     account than when it has none."""
-    background.add_task(deliver, mailer_for(settings), message)
+    background.add_task(courier.send, message)
 
 
 @router.post(
@@ -271,6 +271,7 @@ async def register(
     background: BackgroundTasks,
     session: SessionDep,
     settings: SettingsDep,
+    courier: CourierDep,
 ) -> RegisterResult:
     """While signups are closed, `status: recorded`: the request is kept. Open,
     `status: check_email`, and an email goes to the address: a link to verify
@@ -327,7 +328,7 @@ async def register(
     password_hash = await hash_password(body.password)
     existing = await session.scalar(_live_user(email))
     if existing is not None:
-        await _tell_existing(session, background, settings, existing)
+        await _tell_existing(session, background, courier, settings, existing)
         return check_email
 
     joined = now()
@@ -352,23 +353,28 @@ async def register(
     await privacy.forget_signup_request(session, email)
     token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
     await session.commit()
-    _send_verification(background, settings, to=email, token=token)
+    _send_verification(background, courier, settings, user=user, token=token)
     return check_email
 
 
 async def _tell_existing(
-    session: AsyncSession, background: BackgroundTasks, settings: Settings, user: AppUser
+    session: AsyncSession,
+    background: BackgroundTasks,
+    courier: Courier,
+    settings: Settings,
+    user: AppUser,
 ) -> None:
     """Registering with an address that has an account changes nothing in it.
     Verified, its owner hears that someone tried. Not yet, the owner is most
     likely registering again for a link that never came: a fresh one goes,
     replacing the last, and the account keeps the name and password it has."""
     if user.email_verified_at is not None:
-        _send_later(background, settings, registration_attempt(settings, to=user.email))
+        message = registration_attempt(settings, to=user.email, user_id=user.id)
+        _send_later(background, courier, message)
         return
     token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
     await session.commit()
-    _send_verification(background, settings, to=user.email, token=token)
+    _send_verification(background, courier, settings, user=user, token=token)
 
 
 @router.post(
@@ -418,6 +424,7 @@ async def resend_verification(
     viewer: ViewerDep,
     session: SessionDep,
     settings: SettingsDep,
+    courier: CourierDep,
 ) -> None:
     """A fresh link, valid for 24 hours, replacing any sent before. Already
     verified: no change, and nothing sent. At most 5 in 15 minutes."""
@@ -427,7 +434,7 @@ async def resend_verification(
     await limit_attempts(request, "verify_email", user.email)
     token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
     await session.commit()
-    _send_verification(background, settings, to=user.email, token=token)
+    _send_verification(background, courier, settings, user=user, token=token)
 
 
 @router.post(
@@ -475,6 +482,7 @@ async def request_password_reset(
     background: BackgroundTasks,
     session: SessionDep,
     settings: SettingsDep,
+    courier: CourierDep,
 ) -> None:
     """A 204 whether or not the address has an account, so the answer reveals
     none, and as fast: the email goes after the answer. When it has one, a link
@@ -488,11 +496,8 @@ async def request_password_reset(
     token = await issue_token(session, user.id, TokenPurpose.PASSWORD_RESET, PASSWORD_RESET_TTL)
     await session.commit()
     minutes = int(PASSWORD_RESET_TTL.total_seconds() // 60)
-    _send_later(
-        background,
-        settings,
-        password_reset(settings, to=user.email, token=token, minutes=minutes),
-    )
+    message = password_reset(settings, to=user.email, user_id=user.id, token=token, minutes=minutes)
+    _send_later(background, courier, message)
 
 
 @router.post(

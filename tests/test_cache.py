@@ -463,6 +463,8 @@ def test_every_public_read_is_cached() -> None:
         "/v1/me/notifications",
         # Kept in Redis per user, by its own key, which a mark-read replaces.
         "/v1/me/notifications/count",
+        # One person's, by the link's token, and changed by its POST at once.
+        "/v1/email/unsubscribe",
         # With no `tz`, the answer is in the signed-in user's zone.
         "/v1/timeline",
         "/v1/timeline/upcoming",
@@ -504,6 +506,8 @@ def test_every_read_of_filing_data_is_gated() -> None:
         "/v1/billing",
         "/v1/me/notifications",
         "/v1/me/notifications/count",
+        # Which list an unsubscribe link leaves: a label, no filing data.
+        "/v1/email/unsubscribe",
     }
     reads = {
         path: route

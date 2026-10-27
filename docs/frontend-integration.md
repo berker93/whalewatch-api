@@ -465,7 +465,7 @@ At 80% of a month's quota the account gets one email: once per month, never twic
 
 ---
 
-## 6 · Three pages the FE doesn't have yet
+## 6 · Pages the emails link to
 
 Both links are built as `WEB_URL + path + ?token=<token>`. `WEB_URL` is the app surface (`https://app.whalewatch.com`; `http://app.localhost:5173` in dev). The paths are constants in `app/accounts/mail.py`. Say if you want different ones.
 
@@ -476,6 +476,18 @@ Both links are built as `WEB_URL + path + ?token=<token>`. `WEB_URL` is the app 
 | Reset password | `/reset-password?token=…` | A new-password form → `POST /v1/auth/password-reset/confirm { token, new_password }`. `204` → "Password changed. Log in." (every session was signed out). `422 invalid_token` → offer to send a new link. `422 weak_password` → under the field |
 
 `AuthAdapter` needs one more method for the second, for example `confirmPasswordReset(token, next)`, and `DataSource` (or the account module) one for the first, for example `confirmEmailChange(token)`.
+
+### 6a · Unsubscribe (ALR-3)
+
+Every alert email (the season digest included) has an unsubscribe link in its footer: `WEB_URL + /unsubscribe?token=…`. Mailbox providers also post to the API directly from the message's `List-Unsubscribe` header, with no page in between, so this page is only the footer link's.
+
+| Step | Call | What to show |
+|---|---|---|
+| On load | `GET /v1/email/unsubscribe?token=…` | `200 { mailing_list, kind, label, subscribed }`. Subscribed: "Unsubscribe from emails about {label}?" with one button. Not subscribed: "You're not getting emails about {label}" with nothing to press. **Never unsubscribe on load**: mail scanners open every link |
+| The button | `POST /v1/email/unsubscribe?token=…` (no body) | `200`, the same shape with `subscribed: false` → "Done. You won't get emails about {label}." Then link to `/account` for the rest of the email settings |
+| Either | `422 invalid_token` | "This unsubscribe link isn't valid any more. You can choose what WhaleWatch emails you from your account." with a link to `/account` |
+
+**Works signed out, and needs no session**: the token is the proof. `label` is a phrase for after "about": "the 13F season digest", "new 13F filings by Berkshire Hathaway". For an alert, leaving takes email off that one alert and keeps it in the notification centre. Account emails (verification, password reset, billing) have no unsubscribe link at all.
 
 ---
 

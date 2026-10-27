@@ -66,9 +66,14 @@ ATTEMPTS_KEY_PREFIX: Final = "ww:rl:attempts:"
 
 #: The load balancer's and the orchestrator's probes, which come from a few
 #: addresses many times a minute and would spend those addresses' budgets;
-#: and Paddle's webhooks (app/api/routers/billing.py), which come from a few
-#: addresses in bursts, are signed, and are retried for days if refused.
-EXEMPT_PATHS: Final = frozenset({"/health", "/ready", "/webhooks/paddle"})
+#: Paddle's and Postmark's webhooks (app/api/routers/billing.py, email.py),
+#: which come from a few addresses in bursts, are authenticated, and are
+#: retried if refused; and the one-click unsubscribe, which mailbox providers
+#: post from a few of their own servers for all their users at once, after a
+#: digest goes out. Its token's signature is checked before any work is done.
+EXEMPT_PATHS: Final = frozenset(
+    {"/health", "/ready", "/webhooks/paddle", "/webhooks/postmark", "/v1/email/unsubscribe"}
+)
 
 # KEYS[1]: the address's sorted set. ARGV: window ms, limit, a unique member.
 # Returns {admitted 0|1, remaining, ms until the next request would be admitted}.

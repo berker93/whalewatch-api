@@ -73,6 +73,8 @@ class ConsentSource(StrEnum):
     """An operator's ``create-user``, carrying over a signup request's answers if any."""
     PREFERENCES = "preferences"
     """The user, from their account: ``PATCH /v1/me/privacy``."""
+    UNSUBSCRIBE = "unsubscribe"
+    """The user, from an email's unsubscribe link or its one-click header."""
 
 
 class DeletionRequester(StrEnum):

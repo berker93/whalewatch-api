@@ -31,7 +31,7 @@ from sqlalchemy import select
 
 from app.accounts import billing, entitlements
 from app.accounts.billing import BillingError
-from app.accounts.mail import deliver, mailer_for
+from app.accounts.delivery import Courier
 from app.accounts.paddle import (
     Notification,
     PaddleClient,
@@ -50,7 +50,7 @@ from app.api.auth import (
     VerifiedViewerDep,
     ViewerDep,
 )
-from app.api.deps import SessionDep, SettingsDep
+from app.api.deps import CourierDep, SessionDep, SettingsDep
 from app.api.errors import INTERNAL_ERROR_MESSAGE, INVALID, ApiError, Responses, invalid, not_found
 from app.api.schemas.billing import (
     Billing,
@@ -61,7 +61,6 @@ from app.api.schemas.billing import (
 )
 from app.api.schemas.error import ErrorCode, Problem
 from app.api.schemas.me import MePlan
-from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.models import LIVE_STATUSES, Plan, Subscription
 
@@ -303,6 +302,7 @@ async def paddle_webhook(
     store: SessionStoreDep,
     settings: SettingsDep,
     background: BackgroundTasks,
+    courier: CourierDep,
 ) -> dict[str, Any]:
     """Apply the event once; a 2xx tells Paddle it is done. A 500 has it retry."""
     try:
@@ -320,7 +320,7 @@ async def paddle_webhook(
             status.HTTP_500_INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL_ERROR, INTERNAL_ERROR_MESSAGE
         ) from exc
     await _forget_grants(store, handled.users)
-    _send_later(background, settings, handled)
+    _send_later(background, courier, handled)
     return {
         "event_id": notification.event_id,
         "outcome": handled.outcome.value,
@@ -338,9 +338,6 @@ async def _forget_grants(store: SessionStore, users: set[int]) -> None:
             logger.warning("billing.grants_not_forgotten", user_id=user_id, error=repr(exc))
 
 
-def _send_later(background: BackgroundTasks, settings: Settings, handled: billing.Handled) -> None:
-    if not handled.mail:
-        return
-    mailer = mailer_for(settings)
+def _send_later(background: BackgroundTasks, courier: Courier, handled: billing.Handled) -> None:
     for message in handled.mail:
-        background.add_task(deliver, mailer, message)
+        background.add_task(courier.send, message)

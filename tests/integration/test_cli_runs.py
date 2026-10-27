@@ -97,6 +97,8 @@ UNTRACKED: Final = {
     "restore-user": "account administration, as create-user",
     "create-admin": "admin administration: logged in admin_action, which names no email",
     "disable-admin": "admin administration, as create-admin",
+    "check-email-domain": "asks DNS, and writes nothing anywhere",
+    "email-suppression": "account administration, as create-user",
 }
 
 

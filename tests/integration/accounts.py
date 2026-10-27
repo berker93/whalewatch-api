@@ -94,8 +94,9 @@ class Outbox:
 
     sent: list[Message] = field(default_factory=list)
 
-    async def send(self, message: Message) -> None:
+    async def send(self, message: Message, *, reference: str) -> str | None:
         self.sent.append(message)
+        return f"outbox-{reference}"
 
     def token_for(self, to: str) -> str:
         [body] = [m.body for m in self.sent if m.to == to and "token=" in m.body]

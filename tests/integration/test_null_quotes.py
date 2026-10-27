@@ -17,6 +17,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts.unsubscribe import ListKind, MailingList, token_for
 from app.admin.auth import admin_store
 from app.api.deps import get_redis
 from app.core.config import Settings
@@ -120,7 +121,8 @@ async def test_every_endpoint_answers_200(
     app.state.admin_sessions = admin_store(FakeRedis(), settings)  # type: ignore[arg-type]
     await make_admin(db_session)
     assert (await admin_in(client)).status_code == 200
-    calls = _gets(app, user_id=user_id)
+    token = token_for(settings, user_id, MailingList(ListKind.PRODUCT_EMAIL))
+    calls = _gets(app, user_id=user_id, token=token)
 
     responses = {path: await client.get(path, params=query) for path, query in calls}
 

@@ -428,6 +428,7 @@ async def test_the_purge_erases_the_account_and_the_audit_row_survives(
         "user_activity_day": 0,
         "alert_rule": 1,
         "notification": 1,
+        "email_log": 0,
     }
 
 

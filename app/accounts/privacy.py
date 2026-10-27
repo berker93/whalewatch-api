@@ -18,8 +18,10 @@ Each purpose rests on one basis (:data:`app.db.models.privacy.BASES`):
 
 Every change is a new ``consent_record`` row and the latest row per purpose is
 where the user stands (:func:`standing`): the history is the evidence. A
-sender of either kind of email asks :func:`may_email` first. Nothing sends
-either yet.
+sender of either kind of email asks :func:`may_email` first, which
+:class:`app.accounts.delivery.Courier` does at the moment it sends. Nothing
+sends either yet. An email's unsubscribe link withdraws its purpose with a row
+whose source is ``unsubscribe`` (:mod:`app.accounts.unsubscribe`).
 
 :data:`TERMS_VERSION` and :data:`PRIVACY_VERSION` name the documents
 whalewatch-web publishes, by the date each took effect. Publishing a new one
@@ -62,6 +64,7 @@ from app.db.models import (
     ConsentRecord,
     ConsentSource,
     DeletionRequester,
+    EmailLog,
     Notification,
     PlanOverride,
     Purpose,
@@ -165,11 +168,19 @@ async def history(session: AsyncSession, user_id: int) -> list[ConsentRecord]:
 
 
 async def choose(
-    session: AsyncSession, user_id: int, choices: dict[Purpose, bool]
+    session: AsyncSession,
+    user_id: int,
+    choices: dict[Purpose, bool],
+    *,
+    source: ConsentSource = ConsentSource.PREFERENCES,
 ) -> dict[Purpose, ConsentRecord]:
     """Record the user's choices, one row per purpose whose answer changed,
     and return where they stand. Nothing is written for an answer the same as
-    the last: a form sent twice is one choice."""
+    the last: a form sent twice is one choice.
+
+    :param source: Where they chose: the account's settings, or an email's
+        unsubscribe link.
+    """
     current = await standing(session, user_id)
     for purpose, granted in choices.items():
         if purpose not in CHOOSABLE:
@@ -182,7 +193,7 @@ async def choose(
                 user_id,
                 purpose,
                 granted,
-                ConsentSource.PREFERENCES,
+                source,
                 terms_version=None,
                 privacy_version=PRIVACY_VERSION,
             )
@@ -297,6 +308,7 @@ _CASCADED: Final = (
     UserActivityDay,
     AlertRule,
     Notification,
+    EmailLog,
 )
 
 

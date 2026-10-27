@@ -50,8 +50,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.accounts import entitlements
 from app.accounts.api_keys import KeyHolder
+from app.accounts.delivery import Courier
 from app.accounts.entitlements import Grant
-from app.accounts.mail import deliver, mailer_for, quota_warning
+from app.accounts.mail import quota_warning
 from app.accounts.sessions import now
 from app.accounts.usage import (
     QUOTA_NAMES,
@@ -64,7 +65,7 @@ from app.accounts.usage import (
     stored_count,
 )
 from app.api.auth import INVALID_API_KEY, ApiCallerDep
-from app.api.deps import SessionDep, SettingsDep
+from app.api.deps import CourierDep, SessionDep, SettingsDep
 from app.api.entitlements import GATED, PLAN_LIMITED, offer, offer_sentence, plan_limit_error
 from app.api.errors import ApiError, Responses
 from app.api.schemas.error import ErrorCode
@@ -132,6 +133,7 @@ def quota_headers(spent: Spent) -> dict[str, str]:
 async def spend(
     request: Request,
     background: BackgroundTasks,
+    courier: Courier,
     caller: KeyHolder,
     key: MeteredKey,
     session: AsyncSession,
@@ -184,13 +186,14 @@ async def spend(
         )
     setattr(request.state, QUOTA_HEADERS, headers)
     if spent.warn:
-        await _warn(meter, background, caller, key, spent, session, settings)
+        await _warn(meter, background, courier, caller, key, spent, session, settings)
     return spent
 
 
 async def _warn(
     meter: UsageMeter,
     background: BackgroundTasks,
+    courier: Courier,
     caller: KeyHolder,
     key: MeteredKey,
     spent: Spent,
@@ -214,11 +217,11 @@ async def _warn(
     assert spent.limit is not None  # no limit never warns
     logger.info("usage.warned", key=key, used=spent.used, limit=spent.limit)
     background.add_task(
-        deliver,
-        mailer_for(settings),
+        courier.send,
         quota_warning(
             settings,
             to=user.email,
+            user_id=user.id,
             what=QUOTA_NAMES[key],
             used=spent.used,
             limit=spent.limit,
@@ -267,10 +270,11 @@ async def spend_api_call(
     caller: ApiCallerDep,
     session: SessionDep,
     settings: SettingsDep,
+    courier: CourierDep,
 ) -> None:
     """One of the API key's ``api_calls_month``, for every data endpoint."""
     if caller is not None:
-        await spend(request, background, caller, "api_calls_month", session, settings)
+        await spend(request, background, courier, caller, "api_calls_month", session, settings)
 
 
 MeteredDep = Depends(spend_api_call)

@@ -49,6 +49,7 @@ from app.api.schemas.privacy import (
     ExportAlertRule,
     ExportApiKey,
     ExportConsent,
+    ExportEmail,
     ExportInsider,
     ExportInvestor,
     ExportLink,
@@ -72,6 +73,7 @@ from app.db.models import (
     ApiKey,
     AppUser,
     ConsentRecord,
+    EmailLog,
     Filer,
     Insider,
     Notification,
@@ -208,6 +210,9 @@ NOT_INCLUDED: Final = [
     "minutes behind at most",
     "server logs: request lines (time, path, IP address) and email delivery failures, kept "
     "for operations; ask for them by email",
+    "the text of each email: only its kind and how far it got are kept",
+    "the email suppression list: a one-way hash of each address that bounced or reported "
+    "spam, kept so that nothing is sent to it again; it is not tied to an account",
     "sign-in attempt counters: a hash of the email and the IP address, gone after 15 minutes",
     "the admin log's entries about this account (changes staff made to its plan, and why): "
     "ask for them by email",
@@ -307,7 +312,7 @@ async def export_me(
     viewer: ViewerDep, session: SessionDep, store: SessionStoreDep, response: Response
 ) -> Export:
     """The account, the watchlist, the saved filters, the alert rules, every
-    notification, the whole consent
+    notification, every email sent and how far it got, the whole consent
     ledger, the links and sessions still live, the subscriptions, the API keys
     (never the keys themselves), each month's quota usage, the plans staff gave the account
     and why, the days it was used, and a list of what is held but left out (hashes, logs)
@@ -343,6 +348,12 @@ async def export_me(
                 select(Notification)
                 .where(Notification.user_id == user.id)
                 .order_by(Notification.created_at.desc(), Notification.id.desc())
+            )
+        ],
+        emails=[
+            ExportEmail.model_validate(row, from_attributes=True)
+            for row in await session.scalars(
+                select(EmailLog).where(EmailLog.user_id == user.id).order_by(EmailLog.id.desc())
             )
         ],
         consents=[

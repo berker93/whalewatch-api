@@ -32,13 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts import billing, privacy, rules
-from app.accounts.mail import (
-    account_deleted,
-    deliver,
-    email_change_confirmation,
-    email_change_notice,
-    mailer_for,
-)
+from app.accounts.mail import account_deleted, email_change_confirmation, email_change_notice
 from app.accounts.passwords import verify_password
 from app.accounts.sessions import (
     EMAIL_CHANGE_TTL,
@@ -56,7 +50,7 @@ from app.api.auth import (
     ViewerDep,
     clear_session_cookie,
 )
-from app.api.deps import SessionDep, SettingsDep
+from app.api.deps import CourierDep, SessionDep, SettingsDep
 from app.api.errors import INVALID, ApiError, Responses
 from app.api.routers.auth import refused
 from app.api.routers.billing import OptionalPaddleDep
@@ -125,7 +119,11 @@ async def read_account(viewer: ViewerDep, session: SessionDep) -> AccountProfile
     responses={**UNAUTHORIZED, **_FORBIDDEN_ORIGIN, **_REFUSED},
 )
 async def update_account(
-    body: AccountPatch, viewer: ViewerDep, session: SessionDep, settings: SettingsDep
+    body: AccountPatch,
+    viewer: ViewerDep,
+    session: SessionDep,
+    settings: SettingsDep,
+    courier: CourierDep,
 ) -> AccountUpdate:
     """Fields left out, or null, stay as they are. `name` is stored trimmed and
     `time_zone` must be an IANA zone; both apply at once. A new `email` is
@@ -173,12 +171,13 @@ async def update_account(
     await session.commit()
 
     if token is not None and email is not None:
-        mailer = mailer_for(settings)
         hours = int(EMAIL_CHANGE_TTL.total_seconds() // 3600)
-        await deliver(
-            mailer, email_change_confirmation(settings, to=email, token=token, hours=hours)
+        await courier.send(
+            email_change_confirmation(settings, to=email, user_id=user.id, token=token, hours=hours)
         )
-        await deliver(mailer, email_change_notice(to=user.email, new_email=email))
+        await courier.send(
+            email_change_notice(settings, to=user.email, user_id=user.id, new_email=email)
+        )
 
     profile = await _profile(session, user)
     return AccountUpdate(profile=profile, pending_email=profile.pending_email)
@@ -211,6 +210,7 @@ async def delete_account(
     store: SessionStoreDep,
     settings: SettingsDep,
     paddle: OptionalPaddleDep,
+    courier: CourierDep,
 ) -> None:
     """Every session ends, this one too, and the cookie is cleared. From then
     on the login signs nobody in, and its address may make a new account. The
@@ -235,10 +235,13 @@ async def delete_account(
         cancelled = (await billing.cancel_for_deleted(session, paddle, user_id=user.id)).plans
         await session.commit()
     background.add_task(
-        deliver,
-        mailer_for(settings),
+        courier.send,
         account_deleted(
-            to=user.email, purge_after=deletion.purge_after.date(), cancelled_plans=cancelled
+            settings,
+            to=user.email,
+            user_id=user.id,
+            purge_after=deletion.purge_after.date(),
+            cancelled_plans=cancelled,
         ),
     )
 

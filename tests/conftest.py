@@ -50,8 +50,12 @@ def make_settings(**overrides: Any) -> Settings:
             "raw_store_s3_bucket": "whalewatch-test",
             "cors_origins": ["https://whalewatch.io"],
             "web_url": "https://app.whalewatch.io",
-            "email_backend": "smtp",
-            "smtp_host": "smtp.whalewatch.test",
+            "api_url": "https://api.whalewatch.io",
+            "email_from": "WhaleWatch <no-reply@mail.whalewatch.io>",
+            "email_backend": "postmark",
+            "postmark_server_token": SecretStr("postmark-test-token"),
+            "postmark_webhook_secret": SecretStr("postmark-test-webhook"),
+            "email_unsubscribe_secret": SecretStr("unsubscribe-test-secret"),
         }
     return Settings(_env_file=None, **{**defaults, **overrides})
 

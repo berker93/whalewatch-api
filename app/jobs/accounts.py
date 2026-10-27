@@ -23,7 +23,7 @@ from datetime import UTC, date, datetime
 
 from app.accounts.billing import Cancelled, DunningRun, cancel_for_deleted
 from app.accounts.billing import run_dunning as due_dunning
-from app.accounts.mail import deliver, mailer_for
+from app.accounts.delivery import courier_scope
 from app.accounts.paddle import PaddleClient, http_client
 from app.accounts.privacy import Purged, purge_due
 from app.admin import metrics
@@ -76,9 +76,9 @@ async def run_billing(run: TrackedRun, settings: Settings) -> BillingRun:
             cancelled = await cancel_for_deleted(session, PaddleClient(http))
     async with session_scope(settings) as session:
         dunning = await due_dunning(session, settings, datetime.now(UTC))
-    mailer = mailer_for(settings)
-    for message in dunning.mail:
-        await deliver(mailer, message)
+    async with courier_scope(settings) as courier:
+        for message in dunning.mail:
+            await courier.send(message)
     run.items_seen = len(cancelled.plans) + cancelled.failed + dunning.reminded + dunning.downgraded
     run.items_written = len(cancelled.plans) + len(dunning.mail)
     run.metrics.update(

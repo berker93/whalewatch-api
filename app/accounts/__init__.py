@@ -15,8 +15,16 @@
 ``rules``
     What a name, an email, a password and a time zone must be: the frontend's
     rules or looser.
-``mail``
-    The account emails, logged in development and sent by SMTP where deployed.
+``mail``, ``email_layout``
+    What the site emails, each as an HTML and a plain-text body.
+``delivery``, ``mailer``, ``postmark``
+    Sending it: the suppression and unsubscribe checks at send time, the
+    ``email_log``, Postmark where deployed (the log in development), and
+    Postmark's webhooks.
+``unsubscribe``, ``email_lists``
+    The list each broadcast email is on, its signed links, and leaving it.
+``email_domain``
+    Whether the sending domain's SPF, DKIM and DMARC are published.
 
 The routes are in :mod:`app.api.routers.auth` and :mod:`app.api.routers.account`;
 reading the session off a request is :mod:`app.api.auth`.

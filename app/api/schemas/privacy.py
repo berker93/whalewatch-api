@@ -221,6 +221,26 @@ class ExportNotification(BaseModel):
     read_at: datetime | None = Field(description="When it was read.", examples=[None])
 
 
+class ExportEmail(BaseModel):
+    """One email sent to the account, or held back. Not its text, which is not kept."""
+
+    kind: str = Field(description="What it was.", examples=["password_reset"])
+    stream: str = Field(
+        description="`transactional` (the account's own) or `broadcast` (alerts, digests).",
+        examples=["transactional"],
+    )
+    status: str = Field(
+        description=(
+            "Where it got to: `sent`, `delivered`, `bounced`, `complained`, `failed`, or "
+            "`suppressed` (not sent: unsubscribed, or the address refuses mail)."
+        ),
+        examples=["delivered"],
+    )
+    detail: str | None = Field(description="Why, for a bounce or a refusal.", examples=[None])
+    created_at: datetime = Field(description="When it was sent.", examples=[_AT])
+    updated_at: datetime = Field(description="When its status last changed.", examples=[_AT])
+
+
 class ExportConsent(BaseModel):
     """One row of the lawful-basis ledger."""
 
@@ -331,6 +351,9 @@ class Export(BaseModel):
     )
     notifications: list[ExportNotification] = Field(
         description="Everything the account was told, newest first."
+    )
+    emails: list[ExportEmail] = Field(
+        description="Every email sent to the account, or held back, newest first."
     )
     consents: list[ExportConsent] = Field(description="The whole ledger, oldest first.")
     links: list[ExportLink] = Field(description="Emailed links still waiting to be used.")

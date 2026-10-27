@@ -315,7 +315,9 @@ async def _apply_subscription(
         if row.past_due_since is not None and previous == SubscriptionStatus.PAST_DUE:
             if row.dunning_notified is not None and _mailable(user):
                 assert user is not None
-                handled.mail.append(mail.payment_recovered(settings, to=user.email, plan=plan.name))
+                handled.mail.append(
+                    mail.payment_recovered(settings, to=user.email, user_id=user.id, plan=plan.name)
+                )
             _end_dunning(row)
     else:
         _end_dunning(row)
@@ -389,7 +391,11 @@ def _start_dunning(
     row.dunning_notified = DunningStep.PAYMENT_FAILED
     return [
         mail.payment_failed(
-            settings, to=user.email, plan=plan.name, grace_ends_at=row.grace_ends_at
+            settings,
+            to=user.email,
+            user_id=user.id,
+            plan=plan.name,
+            grace_ends_at=row.grace_ends_at,
         )
     ]
 
@@ -450,11 +456,17 @@ async def run_dunning(session: AsyncSession, settings: Settings, now: datetime) 
             if step is DunningStep.GRACE_ENDING:
                 messages.append(
                     mail.grace_ending(
-                        settings, to=user.email, plan=plan.name, grace_ends_at=grace_ends_at
+                        settings,
+                        to=user.email,
+                        user_id=user.id,
+                        plan=plan.name,
+                        grace_ends_at=grace_ends_at,
                     )
                 )
             else:
-                messages.append(mail.downgraded(settings, to=user.email, plan=plan.name))
+                messages.append(
+                    mail.downgraded(settings, to=user.email, user_id=user.id, plan=plan.name)
+                )
     return DunningRun(reminded=len(reminded), downgraded=len(downgraded), mail=messages)
 
 

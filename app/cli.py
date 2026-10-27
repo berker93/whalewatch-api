@@ -2,7 +2,8 @@
 audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-views,
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
 fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user,
-delete-user, restore-user, purge-accounts, billing, create-admin, disable-admin, snapshot-metrics.
+delete-user, restore-user, purge-accounts, billing, create-admin, disable-admin, snapshot-metrics,
+check-email-domain, email-suppression.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -139,10 +140,11 @@ import typer
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.accounts import privacy
+from app.accounts import delivery, email_domain, privacy
 from app.accounts import rules as account_rules
 from app.accounts.billing import Cancelled, cancel_for_deleted
-from app.accounts.mail import account_deleted, deliver, mailer_for
+from app.accounts.delivery import courier_scope
+from app.accounts.mail import account_deleted
 from app.accounts.paddle import PaddleClient, http_client
 from app.accounts.passwords import hash_password
 from app.accounts.rules import DEFAULT_TIME_ZONE
@@ -155,6 +157,7 @@ from app.core.periods import quarter_label
 from app.core.redis import create_redis
 from app.core.tickers import normalise_ticker
 from app.db.models.account import AppUser
+from app.db.models.email import SuppressionScope
 from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing
 from app.db.models.pending_filing import PendingStatus
@@ -1923,10 +1926,16 @@ async def _delete_user(email: str) -> None:
     finally:
         await redis.aclose()
     cancelled = await _cancel_billing(settings, user_id)
-    await deliver(
-        mailer_for(settings),
-        account_deleted(to=email, purge_after=purge_after.date(), cancelled_plans=cancelled.plans),
-    )
+    async with courier_scope(settings) as courier:
+        await courier.send(
+            account_deleted(
+                settings,
+                to=email,
+                user_id=user_id,
+                purge_after=purge_after.date(),
+                cancelled_plans=cancelled.plans,
+            )
+        )
     typer.echo(f"delete-user  {email}  erased after {_instant(purge_after)}")
     for plan in cancelled.plans:
         typer.echo(f"  {plan} subscription cancelled in Paddle")
@@ -1974,6 +1983,88 @@ async def _restore_user(email: str) -> None:
             raise CommandError(str(exc)) from None
         name = user.name
     typer.echo(f"restore-user  {email}  ({name})")
+
+
+@app.command("check-email-domain")
+def check_email_domain_command(
+    dkim_selector: Annotated[
+        str,
+        typer.Option(
+            "--dkim-selector",
+            help="The selector of the DKIM key Postmark made for the domain: "
+            "Postmark > Sender signatures > the domain > DNS settings.",
+        ),
+    ],
+    domain: Annotated[
+        str | None,
+        typer.Option("--domain", help="The sending domain. Default: EMAIL_FROM's."),
+    ] = None,
+) -> None:
+    """Fail unless the sending domain's SPF, return path, DKIM and DMARC are published.
+
+    Run before the first send, and after any DNS change: exit 1 names what is
+    missing. The records to publish are in docs/email-delivery.md. A DMARC
+    policy of none passes, with a warning: it reports and enforces nothing.
+    """
+    settings = get_settings()
+    domain = (domain or settings.email_domain).lower()
+    try:
+        checks = asyncio.run(
+            email_domain.check_domain(
+                email_domain.DnsResolver(), domain, dkim_selector=dkim_selector
+            )
+        )
+    except email_domain.DNSException as exc:
+        typer.echo(f"check-email-domain: DNS could not be asked: {exc!r}", err=True)
+        raise typer.Exit(1) from None
+    for check in checks:
+        typer.echo(f"{'ok  ' if check.ok else 'FAIL'}  {check.name:<12} {check.detail}")
+        if check.warning:
+            typer.echo(f"{'':6}{'':<12} warning: {check.warning}")
+    failed = [check.name for check in checks if not check.ok]
+    if failed:
+        typer.echo(
+            f"check-email-domain: {domain} is not ready to send: {', '.join(failed)}", err=True
+        )
+        raise typer.Exit(1)
+    typer.echo(f"check-email-domain  {domain} is ready to send")
+
+
+@app.command("email-suppression")
+def email_suppression_command(
+    email: Annotated[str, typer.Option("--email", help="The address.")],
+    lift: Annotated[
+        bool,
+        typer.Option(
+            "--lift",
+            help="Send to it again. Reactivate it in Postmark too, on each stream, or "
+            "Postmark goes on refusing it.",
+        ),
+    ] = False,
+) -> None:
+    """Show whether an address is suppressed, and why; --lift sends to it again.
+
+    For the owner of an address that bounced and works again, or who reported
+    a message as spam by mistake. The list knows addresses by a hash only, so
+    it is asked by address, never listed. Untracked, as create-user is.
+    """
+    asyncio.run(_email_suppression(email, lift=lift))
+
+
+async def _email_suppression(email: str, *, lift: bool) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    async with session_scope(settings) as session:
+        row = await delivery.suppression_of(session, email)
+        if row is None:
+            typer.echo(f"email-suppression  {email}  not suppressed")
+            return
+        what = f"suppressed for {row.scope} since {_instant(row.created_at)}: {row.reason}"
+        if lift:
+            await delivery.lift(session, email, SuppressionScope.ALL)
+            typer.echo(f"email-suppression  {email}  lifted (was {what})")
+        else:
+            typer.echo(f"email-suppression  {email}  {what}")
 
 
 @app.command("purge-accounts")

@@ -4990,7 +4990,7 @@
           "account"
         ],
         "summary": "Everything WhaleWatch holds on the signed-in user, as a JSON download",
-        "description": "The account, the watchlist, the saved filters, the alert rules, every\nnotification, the whole consent\nledger, the links and sessions still live, the subscriptions, the API keys\n(never the keys themselves), each month's quota usage, the plans staff gave the account\nand why, the days it was used, and a list of what is held but left out (hashes, logs)\nand why. Each export is counted on its day. `Content-Disposition: attachment`, so a\nbrowser saves it. The format is versioned by `format`.",
+        "description": "The account, the watchlist, the saved filters, the alert rules, every\nnotification, every email sent and how far it got, the whole consent\nledger, the links and sessions still live, the subscriptions, the API keys\n(never the keys themselves), each month's quota usage, the plans staff gave the account\nand why, the days it was used, and a list of what is held but left out (hashes, logs)\nand why. Each export is counted on its day. `Content-Disposition: attachment`, so a\nbrowser saves it. The format is versioned by `format`.",
         "operationId": "exportMe",
         "responses": {
           "200": {
@@ -6409,6 +6409,134 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/email/unsubscribe": {
+      "get": {
+        "tags": [
+          "email"
+        ],
+        "summary": "What an email's unsubscribe link leaves, and whether it is left",
+        "description": "Needs no session: the link's token says which account and which list.\nAn alert since deleted, or an account since deleted, is not subscribed.",
+        "operationId": "getEmailSubscription",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "The `token` of the unsubscribe link, as the email has it.",
+              "title": "Token"
+            },
+            "description": "The `token` of the unsubscribe link, as the email has it."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSubscription"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_token`: not an unsubscribe link this site sent, or one cut short by the mail client. The account's email settings stop the same emails.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "email"
+        ],
+        "summary": "Leave an email's list, from its link or its one-click header",
+        "description": "Needs no session and reads no body: a mailbox provider's one-click\nunsubscribe posts `List-Unsubscribe=One-Click` here from its own servers.\nFrom the moment this answers, no email on the list is sent, however long\nago it was queued. An alert's list stops that alert's email and keeps it in\nthe notification centre; an alert that only emailed is turned off. The\naccount's own emails (verification, password reset, billing) are on no list\nand are never stopped from here.",
+        "operationId": "unsubscribeEmail",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "The `token` of the unsubscribe link, as the email has it.",
+              "title": "Token"
+            },
+            "description": "The `token` of the unsubscribe link, as the email has it."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSubscription"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_token`: not an unsubscribe link this site sent, or one cut short by the mail client. The account's email settings stop the same emails.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             }
@@ -10034,6 +10162,56 @@
         "title": "EmailConfirm",
         "description": "The token from an email change's confirmation link."
       },
+      "EmailSubscription": {
+        "properties": {
+          "mailing_list": {
+            "type": "string",
+            "title": "Mailing List",
+            "description": "The list: `alert_rule:<id>` for one alert's emails (the season digest is one), or `product_email` / `marketing_email`.",
+            "examples": [
+              "alert_rule:42"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "alert_rule",
+              "product_email",
+              "marketing_email"
+            ],
+            "title": "Kind",
+            "description": "What kind of list: one alert's emails, or a kind of email from WhaleWatch.",
+            "examples": [
+              "alert_rule"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "What the list sends, for a sentence: “You won't get emails about …”.",
+            "examples": [
+              "new 13F filings by Berkshire Hathaway"
+            ]
+          },
+          "subscribed": {
+            "type": "boolean",
+            "title": "Subscribed",
+            "description": "Whether the next email on the list would be sent. After a POST, false.",
+            "examples": [
+              false
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "mailing_list",
+          "kind",
+          "label",
+          "subscribed"
+        ],
+        "title": "EmailSubscription",
+        "description": "One mailing list, and where the link's account stands on it."
+      },
       "EmailVerifyRequest": {
         "properties": {
           "token": {
@@ -10142,6 +10320,14 @@
             "title": "Notifications",
             "description": "Everything the account was told, newest first."
           },
+          "emails": {
+            "items": {
+              "$ref": "#/components/schemas/ExportEmail"
+            },
+            "type": "array",
+            "title": "Emails",
+            "description": "Every email sent to the account, or held back, newest first."
+          },
           "consents": {
             "items": {
               "$ref": "#/components/schemas/ExportConsent"
@@ -10229,6 +10415,7 @@
           "saved_filters",
           "alert_rules",
           "notifications",
+          "emails",
           "consents",
           "links",
           "sessions",
@@ -10629,6 +10816,78 @@
         ],
         "title": "ExportConsent",
         "description": "One row of the lawful-basis ledger."
+      },
+      "ExportEmail": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "What it was.",
+            "examples": [
+              "password_reset"
+            ]
+          },
+          "stream": {
+            "type": "string",
+            "title": "Stream",
+            "description": "`transactional` (the account's own) or `broadcast` (alerts, digests).",
+            "examples": [
+              "transactional"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Where it got to: `sent`, `delivered`, `bounced`, `complained`, `failed`, or `suppressed` (not sent: unsubscribed, or the address refuses mail).",
+            "examples": [
+              "delivered"
+            ]
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail",
+            "description": "Why, for a bounce or a refusal.",
+            "examples": [
+              null
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it was sent.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "When its status last changed.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "stream",
+          "status",
+          "detail",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ExportEmail",
+        "description": "One email sent to the account, or held back. Not its text, which is not kept."
       },
       "ExportInsider": {
         "properties": {

@@ -331,6 +331,16 @@ async def test_probes_are_not_counted(app: FastAPI, http: AsyncClient) -> None:
     assert limiter.clients == []
 
 
+async def test_one_click_unsubscribes_are_not_counted(app: FastAPI, http: AsyncClient) -> None:
+    """Mailbox providers post them from a few servers for all their users at once."""
+    limiter = app.state.rate_limiter = StubLimiter(budget=0)
+
+    response = await http.post("/v1/email/unsubscribe", params={"token": "not-signed"})
+
+    assert response.status_code == 422
+    assert limiter.clients == []
+
+
 async def test_a_redis_outage_lets_requests_through(app: FastAPI, http: AsyncClient) -> None:
     app.state.rate_limiter = StubLimiter(error=RedisConnectionError("Connection refused."))
 

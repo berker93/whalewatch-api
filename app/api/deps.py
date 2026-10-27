@@ -15,6 +15,7 @@ from fastapi import Depends, Query, Request
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.accounts.delivery import Courier, courier_for
 from app.api.pagination import DEFAULT_LIMIT, MAX_LIMIT, PageParams, decode_cursor
 from app.core.config import Settings
 
@@ -46,6 +47,14 @@ def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
     """The application's session factory, built by the lifespan."""
     factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
     return factory
+
+
+def get_courier(request: Request) -> Courier:
+    """What sends this request's emails, on the application's pool: a
+    message sent after the answer has gone outlives the request's session.
+    The pool is looked up only when a message is sent: every metered request
+    takes a courier, for the 80% warning, and almost none sends one."""
+    return courier_for(get_app_settings(request), lambda: get_session_factory(request)())
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -105,4 +114,5 @@ SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 EngineDep = Annotated[AsyncEngine, Depends(get_engine)]
 RedisDep = Annotated[Redis, Depends(get_redis)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+CourierDep = Annotated[Courier, Depends(get_courier)]
 PageParamsDep = Annotated[PageParams, Depends(get_page_params)]

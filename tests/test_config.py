@@ -188,8 +188,12 @@ class TestValidation:
             RAW_STORE_S3_REGION="auto",
             CORS_ORIGINS="https://whalewatch.io",
             WEB_URL="https://app.whalewatch.io",
-            EMAIL_BACKEND="smtp",
-            SMTP_HOST="smtp.whalewatch.io",
+            API_URL="https://api.whalewatch.io",
+            EMAIL_FROM="WhaleWatch <no-reply@mail.whalewatch.io>",
+            EMAIL_BACKEND="postmark",
+            POSTMARK_SERVER_TOKEN="token",
+            POSTMARK_WEBHOOK_SECRET="webhook",
+            EMAIL_UNSUBSCRIBE_SECRET="unsubscribe",
         )
 
         assert settings.raw_store_s3_bucket == "whalewatch-raw"

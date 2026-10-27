@@ -55,6 +55,7 @@ from app.api.routers import (
     api_keys,
     auth,
     billing,
+    email,
     filings,
     health,
     insiders,
@@ -242,12 +243,24 @@ def create_app(settings: Settings) -> FastAPI:
             responses={**RATE_LIMITED, **METERED},
             dependencies=[MeteredDep],
         )
-    for router in (auth, me, notifications, account, watchlist, saved_filters, api_keys, billing):
+    for router in (
+        auth,
+        me,
+        notifications,
+        account,
+        watchlist,
+        saved_filters,
+        api_keys,
+        billing,
+        email,
+    ):
         app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)
     # The admin console: outside /v1, which is the product's, and on its own sessions.
     app.include_router(admin.router, responses=RATE_LIMITED)
-    # Paddle's, not a client's: outside /v1, the OpenAPI document and the rate limit.
+    # Paddle's and Postmark's, not a client's: outside /v1, the OpenAPI document
+    # and the rate limit.
     app.include_router(billing.webhook_router)
+    app.include_router(email.webhook_router)
 
     return app
 

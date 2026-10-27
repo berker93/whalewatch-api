@@ -31,7 +31,7 @@ from app.accounts.paddle import PaddleClient, http_client, sign
 from app.admin import plans as admin_plans
 from app.api.routers.billing import WEBHOOK_PATH, get_optional_paddle, get_paddle
 from app.core.config import Settings
-from app.db.models import AdminUser, PaddleEvent, Subscription
+from app.db.models import AdminUser, EmailKind, PaddleEvent, Subscription
 from tests.integration.accounts import (
     FRONTEND,
     PASSWORD,
@@ -60,8 +60,7 @@ def settings(settings: Settings) -> Settings:
 
 
 @pytest.fixture
-def billing_outbox(monkeypatch: pytest.MonkeyPatch, outbox: Outbox) -> Outbox:
-    monkeypatch.setattr("app.api.routers.billing.mailer_for", lambda settings: outbox)
+def billing_outbox(outbox: Outbox) -> Outbox:
     return outbox
 
 
@@ -827,15 +826,17 @@ async def test_deleting_the_account_cancels_its_subscription_at_once(
     row = await db_session.scalar(select(Subscription))
     assert row is not None
     assert (row.status, row.grace_ends_at) == ("canceled", None)
-    [notice] = outbox.sent
+    # One outbox for every sender: past due, the dunning email went first.
+    [notice] = [m for m in outbox.sent if m.kind is EmailKind.ACCOUNT_DELETED]
     assert "Your Pro subscription is cancelled" in notice.body
+    sent = len(outbox.sent)
 
     # Paddle's webhook follows, for an account that is gone: applied, quietly.
     after = await accepted(
         client, subscription_event("subscription.canceled", now(), status="canceled")
     )
     assert after["outcome"] == "applied"
-    assert len(outbox.sent) == 1
+    assert len(outbox.sent) == sent
 
 
 async def test_deleting_an_account_that_never_paid_asks_paddle_nothing(

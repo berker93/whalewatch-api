@@ -176,14 +176,15 @@ curl -s -X POST -H 'Origin: http://localhost:5173' -H 'content-type: application
 
 ## 9 · Staging and production
 
-**API environment** (it refuses to boot without the first three outside dev):
+**API environment** (it refuses to boot without the CORS, URL and email settings outside dev):
 
 ```bash
 ENVIRONMENT=production
 CORS_ORIGINS=https://whalewatch.com,https://app.whalewatch.com
 WEB_URL=https://app.whalewatch.com
-EMAIL_BACKEND=smtp
-SMTP_HOST=…  SMTP_PORT=587  SMTP_USERNAME=…  SMTP_PASSWORD=…  EMAIL_FROM='WhaleWatch <no-reply@whalewatch.com>'
+API_URL=https://api.whalewatch.com
+EMAIL_BACKEND=postmark                    # with its token and secrets: docs/email-delivery.md
+EMAIL_FROM='WhaleWatch <no-reply@mail.whalewatch.com>'
 SESSION_COOKIE_DOMAIN=.whalewatch.com     # one session for whalewatch.com and app.whalewatch.com
 SIGNUPS_OPEN=false                        # flip together with FEATURES.signupsOpen in the frontend
 ```

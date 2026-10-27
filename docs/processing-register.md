@@ -30,6 +30,8 @@ The people who sign up. Every table below is in Postgres unless it says Redis.
 | Saved screener filters (name, screener parameters) | `saved_filter` | The product | Contract | Same |
 | Alert rules (kind, the filer or stock, dollar threshold, channels, on or off) | `alert_rule` | The product | Contract | Same |
 | Notifications (kind, title, body, what it was about, when read) | `notification` | The product | Contract | Same |
+| Email log: each email's kind, stream (transactional or broadcast), Postmark's message id, status (sent, delivered, bounced, complained, failed, suppressed) and why. Not the address, not the text | `email_log` | Knowing a reset or a verification arrived; support | Contract (account mail); legitimate interest (deliverability) | Life of the account + 30 days |
+| Email suppression list: SHA-256 of each address that hard-bounced or reported a message as spam, the scope (everything, or broadcast only) and the reason. No account id, no address | `email_suppression` | Never sending again to an address that does not exist or does not want mail: required by the mailbox providers' sender rules, and what keeps the sending domain's reputation | Legitimate interest | **Indefinitely**, outliving the account on purpose: erasing an account must not start mailing someone who said it was spam. `email-suppression --email … --lift` removes one on request |
 | Plan and subscription (plan, status, period end, cancel date, grandfathered plan, per-account entitlements); for a paid one, Paddle's subscription and customer ids and a failed renewal's dunning dates | `subscription`, `subscription_entitlement`; a copy of the grant in the Redis session | What the account may do, and billing it | Contract | Same |
 | Paddle webhook log: event id, type, time, the Paddle subscription or transaction id, what it did. No payload, no email, no user id | `paddle_event` | Applying each payment event once | Contract | **OPEN**: kept indefinitely; it names Paddle ids only, which match nothing once the subscription row is purged. Suggest the tax-record period |
 | Emailed-link tokens, as SHA-256 only; a pending new email | `account_token` | Verify, reset, change email | Contract | 1 h (reset) or 24 h (verify, change), or until used; deleted on account deletion |
@@ -42,7 +44,7 @@ The people who sign up. Every table below is in Postgres unless it says Redis.
 | Monthly call counts per quota and quota month, and when the 80% email went | `usage_counter`; the live count in Redis `ww:usage:*` | Enforcing the plan's monthly quota, showing usage on the account page | Contract | Postgres: life of the account + 30 days. Redis: the quota month + 7 days |
 | Sign-in attempt counters: SHA-256 of the email, client IP | Redis `ww:rl:attempts:*` | Stopping password guessing | Legitimate interest (Art. 6(1)(f)): security | 15 minutes |
 | Request log lines: time, method, path, status, client IP, request id | API stdout (structlog JSON) | Operations, abuse, debugging | Legitimate interest: security and operations | **OPEN**: depends on where logs are shipped. Suggest 30 days |
-| Mail failure log lines: recipient, subject | API stdout | Knowing a reset or verify mail did not arrive | Legitimate interest | Same as request logs |
+| Mail log lines: email_log id, kind, user id, the provider's id, why one failed. No address, no subject | API stdout | Knowing a reset or verify mail did not arrive | Legitimate interest | Same as request logs |
 | Admin log: what an admin did to the account (an override set or ended, grandfathering), when, the reason given. The account by id only, never by email | `admin_action` | Accountability for every change staff make to an account (Art. 5(2)) | Legitimate interest: security and accountability | **Indefinitely**, append-only (Postgres refuses edits). Outlives the account's purge with a bare id that matches nothing. **OPEN**: confirm, or set a period; a reason an admin wrote may name the person, so admins write reasons without personal details |
 
 Development only: `EMAIL_BACKEND=log` writes each email, link included, to the
@@ -56,11 +58,20 @@ Recorded per user in `consent_record`. The code is the source of truth:
 | Purpose | Basis | Default | User control |
 |---|---|---|---|
 | `account`: run the account, plus the emails it can't work without (verify, reset, email change, deletion notice, the once-a-month warning at 80% of a paid quota) | Contract | On; it is the account | Ends only by deleting the account |
-| `product_email`: news about the product the user uses | Legitimate interest | On from registration | Object any time: `PATCH /v1/me/privacy {"product_email": false}`. **OPEN**: an unsubscribe link in each email |
-| `marketing_email`: promotion, offers, paid plans | Consent (Art. 6(1)(a), PECR reg. 22) | **Off**. A separate, unticked checkbox at registration, never bundled with the terms | Give or withdraw any time: `PATCH /v1/me/privacy`. **OPEN**: unsubscribe link |
+| `product_email`: news about the product the user uses | Legitimate interest | On from registration | Object any time: `PATCH /v1/me/privacy {"product_email": false}`, or the unsubscribe link and one-click header each such email will carry (list `product_email`) |
+| `marketing_email`: promotion, offers, paid plans | Consent (Art. 6(1)(a), PECR reg. 22) | **Off**. A separate, unticked checkbox at registration, never bundled with the terms | Give or withdraw any time: `PATCH /v1/me/privacy`, or the unsubscribe link (list `marketing_email`) |
 
 Neither email purpose is sent today: no code sends product or marketing email.
-A sender must check `app.accounts.privacy.may_email` first.
+The courier (`app.accounts.delivery`) checks `may_email` at the moment it sends
+a message on either list, so an unsubscribe counts from the next send.
+
+Alert emails (an alert rule with the email channel, the season digest
+included) are the account's product, asked for rule by rule: contract, not
+consent. Each carries an unsubscribe link and a one-click header for its own
+rule; leaving takes email off that rule and nothing else. Account emails
+(verify, reset, email change, deletion, quota, billing) have no unsubscribe
+and go on their own Postmark stream, so nothing a user does with an alert, and
+no complaint about one, stops them. See docs/email-delivery.md.
 
 The terms and privacy policy accepted are recorded by version
 (`TERMS_VERSION`, `PRIVACY_VERSION` in `app/accounts/privacy.py`, currently
@@ -72,9 +83,9 @@ one. **OPEN**: an endpoint and UI to accept new terms when the version changes.
 
 | Right | How |
 |---|---|
-| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, saved filters, alert rules, every notification, the whole consent ledger, live links and sessions, every subscription, every API key (never the key), each month's call counts, every plan override and its reason, and the days the account was active, and a list of what's left out and why (hashes, logs). Logs and the admin log's rows about the account on request by email. |
+| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, saved filters, alert rules, every notification, every email and how far it got, the whole consent ledger, live links and sessions, every subscription, every API key (never the key), each month's call counts, every plan override and its reason, and the days the account was active, and a list of what's left out and why (hashes, logs). Logs and the admin log's rows about the account on request by email. |
 | Rectification (Art. 16) | `PATCH /v1/account`: name, time zone, email (confirmed by link) |
-| Erasure (Art. 17) | `DELETE /v1/account` with the password, or `delete-user --email` by an operator for a request by email. The account is soft-deleted at once: signed out everywhere, links dead, login refused, address free for a new account. The `purge-accounts` job (beat, daily 05:00 New York) hard-deletes it 30 days later with its watchlist, saved filters, alert rules, notifications, consent records, tokens, subscriptions, API keys, usage counts, plan overrides and days active, and writes the counts to `account_deletion`. `restore-user --email` undoes it within the 30 days. |
+| Erasure (Art. 17) | `DELETE /v1/account` with the password, or `delete-user --email` by an operator for a request by email. The account is soft-deleted at once: signed out everywhere, links dead, login refused, address free for a new account. The `purge-accounts` job (beat, daily 05:00 New York) hard-deletes it 30 days later with its watchlist, saved filters, alert rules, notifications, email log, consent records, tokens, subscriptions, API keys, usage counts, plan overrides and days active, and writes the counts to `account_deletion`. `restore-user --email` undoes it within the 30 days. |
 | Withdraw consent, object (Art. 7(3), 21) | `PATCH /v1/me/privacy` |
 | Restriction (Art. 18) | **OPEN**: no mechanism. Handle by hand (operator) if asked |
 
@@ -128,7 +139,7 @@ it comes from public SEC EDGAR filings, which the law requires them to make.
 
 | Recipient | Role | Personal data sent | In the code today | DPA on file |
 |---|---|---|---|---|
-| Email provider (SMTP) | Processor | Recipient address, message body | Yes: `SMTP_HOST`; no provider chosen | **OPEN** |
+| Postmark (ActiveCampaign) | Processor | Recipient address, subject, both bodies, the email_log id as metadata; it keeps its own activity log and per-stream suppression list | Yes: `POSTMARK_SERVER_TOKEN` | **OPEN**: Postmark's DPA; its message retention (default 45 days, settable per server: suggest the minimum); US hosting, so the transfer basis |
 | Hosting (AWS, planned) | Processor | Everything above | No: not deployed | **OPEN** |
 | Sentry (planned) | Processor | Whatever an error report carries: request path, IP, user id if attached | No: not integrated | **OPEN**. Turn off `send_default_pii` and scrub emails when adding it |
 | Paddle | Merchant of record, so a controller for the buyer's payment, tax and invoice data, which it collects at checkout itself; a processor for what WhaleWatch sends it | The account's user id and the plan bought (checkout `custom_data`); Paddle sends back its subscription and customer ids, status and dates. Card data and the billing address never touch WhaleWatch | Yes: `PADDLE_API_KEY` (sandbox until launch) | **OPEN**. Paddle's DPA/terms. Deleting an account cancels its Paddle subscription at once (retried hourly if Paddle cannot be reached); the account is not purged until it is cancelled, since its row is the only record of what to cancel |
@@ -174,7 +185,7 @@ From the privacy checklist (2026-10-24), what the API cannot do itself:
 3. **Account page** (web): email choices (`/v1/me/privacy`), "Download my data" (`/v1/me/export`), "Delete account" with a password prompt (`DELETE /v1/account`).
 4. **DPAs** with the email provider, AWS, Sentry and Paddle, once each is chosen.
 5. Controller identity, privacy contact, log and backup retention, the retention of the deletion audit and of unconverted signup requests. A support address for the deletion notice to name: it says "contact support" while `EMAIL_FROM` is a no-reply address.
-6. Unsubscribe links (no session) in product and marketing email, before the first one is sent.
+6. ~~Unsubscribe links (no session) in product and marketing email~~: built (ALR-3), lists `product_email` and `marketing_email`. The web's `/unsubscribe` page is what the footer link opens.
 7. Re-accepting changed terms (endpoint and UI).
 8. The SEC-filings section of the privacy policy (Art. 14), and a process for objections.
 9. Admin console: a second factor for admins, network restriction of `/admin`, retention of the admin log and of days active.

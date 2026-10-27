@@ -133,28 +133,41 @@ def test_a_link_is_on_the_web_url_with_the_token_encoded() -> None:
 
 
 def test_the_web_url_defaults_to_the_frontends_dev_app_surface() -> None:
-    message = email_change_confirmation(make_settings(), to="ada@x.io", token="t", hours=24)
+    message = email_change_confirmation(
+        make_settings(), to="ada@x.io", user_id=1, token="t", hours=24
+    )
 
     assert "http://app.localhost:5173/account/confirm-email?token=t" in message.body
 
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
-def test_a_deployed_api_needs_a_web_url_and_real_mail(environment: str) -> None:
-    deployed = {
-        "environment": environment,
-        "raw_store_backend": "s3",
-        "raw_store_s3_bucket": "b",
-        "cors_origins": ["https://whalewatch.io"],
-    }
+def test_a_deployed_api_needs_its_urls_and_real_mail_from_a_subdomain(environment: str) -> None:
+    deployed = make_settings(environment=environment).model_dump()
     with pytest.raises(ValidationError, match="WEB_URL must be set"):
-        make_settings(**deployed, web_url=None, email_backend="smtp", smtp_host="smtp.x")
+        make_settings(**{**deployed, "web_url": None})
+    with pytest.raises(ValidationError, match="API_URL must be set"):
+        make_settings(**{**deployed, "api_url": None})
     with pytest.raises(ValidationError, match="EMAIL_BACKEND=log"):
-        make_settings(**deployed, web_url="https://app.whalewatch.io", email_backend="log")
+        make_settings(**{**deployed, "email_backend": "log"})
+    with pytest.raises(ValidationError, match="cannot reach the apex"):
+        make_settings(**{**deployed, "email_from": "WhaleWatch <no-reply@whalewatch.com>"})
 
 
-def test_smtp_needs_a_host() -> None:
-    with pytest.raises(ValidationError, match="SMTP_HOST"):
-        make_settings(email_backend="smtp")
+def test_postmark_needs_its_token_its_webhook_secret_and_an_unsubscribe_secret() -> None:
+    with pytest.raises(ValidationError) as refused:
+        make_settings(email_backend="postmark")
+
+    assert "POSTMARK_SERVER_TOKEN, POSTMARK_WEBHOOK_SECRET, EMAIL_UNSUBSCRIBE_SECRET" in str(
+        refused.value
+    )
+
+
+def test_the_log_backend_signs_unsubscribe_links_with_a_development_secret() -> None:
+    settings = make_settings()
+
+    assert settings.email_unsubscribe_secret is not None
+    assert settings.api_url == "http://localhost:8000"
+    assert settings.email_domain == "mail.whalewatch.com"
 
 
 def test_the_session_cookie_is_secure_only_where_deployed() -> None:

@@ -39,6 +39,7 @@ belongs.
 
 import asyncio
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -53,8 +54,9 @@ from testcontainers.community.postgres import PostgresContainer
 
 from alembic import command
 from app.accounts import entitlements
+from app.accounts.delivery import Sessions, courier_for
 from app.accounts.sessions import SessionStore
-from app.api.deps import get_redis, get_session
+from app.api.deps import get_courier, get_redis, get_session
 from app.api.entitlements import entitlement_context
 from app.core.config import Settings
 from app.db.session import create_session_factory
@@ -293,6 +295,11 @@ async def client(
     app.state.session_factory = create_session_factory(migrated_engine)
     app.state.sessions = SessionStore(session_redis)  # type: ignore[arg-type]
     app.dependency_overrides[get_session] = lambda: db_session
+    # The courier opens sessions of its own, which would see none of the
+    # test's rows: it gets the test's, as the requests do.
+    app.dependency_overrides[get_courier] = lambda: courier_for(
+        app.state.settings, in_session(db_session)
+    )
     app.dependency_overrides.setdefault(get_redis, lambda: FakeRedis())
     app.dependency_overrides.setdefault(entitlement_context, unlimited_entitlements)
 
@@ -308,11 +315,22 @@ async def client(
         entitlements.install(None)
 
 
+def in_session(session: AsyncSession) -> Sessions:
+    """Open ``session`` and leave it open: what the courier's sessions are in a
+    test, so its log rows are in the test's transaction."""
+
+    @asynccontextmanager
+    async def opened() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    return opened
+
+
 @pytest.fixture
 def outbox(monkeypatch: pytest.MonkeyPatch) -> Outbox:
-    """The account emails the routes send, kept rather than logged, so a test
-    can follow the link in one."""
+    """The emails the routes, jobs and commands send, kept rather than logged,
+    so a test can follow the link in one. Each still goes through the courier:
+    the suppression and unsubscribe checks, and an ``email_log`` row."""
     box = Outbox()
-    for module in ("app.api.routers.account", "app.api.routers.auth", "app.api.metering"):
-        monkeypatch.setattr(f"{module}.mailer_for", lambda settings: box)
+    monkeypatch.setattr("app.accounts.delivery.mailer_for", lambda settings: box)
     return box

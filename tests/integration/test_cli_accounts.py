@@ -44,7 +44,7 @@ def cli_settings(
 @pytest.fixture
 def outbox(monkeypatch: pytest.MonkeyPatch) -> Outbox:
     box = Outbox()
-    monkeypatch.setattr("app.cli.mailer_for", lambda settings: box)
+    monkeypatch.setattr("app.accounts.delivery.mailer_for", lambda settings: box)
     return box
 
 

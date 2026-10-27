@@ -10,6 +10,7 @@ Precedence is pydantic-settings' default: real environment variables win over
 and a secret manager inject it in production, with the same code.
 """
 
+from email.utils import parseaddr
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Final, Literal, Self
@@ -33,6 +34,14 @@ DEV_CORS_ORIGINS: Final = (
 #: whalewatch-web's app surface under ``npm run dev`` (its VITE_APP_ORIGIN):
 #: where account emails link when WEB_URL is unset, outside staging and production.
 DEV_WEB_URL: Final = "http://app.localhost:5173"
+
+#: Where ``make up`` serves this API: the one-click unsubscribe URL when
+#: API_URL is unset, outside staging and production.
+DEV_API_URL: Final = "http://localhost:8000"
+
+#: What signs unsubscribe links when EMAIL_UNSUBSCRIBE_SECRET is unset, which
+#: only the log backend allows: those links are in a log, not an inbox.
+DEV_UNSUBSCRIBE_SECRET: Final = "development-only-unsubscribe-secret"
 
 
 class Settings(BaseSettings):
@@ -152,15 +161,32 @@ class Settings(BaseSettings):
     # production, where a localhost link would be a dead one in someone's inbox.
     web_url: str | None = None
 
-    # How account emails leave. "log" writes them to the log, link included, and
-    # is for development: nothing is sent. "smtp" sends through smtp_host.
-    email_backend: Literal["log", "smtp"] = "log"
-    email_from: str = "WhaleWatch <no-reply@whalewatch.io>"
-    smtp_host: str | None = None
-    smtp_port: int = Field(default=587, ge=1, le=65535)
-    smtp_username: str | None = None
-    smtp_password: SecretStr | None = None
-    smtp_starttls: bool = True
+    # Where this API is served, as the world sees it: the one-click unsubscribe
+    # header in an email points here, since a mail provider posts it with no
+    # page in between. Required in staging and production, like WEB_URL.
+    api_url: str | None = None
+
+    # How email leaves (app/accounts/delivery.py). "log" writes each message to
+    # the log, link included, and is for development: nothing is sent.
+    # "postmark" sends through Postmark, on two message streams: the account's
+    # own mail (verify, reset, billing) on one, everything a user can
+    # unsubscribe from (alerts, digests) on the other, so that a complaint
+    # about a digest cannot stop a password reset.
+    email_backend: Literal["log", "postmark"] = "log"
+    # On the sending subdomain, never the apex: a deliverability problem on
+    # mail.whalewatch.com stays there (docs/email-delivery.md).
+    email_from: str = "WhaleWatch <no-reply@mail.whalewatch.com>"
+    # Signs the unsubscribe links. Rotating it ends every link already sent,
+    # which a user then follows to a page saying the link is not valid.
+    email_unsubscribe_secret: SecretStr | None = None
+    # A Postmark server's API token, which sends.
+    postmark_server_token: SecretStr | None = None
+    # The password in the webhook URL Postmark is given:
+    # https://postmark:<secret>@api.whalewatch.com/webhooks/postmark
+    postmark_webhook_secret: SecretStr | None = None
+    # The server's two message streams, by their ids in Postmark.
+    postmark_transactional_stream: str = "outbound"
+    postmark_broadcast_stream: str = "broadcast"
 
     # --- billing (Paddle) ------------------------------------------------------
     # Paddle is the merchant of record: it takes the payment, the tax and the
@@ -277,7 +303,14 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("paddle_api_key", "paddle_webhook_secret", mode="before")
+    @field_validator(
+        "paddle_api_key",
+        "paddle_webhook_secret",
+        "postmark_server_token",
+        "postmark_webhook_secret",
+        "email_unsubscribe_secret",
+        mode="before",
+    )
     @classmethod
     def _blank_secret_is_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -426,17 +459,50 @@ class Settings(BaseSettings):
                     f"WEB_URL must be set in {self.environment}: where whalewatch-web is "
                     "served, for the links in account emails"
                 )
+            if self.api_url is None:
+                raise ValueError(
+                    f"API_URL must be set in {self.environment}: where this API is "
+                    "served, for the one-click unsubscribe header in emails"
+                )
             if self.email_backend == "log":
                 raise ValueError(
                     f"EMAIL_BACKEND=log is for development; {self.environment} needs "
-                    "EMAIL_BACKEND=smtp so account emails are sent"
+                    "EMAIL_BACKEND=postmark so emails are sent"
                 )
-        if self.email_backend == "smtp" and not self.smtp_host:
-            raise ValueError("EMAIL_BACKEND=smtp needs SMTP_HOST")
+            domain = self.email_domain
+            if domain.count(".") < 2:
+                raise ValueError(
+                    f"EMAIL_FROM is on {domain}: {self.environment} sends from a "
+                    "subdomain of its own (mail.whalewatch.com), so a deliverability "
+                    "problem cannot reach the apex"
+                )
+        if self.email_backend == "postmark":
+            missing = [
+                name
+                for name, value in (
+                    ("POSTMARK_SERVER_TOKEN", self.postmark_server_token),
+                    ("POSTMARK_WEBHOOK_SECRET", self.postmark_webhook_secret),
+                    ("EMAIL_UNSUBSCRIBE_SECRET", self.email_unsubscribe_secret),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"EMAIL_BACKEND=postmark needs {', '.join(missing)}")
+        if self.email_unsubscribe_secret is None:
+            self.email_unsubscribe_secret = SecretStr(DEV_UNSUBSCRIBE_SECRET)
+        if self.api_url is None:
+            self.api_url = DEV_API_URL
+        self.api_url = self.api_url.rstrip("/")
         if self.web_url is None:
             self.web_url = DEV_WEB_URL
         self.web_url = self.web_url.rstrip("/")
         return self
+
+    @property
+    def email_domain(self) -> str:
+        """The domain EMAIL_FROM sends from: ``mail.whalewatch.com``."""
+        _, address = parseaddr(self.email_from)
+        return address.rpartition("@")[2].lower()
 
     @property
     def session_cookie_secure(self) -> bool:

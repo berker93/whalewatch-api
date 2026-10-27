@@ -36,6 +36,17 @@ from app.db.models.alert import (
 )
 from app.db.models.base import NAMING_CONVENTION, Base
 from app.db.models.crawl_watermark import CrawlWatermark
+from app.db.models.email import (
+    STATUS_RANKS,
+    STREAMS,
+    EmailKind,
+    EmailLog,
+    EmailStatus,
+    EmailSuppression,
+    Stream,
+    SuppressionReason,
+    SuppressionScope,
+)
 from app.db.models.enums import AmendmentKind
 from app.db.models.figi_response_log import OUTCOME_CHECK, FIGIOutcome, FigiResponseLog
 from app.db.models.filer import (
@@ -175,6 +186,8 @@ __all__ = [
     "SPLIT_RATIO",
     "SPLIT_ROW_CHECK",
     "STATUS_CHECK",
+    "STATUS_RANKS",
+    "STREAMS",
     "SUSPECT_HAS_NOTES_CHECK",
     "WEIGHT_PCT",
     "AccountDeletion",
@@ -197,6 +210,10 @@ __all__ = [
     "CrawlWatermark",
     "DeletionRequester",
     "DunningStep",
+    "EmailKind",
+    "EmailLog",
+    "EmailStatus",
+    "EmailSuppression",
     "FIGIOutcome",
     "FigiResponseLog",
     "Filer",
@@ -243,9 +260,12 @@ __all__ = [
     "SecuritySplit",
     "SignupRequest",
     "SplitConfidence",
+    "Stream",
     "Subscription",
     "SubscriptionEntitlement",
     "SubscriptionStatus",
+    "SuppressionReason",
+    "SuppressionScope",
     "TokenPurpose",
     "UsageCounter",
     "UserActivityDay",

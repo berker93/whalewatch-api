@@ -17,6 +17,9 @@ dependencies = [
     "argon2-cffi>=23.1",
     "asyncpg>=0.30",
     "celery[redis]>=5.5",
+    # check-email-domain's SPF, DKIM and DMARC lookups (app/accounts/email_domain.py).
+    # Already installed by pydantic[email]; named because the code imports it.
+    "dnspython>=2.6",
     "fastapi>=0.115",
     # Runtime, not dev: the EDGAR client is application code. It was already
     # here as a test dependency for httpx.AsyncClient against the ASGI app.
