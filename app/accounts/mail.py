@@ -1,5 +1,5 @@
 """Account emails: verify an address, confirm an email change, tell the old address,
-reset a password, say an account was deleted.
+reset a password, say an account was deleted, warn that a monthly quota is 80% spent.
 
 Two backends, by ``EMAIL_BACKEND``. ``log`` writes each message to the log,
 link included, and sends nothing: in development the link is in the API's log
@@ -90,6 +90,7 @@ def link(settings: Settings, path: str, token: str) -> str:
 VERIFY_EMAIL_PATH = "/verify-email"
 CONFIRM_EMAIL_PATH = "/account/confirm-email"
 RESET_PASSWORD_PATH = "/reset-password"
+ACCOUNT_PATH = "/account"
 
 
 def email_verification(settings: Settings, *, to: str, token: str, hours: int) -> Message:
@@ -151,5 +152,23 @@ def account_deleted(*, to: str, purge_after: date) -> Message:
             f"What it held is erased for good on {purge_after:%d %B %Y}; until then "
             "WhaleWatch support can restore it on request.\n\n"
             "If you didn't delete it, contact support now: whoever did knew your password."
+        ),
+    )
+
+
+def quota_warning(
+    settings: Settings, *, to: str, what: str, used: int, limit: int, resets_on: date
+) -> Message:
+    """:param what: The quota, for a person: "API calls"."""
+    return Message(
+        to=to,
+        subject=f"You've used 80% of this month's WhaleWatch {what}",
+        body=(
+            f"Your WhaleWatch account has made {used:,} of the {limit:,} {what} its plan "
+            f"allows this month. Once all {limit:,} are made, further calls are refused "
+            f"until the month starts again on {resets_on:%d %B %Y}.\n\n"
+            f"Your usage, and the plans with more, are on your account page:\n"
+            f"{settings.web_url}{ACCOUNT_PATH}\n\n"
+            "This is the only warning this month."
         ),
     )

@@ -76,6 +76,7 @@ LimitKey = Literal[
     "watchlist_items",
     "screener_saved_filters",
     "api_calls_month",
+    "mcp_calls_month",
 ]
 """An entitlement that is a number of something: :func:`limit`."""
 
@@ -253,6 +254,10 @@ class Grant:
     overrides: Mapping[str, Value]
     ends_at: datetime | None
     """``cancel_at``: from then on, Free."""
+    started_at: datetime | None = None
+    """When the subscription began: its anniversary is when its quota months
+    start (:mod:`app.accounts.usage`). None only in a grant a session kept
+    from before it was read, which the session reads again."""
 
     def live(self, at: datetime) -> bool:
         return self.ends_at is None or at < self.ends_at
@@ -263,16 +268,18 @@ class Grant:
             "grandfathered": self.grandfathered,
             "overrides": dict(self.overrides),
             "ends_at": self.ends_at.isoformat() if self.ends_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
         }
 
     @classmethod
     def from_json(cls, stored: dict[str, Any]) -> "Grant":
-        ends_at = stored["ends_at"]
+        ends_at, started_at = stored["ends_at"], stored.get("started_at")
         return cls(
             plan=stored["plan"],
             grandfathered=stored["grandfathered"],
             overrides=stored["overrides"],
             ends_at=datetime.fromisoformat(ends_at) if ends_at else None,
+            started_at=datetime.fromisoformat(started_at) if started_at else None,
         )
 
 
@@ -297,7 +304,13 @@ async def grant_for(session: AsyncSession, user_id: int) -> Grant | None:
     plan, grandfathered = aliased(Plan), aliased(Plan)
     row = (
         await session.execute(
-            select(plan.slug, grandfathered.slug, Subscription.cancel_at, subscription_overrides())
+            select(
+                plan.slug,
+                grandfathered.slug,
+                Subscription.cancel_at,
+                Subscription.created_at,
+                subscription_overrides(),
+            )
             .select_from(Subscription)
             .join(plan, plan.id == Subscription.plan_id)
             .outerjoin(grandfathered, grandfathered.id == Subscription.grandfathered_plan_id)
@@ -310,9 +323,13 @@ async def grant_for(session: AsyncSession, user_id: int) -> Grant | None:
     ).one_or_none()
     if row is None:
         return None
-    plan_slug, grandfathered_slug, cancel_at, values = row
+    plan_slug, grandfathered_slug, cancel_at, created_at, values = row
     return Grant(
-        plan=plan_slug, grandfathered=grandfathered_slug, overrides=values, ends_at=cancel_at
+        plan=plan_slug,
+        grandfathered=grandfathered_slug,
+        overrides=values,
+        ends_at=cancel_at,
+        started_at=created_at,
     )
 
 
@@ -326,7 +343,8 @@ class Entitled(Protocol):
     def grant(self) -> Grant | None: ...
 
 
-def _live_grant(who: Entitled | None) -> Grant | None:
+def live_grant(who: Entitled | None) -> Grant | None:
+    """``who``'s grant while it is live; None for Free."""
     grant = who.grant if who is not None else None
     if grant is None or not grant.live(datetime.now(UTC)):
         return None
@@ -358,7 +376,7 @@ def limit(who: Entitled | None, key: LimitKey) -> int | None:
     """
     if key not in LIMIT_KEYS:
         raise ValueError(f"{key!r} is not a limit: ask can()")
-    value = _resolve(current(), _live_grant(who), key)
+    value = _resolve(current(), live_grant(who), key)
     assert value is None or type(value) is int
     return value
 
@@ -370,14 +388,14 @@ def can(who: Entitled | None, key: FlagKey) -> bool:
     """
     if key not in FLAG_KEYS:
         raise ValueError(f"{key!r} is not a flag: ask limit()")
-    value = _resolve(current(), _live_grant(who), key)
+    value = _resolve(current(), live_grant(who), key)
     assert isinstance(value, bool)
     return value
 
 
 def entitlements(who: Entitled | None) -> dict[str, Value]:
     """Every key's value for ``who``: what ``GET /v1/me`` lists."""
-    catalog, grant = current(), _live_grant(who)
+    catalog, grant = current(), live_grant(who)
     return {key: _resolve(catalog, grant, key) for key in ENTITLEMENT_KEYS}
 
 
@@ -400,7 +418,7 @@ def lifting_plan(key: LimitKey, needed: int) -> PlanTerms | None:
 def plan_of(who: Entitled | None) -> PlanTerms:
     """The plan ``who`` is on: what they are billed for, not the terms they
     keep. Free for anyone without a live subscription."""
-    catalog, grant = current(), _live_grant(who)
+    catalog, grant = current(), live_grant(who)
     if grant is None:
         return catalog.free
     return catalog.plans.get(grant.plan, catalog.free)

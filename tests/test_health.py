@@ -80,6 +80,10 @@ class StubRedis:
 
         return admit
 
+    async def set(self, *args: object, **kwargs: object) -> None:
+        """The usage flush's lock, never taken: the flush at shutdown does nothing."""
+        return None
+
     async def aclose(self) -> None:
         self.closed = True
 

@@ -32,12 +32,18 @@ class PlanLimitDetail(BaseModel):
     """Which limit, how far the request needed it to go, and who goes further."""
 
     limit: Literal[
-        "history_quarters", "insider_months", "watchlist_items", "screener_saved_filters"
+        "history_quarters",
+        "insider_months",
+        "watchlist_items",
+        "screener_saved_filters",
+        "api_calls_month",
+        "mcp_calls_month",
     ] = Field(
         description=(
             "The entitlement that stopped the request: `history_quarters` (a period "
             "before the caller's window), `insider_months` (a trade day before it), "
-            "`watchlist_items` or `screener_saved_filters` (that many saved already)."
+            "`watchlist_items` or `screener_saved_filters` (that many saved already), "
+            "`api_calls_month` or `mcp_calls_month` (the plan has no calls: 0)."
         ),
         examples=["history_quarters"],
     )

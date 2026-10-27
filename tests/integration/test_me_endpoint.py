@@ -35,6 +35,7 @@ async def test_me_is_the_user_their_plan_and_what_it_allows(
         "watchlist_items": 10,
         "screener_saved_filters": 3,
         "api_calls_month": 0,
+        "mcp_calls_month": 0,
         "export_enabled": False,
         "alerts_instant": False,
         "mcp_enabled": False,

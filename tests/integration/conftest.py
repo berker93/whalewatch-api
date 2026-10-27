@@ -313,6 +313,6 @@ def outbox(monkeypatch: pytest.MonkeyPatch) -> Outbox:
     """The account emails the routes send, kept rather than logged, so a test
     can follow the link in one."""
     box = Outbox()
-    for module in ("app.api.routers.account", "app.api.routers.auth"):
+    for module in ("app.api.routers.account", "app.api.routers.auth", "app.api.metering"):
         monkeypatch.setattr(f"{module}.mailer_for", lambda settings: box)
     return box

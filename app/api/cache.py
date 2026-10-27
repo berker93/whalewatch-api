@@ -54,7 +54,7 @@ rest of the day: Pro's history to Free, or Free's to Pro. Keyed on the window
 rather than the plan, so an answer built before a quarter ended is not served
 after it, and every plan with the same window shares one entry.
 
-Such an answer goes out ``Cache-Control: private`` with ``Vary: Cookie``
+Such an answer goes out ``Cache-Control: private`` with ``Vary: Cookie, Authorization``
 rather than ``public``: a browser may keep it for the session that asked, and
 a CDN or proxy, which cannot tell sessions apart, keeps none of it.
 
@@ -92,7 +92,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import RedisDep, SettingsDep
-from app.api.entitlements import EntitlementContext, takes_entitlements
+from app.api.entitlements import GATED_VARY, EntitlementContext, takes_entitlements
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.periods import filing_deadline
@@ -305,7 +305,7 @@ def _respond(
         cache_control += f", stale-while-revalidate={STALE_WHILE_REVALIDATE}"
     headers = {"Cache-Control": cache_control, "ETag": etag, "X-Cache": "HIT" if hit else "MISS"}
     if gated:
-        headers["Vary"] = "Cookie"
+        headers["Vary"] = ", ".join(GATED_VARY)
 
     if _none_match(request.headers.get("if-none-match"), etag):
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)

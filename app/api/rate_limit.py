@@ -160,7 +160,8 @@ class RateLimitMiddleware:
 
     Every counted response says ``X-RateLimit-Limit`` and
     ``X-RateLimit-Remaining``, so a well-behaved client can slow down before it
-    is refused.
+    is refused; but for a request made with an API key, whose answer says its
+    monthly quota under those names (:mod:`app.api.metering`).
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -207,8 +208,12 @@ class RateLimitMiddleware:
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
-                for name, value in limit_headers.items():
-                    headers[name] = value
+                # A request made with an API key says its month's quota under
+                # these names (app.api.metering), which is what its client
+                # budgets by; the minute's are for everyone else.
+                if "x-ratelimit-limit" not in headers:
+                    for name, value in limit_headers.items():
+                        headers[name] = value
             await send(message)
 
         await self.app(scope, receive, send_with_headers)

@@ -20,7 +20,7 @@ from app.api.openapi import OPENAPI_PATH, build, render
 Schema = dict[str, Any]
 
 #: The bodies a 4xx may have: a Problem, or a Problem with more beside it.
-PROBLEMS = {"Problem", "ValidationProblem", "StockNotFound", "PlanLimitProblem"}
+PROBLEMS = {"Problem", "ValidationProblem", "StockNotFound", "PlanLimitProblem", "QuotaProblem"}
 
 #: Not an error, whatever the status says: /ready reports which dependency is
 #: down in the same body it reports health in.

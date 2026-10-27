@@ -21,6 +21,11 @@ The dependencies, by how much a route needs a session:
   works signed out does not fail for either.
 - :data:`AuthRateLimitDep`: the stricter per-IP limit for the credential calls
   that :func:`limit_attempts` does not cover.
+- :data:`ApiCallerDep`: the account of the API key the request was made with
+  (``Authorization: Bearer ww_...``, :mod:`app.accounts.api_keys`), None for a
+  request without one, and a 401 ``invalid_api_key`` for a key that is unknown
+  or revoked. Only the data endpoints read it: a key is never a session, so the
+  account routes, which want a viewer, answer a request with only a key 401.
 
 A Redis that cannot be reached is a 503 ``unavailable`` for a route that needs
 a session (:func:`app.api.errors.sessions_unavailable`): never a guess at who is
@@ -45,6 +50,7 @@ from typing import Annotated, Final, Literal
 from fastapi import Depends, Request, Response, status
 from redis.exceptions import RedisError
 
+from app.accounts.api_keys import KeyHolder, find_key
 from app.accounts.sessions import (
     SessionStore,
     SessionStoreError,
@@ -70,6 +76,19 @@ UNAUTHORIZED: Final[Responses] = {
         "description": (
             "Not signed in. `unauthenticated` when the request had no session cookie, "
             "`session_expired` when the session it named has ended."
+        ),
+    }
+}
+
+
+#: What the 401 for an API key documents.
+INVALID_API_KEY: Final[Responses] = {
+    status.HTTP_401_UNAUTHORIZED: {
+        "model": Problem,
+        "description": (
+            "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or "
+            "names a key that is unknown or revoked. Without the header the request is "
+            "answered as for someone signed out."
         ),
     }
 }
@@ -196,6 +215,46 @@ async def optional_viewer(lookup: SessionLookupDep) -> Viewer | None:
     if lookup.unavailable is not None:
         logger.warning("sessions.unavailable", error=repr(lookup.unavailable.__cause__))
     return lookup.viewer
+
+
+def bearer_token(request: Request) -> str | None:
+    """The API key in ``Authorization: Bearer <key>``, or None without the header.
+
+    :raises ApiError: 401 ``invalid_api_key`` for a header of another scheme,
+        or with nothing after it.
+    """
+    header = request.headers.get("authorization")
+    if header is None:
+        return None
+    scheme, _, token = header.strip().partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        raise ApiError(
+            401, ErrorCode.INVALID_API_KEY, "Send the API key as `Authorization: Bearer <key>`."
+        )
+    return token
+
+
+async def api_caller(request: Request, session: SessionDep) -> KeyHolder | None:
+    """The account of the request's API key, or None for a request without one.
+
+    :raises ApiError: 401 ``invalid_api_key`` for a key that is unknown or
+        revoked, or whose account was deleted.
+    """
+    token = bearer_token(request)
+    if token is None:
+        return None
+    holder = await find_key(session, token)
+    if holder is None:
+        raise ApiError(
+            401,
+            ErrorCode.INVALID_API_KEY,
+            "That API key is unknown or revoked. Your account page lists the keys that work.",
+        )
+    return holder
+
+
+ApiCallerDep = Annotated[KeyHolder | None, Depends(api_caller)]
 
 
 def no_store(response: Response) -> None:

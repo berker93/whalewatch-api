@@ -32,6 +32,7 @@ from app.db.models import (
     Filer,
     Plan,
     PlanEntitlement,
+    Subscription,
 )
 from tests.fake_redis import FakeRedis
 from tests.integration.accounts import FRONTEND, make_user, sign_in, subscribe
@@ -45,6 +46,7 @@ AGREED: dict[str, dict[str, Any]] = {
         "watchlist_items": 10,
         "screener_saved_filters": 3,
         "api_calls_month": 0,
+        "mcp_calls_month": 0,
         "export_enabled": False,
         "alerts_instant": False,
         "mcp_enabled": False,
@@ -55,6 +57,7 @@ AGREED: dict[str, dict[str, Any]] = {
         "watchlist_items": None,
         "screener_saved_filters": None,
         "api_calls_month": 0,
+        "mcp_calls_month": 0,
         "export_enabled": True,
         "alerts_instant": True,
         "mcp_enabled": False,
@@ -65,6 +68,7 @@ AGREED: dict[str, dict[str, Any]] = {
         "watchlist_items": None,
         "screener_saved_filters": None,
         "api_calls_month": 10_000,
+        "mcp_calls_month": 10_000,
         "export_enabled": True,
         "alerts_instant": True,
         "mcp_enabled": True,
@@ -75,6 +79,7 @@ AGREED: dict[str, dict[str, Any]] = {
         "watchlist_items": None,
         "screener_saved_filters": None,
         "api_calls_month": 100_000,
+        "mcp_calls_month": 100_000,
         "export_enabled": True,
         "alerts_instant": True,
         "mcp_enabled": True,
@@ -205,11 +210,15 @@ async def test_a_live_subscription_is_the_grant(db_session: AsyncSession) -> Non
         overrides={"watchlist_items": 50, "mcp_enabled": False},
     )
 
+    started = await db_session.scalar(
+        select(Subscription.created_at).where(Subscription.status == "past_due")
+    )
     assert await grant_for(db_session, user_id) == Grant(
         plan="pro",
         grandfathered="api_hobbyist",
         overrides={"watchlist_items": 50, "mcp_enabled": False},
         ends_at=None,
+        started_at=started,
     )
 
 

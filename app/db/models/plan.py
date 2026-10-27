@@ -57,6 +57,7 @@ LIMIT_KEYS: Final = (
     "watchlist_items",
     "screener_saved_filters",
     "api_calls_month",
+    "mcp_calls_month",
 )
 
 #: Entitlements that are on or off.

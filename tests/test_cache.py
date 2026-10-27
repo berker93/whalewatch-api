@@ -458,6 +458,7 @@ def test_every_public_read_is_cached() -> None:
         "/v1/me/privacy",
         "/v1/watchlist",
         "/v1/saved-filters",
+        "/v1/api-keys",
         # With no `tz`, the answer is in the signed-in user's zone.
         "/v1/timeline",
         "/v1/timeline/upcoming",
@@ -486,7 +487,7 @@ def test_every_read_of_filing_data_is_gated() -> None:
         "/v1/meta/periods",
         "/v1/meta/freshness",
         "/v1/meta/data-sources",
-        # The caller's own account, watchlist, filters and export.
+        # The caller's own account, watchlist, filters, keys and export.
         "/v1/account",
         "/v1/auth/session",
         "/v1/me",
@@ -494,6 +495,7 @@ def test_every_read_of_filing_data_is_gated() -> None:
         "/v1/me/privacy",
         "/v1/watchlist",
         "/v1/saved-filters",
+        "/v1/api-keys",
     }
     reads = {
         path: route
@@ -573,7 +575,7 @@ async def test_a_quarter_ending_is_a_new_entry(
     assert second.json()["slug"] == "a:h2025-12-31.i2026-04-01"
 
 
-async def test_a_gated_answer_is_private_and_varies_by_cookie(
+async def test_a_gated_answer_is_private_and_varies_by_cookie_and_key(
     http: AsyncClient, plans: list[EntitlementContext]
 ) -> None:
     plans += [FREE, FREE]
@@ -581,7 +583,7 @@ async def test_a_gated_answer_is_private_and_varies_by_cookie(
 
     for response in (built, hit):
         assert response.headers["cache-control"].startswith("private, max-age=")
-        assert response.headers["vary"] == "Cookie"
+        assert response.headers["vary"] == "Cookie, Authorization"
 
 
 async def test_an_ungated_answer_stays_public(http: AsyncClient) -> None:

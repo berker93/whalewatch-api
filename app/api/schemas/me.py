@@ -1,8 +1,11 @@
-"""``GET /v1/me``: who is signed in, their plan, and what it lets them do, in one answer."""
+"""``GET /v1/me``: who is signed in, their plan, what it lets them do, and what
+they have spent of it this month, in one answer."""
 
 from datetime import datetime
 
 from pydantic import BaseModel, Field
+
+from app.api.schemas.usage import Usage
 
 
 class MeUser(BaseModel):
@@ -67,7 +70,11 @@ class MeEntitlements(BaseModel):
         description="How many screener filters the account may save.", examples=[3]
     )
     api_calls_month: int | None = Field(
-        description="API calls a month. 0: no API access.", examples=[0]
+        description="API calls a month, made with the account's API keys. 0: no API access.",
+        examples=[0],
+    )
+    mcp_calls_month: int | None = Field(
+        description="Calls through the MCP server a month. 0: none.", examples=[0]
     )
     export_enabled: bool = Field(description="CSV export of tables.", examples=[False])
     alerts_instant: bool = Field(
@@ -82,3 +89,4 @@ class Me(BaseModel):
     user: MeUser = Field(description="Who is signed in.")
     plan: MePlan = Field(description="Which plan the account is on: Free without a subscription.")
     entitlements: MeEntitlements = Field(description="What the account may do now.")
+    usage: Usage = Field(description="This month's spending of each monthly quota.")

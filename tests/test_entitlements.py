@@ -35,6 +35,7 @@ def _terms(slug: str, **values: Any) -> PlanTerms:
         "watchlist_items": 10,
         "screener_saved_filters": 3,
         "api_calls_month": 0,
+        "mcp_calls_month": 0,
         "export_enabled": False,
         "alerts_instant": False,
         "mcp_enabled": False,
@@ -85,7 +86,7 @@ def catalog() -> Iterator[None]:
 def test_the_key_types_and_the_tables_name_the_same_keys() -> None:
     assert set(get_args(LimitKey)) == set(LIMIT_KEYS)
     assert set(get_args(FlagKey)) == set(FLAG_KEYS)
-    assert len(ENTITLEMENT_KEYS) == len(set(ENTITLEMENT_KEYS)) == 8
+    assert len(ENTITLEMENT_KEYS) == len(set(ENTITLEMENT_KEYS)) == 9
 
 
 def test_signed_out_is_free() -> None:

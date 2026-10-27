@@ -331,13 +331,13 @@ The current quarter is the one that ended most recently in `tz`; `meta.period` a
 | `POST /v1/auth/password-reset/confirm` | `{ token, new_password }` | `204` |
 | `POST /v1/auth/verify-email` | `{ token }` | `204`. No session needed |
 | `POST /v1/auth/verify-email/resend` | none, signed in | `204`. Nothing is sent once verified |
-| `GET /v1/me` | none, signed in | `{ user, plan, entitlements }` (below) |
+| `GET /v1/me` | none, signed in | `{ user, plan, entitlements, usage }` (below) |
 
 `Session` is `{ user: { email, email_verified }, expires_at }`. The FE's `Session` only needs `user`.
 
 `GET /v1/me` is the one call an app page needs before it renders: `user` (`email`, `name`, `time_zone`, `email_verified`, `email_verified_at`, `created_at`, `last_seen_at`), `plan` (`{ id, name }`: `free`, `pro`, `api_hobbyist` or `api_pro`; `free` without a subscription) and `entitlements`. Gate the follow buttons on `entitlements.save`, not on `email_verified`.
 
-`entitlements` is every capability the account has, resolved: `save` (verified email), the limits `history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters` and `api_calls_month` (a whole number, or `null` for no limit), and the flags `export_enabled`, `alerts_instant` and `mcp_enabled`. They are rows in the database, changed without a release, so read them from here and never write a plan's numbers into the page. A change to a plan reaches a signed-in session within about a minute, and a change to one account's subscription within five. The API enforces `history_quarters`, `insider_months`, `watchlist_items` and `screener_saved_filters` (a `402 plan_limit` when one stops a request); `export_enabled`, `alerts_instant`, `api_calls_month` and `mcp_enabled` have no endpoint yet.
+`entitlements` is every capability the account has, resolved: `save` (verified email), the limits `history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters`, `api_calls_month` and `mcp_calls_month` (a whole number, or `null` for no limit), and the flags `export_enabled`, `alerts_instant` and `mcp_enabled`. They are rows in the database, changed without a release, so read them from here and never write a plan's numbers into the page. A change to a plan reaches a signed-in session within about a minute, and a change to one account's subscription within five. The API enforces `history_quarters`, `insider_months`, `watchlist_items` and `screener_saved_filters` (a `402 plan_limit` when one stops a request), and `api_calls_month` on requests made with an API key (§5b); `export_enabled`, `alerts_instant`, `mcp_calls_month` and `mcp_enabled` have no endpoint yet.
 
 `remember: false` gives a cookie without `Max-Age`, which ends with the browser, and a server-side session of 12 hours. `remember: true` gives 30 days.
 
@@ -448,6 +448,24 @@ export const apiAuth: AuthAdapter = {
 - **Export:** fetch it with `credentials: 'include'` and save the blob; a plain `<a href>` to the API also works, since the cookie goes with it.
 - **Deletion** signs out every session at once and frees the address. The data is erased 30 days later; support can restore it until then. After the `204`, clear the session query and go to the marketing site. Ask for the password in a confirm dialog, and show the 30-day note there.
 - `terms.accepted_version` is `null` for accounts made before terms existed. Nothing asks them to accept new terms yet.
+
+### 5b · API keys and monthly usage (TIER-5)
+
+An account on a plan with API calls (`entitlements.api_calls_month` above 0: the API plans) makes keys for its programs on the account page. A program sends one as `Authorization: Bearer ww_…` to any data endpoint. It reads with the account's plan, and every request spends one of the month's `api_calls_month`. The website's own requests, signed in or not, never send a key and spend nothing.
+
+| Endpoint | Body | Answer |
+|---|---|---|
+| `GET /v1/api-keys` | none, signed in | `{ data: ApiKey[] }`, oldest first: `{ id, name, prefix, created_at, last_used_at }`. Revoked keys are not listed |
+| `POST /v1/api-keys` | `{ name }` (1–80 characters) | `201 CreatedApiKey`: an `ApiKey` plus `key`. **Show `key` once**, with a copy button: it is never sent again. `402 plan_limit` on a plan with no API calls (offer `detail.plan`), `403 email_unverified`, `422` past 10 keys |
+| `DELETE /v1/api-keys/{id}` | none | `204`. The key stops working at once. Idempotent |
+
+A key only reads data. It is not a session, so `/v1/me`, the account, the watchlist and the keys themselves answer `401 unauthenticated` to a request with only a key. Deleting the account revokes every key.
+
+**Usage on the account page.** `GET /v1/me` has `usage.api_calls_month` and `usage.mcp_calls_month`, each `{ used, limit, remaining, period_start, resets_at }`. Show "8,125 of 10,000 calls this month, resets 14 November" with a meter, so the user sees the wall coming. The month runs from the subscription's anniversary at midnight UTC, not from the 1st. Free's month runs from the account's anniversary. A count can be a few minutes behind when calls land on several servers.
+
+**What a program sees.** Every keyed answer carries `X-RateLimit-Limit` (the month's quota), `X-RateLimit-Remaining` and `X-RateLimit-Reset` (Unix seconds). These replace the per-minute headers of the same names. A spent month is `429 quota_exceeded` with `Remaining: 0`, `Retry-After` (the seconds to the reset) and `detail { limit, allowed, used, resets_at, plan }`. A key whose plan has no calls (a lapsed subscription) is `402 plan_limit`. An unknown or revoked key is `401 invalid_api_key`.
+
+At 80% of a month's quota the account gets one email: once per month, never twice.
 
 ---
 

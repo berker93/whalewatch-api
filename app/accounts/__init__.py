@@ -7,6 +7,11 @@
 ``entitlements``
     What each plan lets an account do, from rows, and the one place it is
     asked: ``limit(viewer, key)`` and ``can(viewer, key)``.
+``api_keys``
+    The keys an account's programs read the data with, hashed.
+``usage``
+    The monthly quotas: counted in Redis per subscription anniversary, flushed
+    to Postgres, and the 80% email claimed once.
 ``rules``
     What a name, an email, a password and a time zone must be: the frontend's
     rules or looser.

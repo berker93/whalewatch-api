@@ -3,7 +3,7 @@
 ``GET``/``PATCH /v1/me/privacy``, ``GET /v1/me/export`` and ``DELETE /v1/account``.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -232,6 +232,35 @@ class ExportSubscription(BaseModel):
     created_at: datetime = Field(description="When it began.", examples=[_AT])
 
 
+class ExportApiKey(BaseModel):
+    """One API key, working or revoked: never the key, which is not kept."""
+
+    name: str = Field(description="What the user called it.", examples=["nightly job"])
+    prefix: str = Field(description="Its first characters.", examples=["ww_Ab12Cd34"])
+    created_at: datetime = Field(description="When it was made.", examples=[_AT])
+    last_used_at: datetime | None = Field(
+        description="The last request made with it, to within five minutes.", examples=[_AT]
+    )
+    revoked_at: datetime | None = Field(
+        description="When it stopped working; null while it works.", examples=[None]
+    )
+
+
+class ExportUsage(BaseModel):
+    """One month's count of one metered thing, newest first."""
+
+    key: str = Field(
+        description="`api_calls_month` or `mcp_calls_month`.", examples=["api_calls_month"]
+    )
+    period: date = Field(description="The quota month's first day.", examples=["2026-10-14"])
+    count: int = Field(
+        description="Calls counted, as last written from the live counter.", examples=[8125]
+    )
+    warned_at: datetime | None = Field(
+        description="When the 80% email was sent that month, if it was.", examples=[None]
+    )
+
+
 class Export(BaseModel):
     """Everything WhaleWatch holds on the signed-in user."""
 
@@ -249,6 +278,10 @@ class Export(BaseModel):
     sessions: list[ExportSession] = Field(description="Sessions still signed in.")
     subscriptions: list[ExportSubscription] = Field(
         description="Every subscription the account has had, newest first."
+    )
+    api_keys: list[ExportApiKey] = Field(description="Every API key made, oldest first.")
+    usage: list[ExportUsage] = Field(
+        description="What was counted of each monthly quota, by month, newest first."
     )
     not_included: list[str] = Field(
         description="What is held but not here, and why: a person can still ask for it.",

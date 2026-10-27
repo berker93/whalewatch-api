@@ -35,8 +35,8 @@ The cache
 Two plans' answers to the same URL differ, so a gated answer is cached under
 :attr:`EntitlementContext.tier`, the window it was built for
 (:func:`app.api.cache.cached`), and goes out ``Cache-Control: private`` with
-``Vary: Cookie``: a browser keeps it for the session that asked, and no shared
-cache keeps it at all. The dependency also marks the request, and
+``Vary: Cookie, Authorization``: a browser keeps it for the session or API key
+that asked, and no shared cache keeps it at all. The dependency also marks the request, and
 :class:`GatedResponseMiddleware` makes every response to a marked request
 private, so an uncached route or an error cannot go out ``public`` either.
 """
@@ -54,9 +54,8 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.accounts import entitlements
-from app.accounts.entitlements import LimitKey
-from app.accounts.sessions import Viewer
-from app.api.auth import OptionalViewerDep
+from app.accounts.entitlements import Entitled, LimitKey
+from app.api.auth import ApiCallerDep, OptionalViewerDep
 from app.api.errors import ApiError, Responses
 from app.api.schemas.error import ErrorCode
 from app.api.schemas.plan_limit import PlanLimitDetail, PlanLimitProblem, PlanOffer
@@ -71,6 +70,9 @@ from app.core.periods import (
 
 #: What the dependency marks a request with, in ``scope["state"]``.
 GATED: Final = "entitlement_gated"
+
+#: What a gated answer varies by: who is asking is the session's or the API key's.
+GATED_VARY: Final = ("Cookie", "Authorization")
 
 #: What every gated route documents.
 PLAN_LIMITED: Final[Responses] = {
@@ -131,7 +133,9 @@ class EntitlementContext:
     history_quarters: int | None
     insider_months: int | None
     today: date
-    viewer: Viewer | None = field(default=None, compare=False, repr=False)
+    viewer: Entitled | None = field(default=None, compare=False, repr=False)
+    """Who is asking: the signed-in viewer, or the account of the API key the
+    request was made with."""
     history_from: date | None = field(init=False)
     """The first period the caller sees; None for every period."""
     insiders_from: date | None = field(init=False)
@@ -142,7 +146,7 @@ class EntitlementContext:
         object.__setattr__(self, "insiders_from", insiders_from(self.insider_months, self.today))
 
     @classmethod
-    def of(cls, viewer: Viewer | None, *, today: date | None = None) -> "EntitlementContext":
+    def of(cls, viewer: Entitled | None, *, today: date | None = None) -> "EntitlementContext":
         """``viewer``'s, or Free's for None.
 
         :raises EntitlementsUnavailableError: before a catalog has loaded.
@@ -156,7 +160,7 @@ class EntitlementContext:
 
     @classmethod
     def unlimited(
-        cls, *, viewer: Viewer | None = None, today: date | None = None
+        cls, *, viewer: Entitled | None = None, today: date | None = None
     ) -> "EntitlementContext":
         """Every period and day, and ``viewer``'s write limits: what a test
         that is not about plans runs as, and ``make explain`` for a paid plan."""
@@ -249,43 +253,55 @@ class EntitlementContext:
     def _refused(self, key: LimitKey, needed: int, message: str) -> PlanLimitError:
         allowed = self.limit(key)
         assert allowed is not None  # no limit is never refused
-        plan = entitlements.lifting_plan(key, needed)
-        if plan is None:
-            message += " No plan goes further."
-        else:
-            value = plan.values[key]
-            message += f" {plan.name} " + ("has no limit." if value is None else f"allows {value}.")
-        return PlanLimitError(
-            status.HTTP_402_PAYMENT_REQUIRED,
-            ErrorCode.PLAN_LIMIT,
-            message,
-            detail=PlanLimitDetail(
-                limit=key,
-                allowed=allowed,
-                needed=needed,
-                plan=None
-                if plan is None
-                else PlanOffer(
-                    slug=plan.slug,
-                    name=plan.name,
-                    price_cents=plan.price_cents,
-                    currency=plan.currency,
-                    interval=plan.interval,
-                    value=plan.values[key],
-                ),
-            ),
-        )
+        return plan_limit_error(key, allowed=allowed, needed=needed, message=message)
+
+
+def offer(key: LimitKey, needed: int) -> PlanOffer | None:
+    """The cheapest public plan whose ``key`` reaches ``needed``, as a refusal names it."""
+    plan = entitlements.lifting_plan(key, needed)
+    if plan is None:
+        return None
+    return PlanOffer(
+        slug=plan.slug,
+        name=plan.name,
+        price_cents=plan.price_cents,
+        currency=plan.currency,
+        interval=plan.interval,
+        value=plan.values[key],
+    )
+
+
+def offer_sentence(plan: PlanOffer | None) -> str:
+    """What a refusal's message ends with: who goes further, or that nobody does."""
+    if plan is None:
+        return "No plan goes further."
+    return f"{plan.name} " + ("has no limit." if plan.value is None else f"allows {plan.value}.")
+
+
+def plan_limit_error(key: LimitKey, *, allowed: int, needed: int, message: str) -> PlanLimitError:
+    """The 402 for ``key``: ``allowed`` is the caller's, ``needed`` what the
+    request needed, and the message gains the plan that lifts it."""
+    plan = offer(key, needed)
+    return PlanLimitError(
+        status.HTTP_402_PAYMENT_REQUIRED,
+        ErrorCode.PLAN_LIMIT,
+        f"{message} {offer_sentence(plan)}",
+        detail=PlanLimitDetail(limit=key, allowed=allowed, needed=needed, plan=plan),
+    )
 
 
 def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
-async def entitlement_context(request: Request, viewer: OptionalViewerDep) -> EntitlementContext:
+async def entitlement_context(
+    request: Request, viewer: OptionalViewerDep, caller: ApiCallerDep
+) -> EntitlementContext:
     """The caller's :class:`EntitlementContext`, and the request marked gated
-    (:class:`GatedResponseMiddleware`)."""
+    (:class:`GatedResponseMiddleware`). A request made with an API key is its
+    account's, whatever cookie came with it."""
     setattr(request.state, GATED, True)
-    return EntitlementContext.of(viewer, today=utc_today())
+    return EntitlementContext.of(caller or viewer, today=utc_today())
 
 
 EntitlementContextDep = Annotated[EntitlementContext, Depends(entitlement_context)]
@@ -310,7 +326,8 @@ _PUBLIC: Final = re.compile(r"\bpublic\b", re.IGNORECASE)
 def private_headers(headers: MutableHeaders) -> None:
     """Make a response one only the caller's browser may keep: ``public`` becomes
     ``private``, no ``Cache-Control`` becomes ``private, no-cache``, and ``Vary``
-    gains ``Cookie``. ``no-store`` is left alone: it is stricter."""
+    gains ``Cookie`` and ``Authorization``, the session and the API key.
+    ``no-store`` is left alone: it is stricter."""
     cache_control = headers.get("cache-control")
     if cache_control is None:
         headers["cache-control"] = "private, no-cache"
@@ -320,8 +337,10 @@ def private_headers(headers: MutableHeaders) -> None:
             replaced = f"private, {cache_control}"
         headers["cache-control"] = replaced
     varies = {name.strip().lower() for name in headers.get("vary", "").split(",")}
-    if "cookie" not in varies and "*" not in varies:
-        headers.add_vary_header("Cookie")
+    if "*" not in varies:
+        for name in GATED_VARY:
+            if name.lower() not in varies:
+                headers.add_vary_header(name)
 
 
 class GatedResponseMiddleware:

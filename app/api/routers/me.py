@@ -5,6 +5,8 @@
     app page needs to decide what to show before it shows anything. One
     indexed read of the user; the session is already in Redis, and holds the
     user's grant, which the plan catalog resolves (:mod:`app.accounts.entitlements`).
+    With what the account has spent of its monthly quotas (``usage``), from
+    Redis (:mod:`app.accounts.usage`).
 ``GET`` and ``PATCH /v1/me/privacy``
     What the account's data is used for, on which lawful basis, and the two
     choices the user has: product email (objectable) and marketing email
@@ -18,7 +20,7 @@ Deleting the account is ``DELETE /v1/account`` (app/api/routers/account.py).
 
 from typing import Final
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -29,10 +31,12 @@ from app.accounts.sessions import now
 from app.api.auth import UNAUTHORIZED, NoStoreDep, SessionStoreDep, ViewerDep
 from app.api.deps import SessionDep
 from app.api.errors import INVALID
+from app.api.metering import get_meter, usage_of
 from app.api.schemas.me import Me, MeEntitlements, MePlan, MeUser
 from app.api.schemas.privacy import (
     Export,
     ExportAccount,
+    ExportApiKey,
     ExportConsent,
     ExportInsider,
     ExportInvestor,
@@ -41,6 +45,7 @@ from app.api.schemas.privacy import (
     ExportSession,
     ExportStock,
     ExportSubscription,
+    ExportUsage,
     ExportWatchlist,
     Privacy,
     PrivacyPatch,
@@ -50,6 +55,7 @@ from app.api.schemas.privacy import (
 from app.db.models import (
     BASES,
     AccountToken,
+    ApiKey,
     AppUser,
     ConsentRecord,
     Filer,
@@ -59,6 +65,7 @@ from app.db.models import (
     SavedFilter,
     Security,
     Subscription,
+    UsageCounter,
     WatchlistItem,
 )
 
@@ -72,10 +79,11 @@ router = APIRouter(prefix="/me", tags=["account"], dependencies=[NoStoreDep])
     summary="The signed-in user, their plan and what it lets them do",
     responses=UNAUTHORIZED,
 )
-async def read_me(viewer: ViewerDep) -> Me:
+async def read_me(request: Request, viewer: ViewerDep, session: SessionDep) -> Me:
     """A 401 `unauthenticated` signed out, `session_expired` when the session
     has ended. `entitlements.save` is false until the email is verified: the
-    account reads everything and saves nothing."""
+    account reads everything and saves nothing. `usage` is this month's
+    calls against each monthly quota, and when they reset."""
     user = viewer.user
     plan = plan_of(viewer)
     return Me(
@@ -92,6 +100,7 @@ async def read_me(viewer: ViewerDep) -> Me:
         entitlements=MeEntitlements.model_validate(
             {"save": user.email_verified_at is not None, **entitlements(viewer)}
         ),
+        usage=await usage_of(get_meter(request), session, viewer),
     )
 
 
@@ -166,7 +175,10 @@ async def update_privacy(body: PrivacyPatch, viewer: ViewerDep, session: Session
 #: What is held on the user but not in the export, and why.
 NOT_INCLUDED: Final = [
     "password: only a one-way hash of it is kept, which is no use to anyone but an attacker",
-    "session cookies and emailed link tokens: only their hashes are kept, for the same reason",
+    "session cookies, emailed link tokens and API keys: only their hashes are kept, for the "
+    "same reason",
+    "this month's live call counters: they are in usage as of their last write, a few "
+    "minutes behind at most",
     "server logs: request lines (time, path, IP address) and email delivery failures, kept "
     "for operations; ask for them by email",
     "sign-in attempt counters: a hash of the email and the IP address, gone after 15 minutes",
@@ -247,7 +259,8 @@ async def export_me(
     viewer: ViewerDep, session: SessionDep, store: SessionStoreDep, response: Response
 ) -> Export:
     """The account, the watchlist, the saved filters, the whole consent
-    ledger, the links and sessions still live, and a list of what is held but
+    ledger, the links and sessions still live, the subscriptions, the API keys
+    (never the keys themselves) and each month's quota usage, and a list of what is held but
     left out (hashes, logs) and why. `Content-Disposition: attachment`, so a browser saves it.
     The format is versioned by `format`."""
     user = viewer.user
@@ -281,5 +294,19 @@ async def export_me(
             for record in await store.list_for(user.id)
         ],
         subscriptions=await _subscriptions(session, user.id),
+        api_keys=[
+            ExportApiKey.model_validate(row, from_attributes=True)
+            for row in await session.scalars(
+                select(ApiKey).where(ApiKey.user_id == user.id).order_by(ApiKey.id)
+            )
+        ],
+        usage=[
+            ExportUsage.model_validate(row, from_attributes=True)
+            for row in await session.scalars(
+                select(UsageCounter)
+                .where(UsageCounter.user_id == user.id)
+                .order_by(UsageCounter.period.desc(), UsageCounter.key)
+            )
+        ],
         not_included=NOT_INCLUDED,
     )

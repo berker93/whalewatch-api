@@ -1,8 +1,8 @@
 # Processing register
 
 GDPR Art. 30: what WhaleWatch stores about people, why, on what basis, for how
-long, and who else handles it. Written from the code as of migration 0036
-(2026-10-24). Change this file in the same commit as the code it describes.
+long, and who else handles it. Written from the code as of migration 0039
+(2026-10-25). Change this file in the same commit as the code it describes.
 
 Items marked **OPEN** are not decided or not done. They are also listed in the
 [last section](#open-items).
@@ -33,6 +33,8 @@ The people who sign up. Every table below is in Postgres unless it says Redis.
 | Session: user id, remember flag, expiry. Cookie stored as SHA-256 only | Redis `ww:session:*`, `ww:user-sessions:*` | Staying signed in | Contract | 12 h, or 30 days with "keep me signed in"; ended at once on sign-out, password change or reset, and deletion |
 | Lawful-basis ledger: purpose, basis, granted, terms/privacy version, source, time | `consent_record` | Proof of consent, objection and terms acceptance (Art. 7(1)) | Legal obligation (Art. 6(1)(c)) | Life of the account + 30 days |
 | Deletion audit: former user id, who asked, when asked, when purged or restored, row counts erased. No email, no name | `account_deletion` | Proof the erasure happened (Art. 5(2)) | Legal obligation | **Indefinitely**. It holds a bare id that matches nothing once purged. **OPEN**: confirm, or set e.g. 6 years |
+| API keys: name, the first 11 characters, SHA-256 of the key, made, last used (to 5 min), revoked | `api_key` | Programmatic access the paid API plans sell | Contract | Life of the account + 30 days. Revoked on deletion |
+| Monthly call counts per quota and quota month, and when the 80% email went | `usage_counter`; the live count in Redis `ww:usage:*` | Enforcing the plan's monthly quota, showing usage on the account page | Contract | Postgres: life of the account + 30 days. Redis: the quota month + 7 days |
 | Sign-in attempt counters: SHA-256 of the email, client IP | Redis `ww:rl:attempts:*` | Stopping password guessing | Legitimate interest (Art. 6(1)(f)): security | 15 minutes |
 | Request log lines: time, method, path, status, client IP, request id | API stdout (structlog JSON) | Operations, abuse, debugging | Legitimate interest: security and operations | **OPEN**: depends on where logs are shipped. Suggest 30 days |
 | Mail failure log lines: recipient, subject | API stdout | Knowing a reset or verify mail did not arrive | Legitimate interest | Same as request logs |
@@ -47,7 +49,7 @@ Recorded per user in `consent_record`. The code is the source of truth:
 
 | Purpose | Basis | Default | User control |
 |---|---|---|---|
-| `account`: run the account, plus the emails it can't work without (verify, reset, email change, deletion notice) | Contract | On; it is the account | Ends only by deleting the account |
+| `account`: run the account, plus the emails it can't work without (verify, reset, email change, deletion notice, the once-a-month warning at 80% of a paid quota) | Contract | On; it is the account | Ends only by deleting the account |
 | `product_email`: news about the product the user uses | Legitimate interest | On from registration | Object any time: `PATCH /v1/me/privacy {"product_email": false}`. **OPEN**: an unsubscribe link in each email |
 | `marketing_email`: promotion, offers, paid plans | Consent (Art. 6(1)(a), PECR reg. 22) | **Off**. A separate, unticked checkbox at registration, never bundled with the terms | Give or withdraw any time: `PATCH /v1/me/privacy`. **OPEN**: unsubscribe link |
 
@@ -64,9 +66,9 @@ one. **OPEN**: an endpoint and UI to accept new terms when the version changes.
 
 | Right | How |
 |---|---|
-| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, saved filters, the whole consent ledger, live links and sessions, every subscription, and a list of what's left out and why (hashes, logs). Logs on request by email. |
+| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, saved filters, the whole consent ledger, live links and sessions, every subscription, every API key (never the key) and each month's call counts, and a list of what's left out and why (hashes, logs). Logs on request by email. |
 | Rectification (Art. 16) | `PATCH /v1/account`: name, time zone, email (confirmed by link) |
-| Erasure (Art. 17) | `DELETE /v1/account` with the password, or `delete-user --email` by an operator for a request by email. The account is soft-deleted at once: signed out everywhere, links dead, login refused, address free for a new account. The `purge-accounts` job (beat, daily 05:00 New York) hard-deletes it 30 days later with its watchlist, saved filters, consent records, tokens and subscriptions, and writes the counts to `account_deletion`. `restore-user --email` undoes it within the 30 days. |
+| Erasure (Art. 17) | `DELETE /v1/account` with the password, or `delete-user --email` by an operator for a request by email. The account is soft-deleted at once: signed out everywhere, links dead, login refused, address free for a new account. The `purge-accounts` job (beat, daily 05:00 New York) hard-deletes it 30 days later with its watchlist, saved filters, consent records, tokens, subscriptions, API keys and usage counts, and writes the counts to `account_deletion`. `restore-user --email` undoes it within the 30 days. |
 | Withdraw consent, object (Art. 7(3), 21) | `PATCH /v1/me/privacy` |
 | Restriction (Art. 18) | **OPEN**: no mechanism. Handle by hand (operator) if asked |
 

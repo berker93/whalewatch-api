@@ -117,7 +117,10 @@ class SessionRecord:
     began or since :meth:`SessionStore.forget_grants`."""
 
     def grant_is_stale(self, at: datetime) -> bool:
-        return self.granted_at is None or at - self.granted_at >= GRANT_EVERY
+        if self.granted_at is None or at - self.granted_at >= GRANT_EVERY:
+            return True
+        # Kept before grants said when their subscription began.
+        return self.grant is not None and self.grant.started_at is None
 
     def to_json(self) -> str:
         return json.dumps(

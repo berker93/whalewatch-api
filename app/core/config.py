@@ -126,6 +126,11 @@ class Settings(BaseSettings):
     # takes to reach every request.
     entitlements_refresh_seconds: float = Field(default=60.0, gt=0)
 
+    # How often each API process writes the quota counters it finds changed
+    # in Redis to Postgres (app/accounts/usage.py), and does once more as it
+    # exits: how far behind Redis usage_counter may be.
+    usage_flush_seconds: float = Field(default=180.0, gt=0)
+
     # The other credential calls (a password change, the emailed links' tokens)
     # per client IP per minute, on top of rate_limit_per_minute.
     auth_rate_limit_per_minute: int = Field(default=10, ge=1)

@@ -398,6 +398,8 @@ async def test_the_purge_erases_the_account_and_the_audit_row_survives(
         "consent_record": 3,
         "account_token": 0,
         "subscription": 1,
+        "api_key": 0,
+        "usage_counter": 0,
     }
 
 

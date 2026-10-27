@@ -20,8 +20,9 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 from starlette.middleware.cors import CORSMiddleware
 
-from app.accounts import entitlements
+from app.accounts import entitlements, usage
 from app.accounts.sessions import SessionStore, SessionStoreError
+from app.accounts.usage import UsageMeter
 from app.api.entitlements import GatedResponseMiddleware
 from app.api.errors import (
     RATE_LIMITED,
@@ -30,6 +31,7 @@ from app.api.errors import (
     sessions_unavailable,
     validation_error,
 )
+from app.api.metering import METERED, MeteredDep, QuotaHeadersMiddleware
 from app.api.middleware import (
     REQUEST_ID_HEADER,
     BodySizeLimitMiddleware,
@@ -48,6 +50,7 @@ from app.api.rate_limit import (
 )
 from app.api.routers import (
     account,
+    api_keys,
     auth,
     filings,
     health,
@@ -108,16 +111,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     catalog_refresh = asyncio.create_task(
         entitlements.keep_fresh(app.state.session_factory, settings.entitlements_refresh_seconds)
     )
+    # The API keys' monthly calls, counted in Redis and written to Postgres
+    # every few minutes, and once more below as the process exits.
+    app.state.meter = UsageMeter(app.state.redis)
+    usage_flush = asyncio.create_task(
+        usage.keep_flushing(
+            app.state.redis, app.state.session_factory, settings.usage_flush_seconds
+        )
+    )
     try:
         yield
     finally:
-        catalog_refresh.cancel()
-        with suppress(asyncio.CancelledError):
-            await catalog_refresh
-        # In a finally, so an exception during serving still returns the
-        # connections rather than leaving Postgres to reap them on its own.
-        await app.state.engine.dispose()
-        await app.state.redis.aclose()
+        for task in (catalog_refresh, usage_flush):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        try:
+            await usage.flush_quietly(app.state.redis, app.state.session_factory)
+        finally:
+            # In a finally, so an exception during serving, or in the last
+            # flush, still returns the connections rather than leaving
+            # Postgres to reap them on its own.
+            await app.state.engine.dispose()
+            await app.state.redis.aclose()
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -154,8 +170,10 @@ def create_app(settings: Settings) -> FastAPI:
     # Each add_middleware wraps everything added before it, so the last added
     # is the outermost: the list below reads from the route outwards. The order
     # is argued in app.api.middleware's docstring.
-    # Innermost: it reads what the route marked, and needs nothing of the others.
+    # Innermost: they read what the route marked, and need nothing of the others.
     app.add_middleware(GatedResponseMiddleware)
+    # Inside the rate limit, which leaves the quota's X-RateLimit-* standing.
+    app.add_middleware(QuotaHeadersMiddleware)
     app.add_middleware(TimeoutMiddleware, seconds=settings.request_timeout_seconds)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
@@ -181,6 +199,7 @@ def create_app(settings: Settings) -> FastAPI:
             REQUEST_ID_HEADER,
             "X-RateLimit-Limit",
             "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
         ],
         # The session cookie (app.api.auth). Safe only because the origins are
         # an allow-list: Settings refuses "*", which with credentials would let
@@ -203,24 +222,21 @@ def create_app(settings: Settings) -> FastAPI:
     app.add_exception_handler(SessionStoreError, sessions_unavailable)
     app.add_exception_handler(entitlements.EntitlementsUnavailableError, entitlements_unavailable)
 
-    # The probes are not rate limited; everything else documents its 429.
+    # The probes are not rate limited; everything else documents its 429. The
+    # data is what an API key reads, and each request made with one spends a
+    # call of its month (app.api.metering); the account is the session's.
     app.include_router(health.router)
-    app.include_router(filings.router, responses=RATE_LIMITED)
-    for router in (
-        investors,
-        portfolio,
-        stocks,
-        insiders,
-        market,
-        search,
-        meta,
-        auth,
-        me,
-        account,
-        watchlist,
-        saved_filters,
-        timeline,
-    ):
+    app.include_router(
+        filings.router, responses={**RATE_LIMITED, **METERED}, dependencies=[MeteredDep]
+    )
+    for router in (investors, portfolio, stocks, insiders, market, search, meta, timeline):
+        app.include_router(
+            router.router,
+            prefix="/v1",
+            responses={**RATE_LIMITED, **METERED},
+            dependencies=[MeteredDep],
+        )
+    for router in (auth, me, account, watchlist, saved_filters, api_keys):
         app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)
 
     return app

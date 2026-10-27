@@ -49,6 +49,8 @@ class ErrorCode(StrEnum):
     EMAIL_UNVERIFIED = "email_unverified"
     UNAVAILABLE = "unavailable"
     PLAN_LIMIT = "plan_limit"
+    INVALID_API_KEY = "invalid_api_key"
+    QUOTA_EXCEEDED = "quota_exceeded"
     #: Any other status. Nothing in this API raises one on purpose; it is here
     #: so that an exception from a dependency still answers in this shape.
     HTTP_ERROR = "http_error"
@@ -80,8 +82,11 @@ class ProblemError(BaseModel):
             "`email_unverified` (403): a save by an account whose email is not "
             "verified yet; `unavailable` (503): sessions cannot be read right now, "
             "try again shortly. Plans: `plan_limit` (402): the caller's plan does not "
-            "reach that far back, or holds no more of something; `detail` names the "
-            "limit and the plan that lifts it."
+            "reach that far back, holds no more of something, or has no API access; "
+            "`detail` names the limit and the plan that lifts it. API keys: "
+            "`invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, "
+            "or the key is unknown or revoked; `quota_exceeded` (429): the month's "
+            "quota of calls is spent; `X-RateLimit-Reset` says when it resets."
         ),
         examples=["not_found"],
     )

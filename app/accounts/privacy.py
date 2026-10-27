@@ -29,7 +29,7 @@ was shown.
 Deleting an account
 -------------------
 :func:`delete_account` marks the account deleted at once: it signs nobody
-in, its address may make a new account, its sessions and links end. Its rows
+in, its address may make a new account, its sessions, links and API keys end. Its rows
 stay for :data:`DELETION_GRACE`, in which an operator can undo it
 (:func:`restore_account`). Then :func:`purge_due` erases the account and
 everything that hangs off it, and the ``account_deletion`` row that recorded
@@ -43,11 +43,13 @@ from typing import Final
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts.api_keys import revoke_all
 from app.accounts.sessions import SessionStore, now
 from app.db.models import (
     BASES,
     AccountDeletion,
     AccountToken,
+    ApiKey,
     AppUser,
     ConsentRecord,
     ConsentSource,
@@ -56,6 +58,7 @@ from app.db.models import (
     SavedFilter,
     SignupRequest,
     Subscription,
+    UsageCounter,
     WatchlistItem,
 )
 
@@ -194,8 +197,8 @@ async def delete_account(
     *,
     requested_by: DeletionRequester,
 ) -> AccountDeletion:
-    """Mark ``user`` deleted, end their sessions and links, and record the
-    request. Does not commit.
+    """Mark ``user`` deleted, end their sessions, links and API keys, and
+    record the request. Does not commit. A restore brings back none of them.
 
     Sessions end before the caller commits, as for a password change: a Redis
     that cannot be reached raises :class:`~app.accounts.sessions.SessionStoreError`
@@ -205,6 +208,7 @@ async def delete_account(
     at = now()
     user.deleted_at = at
     await session.execute(delete(AccountToken).where(AccountToken.user_id == user.id))
+    await revoke_all(session, user.id)
     deletion = AccountDeletion(
         user_id=user.id,
         requested_by=requested_by.value,
@@ -268,7 +272,15 @@ class Purged:
 
 #: The tables an account's rows are erased from with it, by its foreign key's
 #: CASCADE: counted first, so the audit row says what went.
-_CASCADED: Final = (WatchlistItem, SavedFilter, ConsentRecord, AccountToken, Subscription)
+_CASCADED: Final = (
+    WatchlistItem,
+    SavedFilter,
+    ConsentRecord,
+    AccountToken,
+    Subscription,
+    ApiKey,
+    UsageCounter,
+)
 
 
 async def purge_due(session: AsyncSession, *, at: datetime | None = None) -> list[Purged]:
