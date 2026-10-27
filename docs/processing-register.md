@@ -28,8 +28,8 @@ The people who sign up. Every table below is in Postgres unless it says Redis.
 | Created, password changed, email verified, last seen (to 5 min) | `app_user` | Security, account page | Contract | Same |
 | Watchlist (stocks, investors, insiders followed) | `watchlist_item` | The product | Contract | Same |
 | Saved screener filters (name, screener parameters) | `saved_filter` | The product | Contract | Same |
-| Alert rules (kind, the filer or stock, dollar threshold, channels, on or off) | `alert_rule` | The product | Contract | Same. **OPEN**: not in `GET /v1/me/export` yet; add with the alerts endpoints |
-| Notifications (kind, title, body, what it was about, when read) | `notification` | The product | Contract | Same. **OPEN**: as above |
+| Alert rules (kind, the filer or stock, dollar threshold, channels, on or off) | `alert_rule` | The product | Contract | Same |
+| Notifications (kind, title, body, what it was about, when read) | `notification` | The product | Contract | Same |
 | Plan and subscription (plan, status, period end, cancel date, grandfathered plan, per-account entitlements); for a paid one, Paddle's subscription and customer ids and a failed renewal's dunning dates | `subscription`, `subscription_entitlement`; a copy of the grant in the Redis session | What the account may do, and billing it | Contract | Same |
 | Paddle webhook log: event id, type, time, the Paddle subscription or transaction id, what it did. No payload, no email, no user id | `paddle_event` | Applying each payment event once | Contract | **OPEN**: kept indefinitely; it names Paddle ids only, which match nothing once the subscription row is purged. Suggest the tax-record period |
 | Emailed-link tokens, as SHA-256 only; a pending new email | `account_token` | Verify, reset, change email | Contract | 1 h (reset) or 24 h (verify, change), or until used; deleted on account deletion |
@@ -72,7 +72,7 @@ one. **OPEN**: an endpoint and UI to accept new terms when the version changes.
 
 | Right | How |
 |---|---|
-| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, saved filters, the whole consent ledger, live links and sessions, every subscription, every API key (never the key), each month's call counts, every plan override and its reason, and the days the account was active, and a list of what's left out and why (hashes, logs). Logs and the admin log's rows about the account on request by email. |
+| Access, portability (Art. 15, 20) | `GET /v1/me/export`: one JSON file with the account, watchlist, saved filters, alert rules, every notification, the whole consent ledger, live links and sessions, every subscription, every API key (never the key), each month's call counts, every plan override and its reason, and the days the account was active, and a list of what's left out and why (hashes, logs). Logs and the admin log's rows about the account on request by email. |
 | Rectification (Art. 16) | `PATCH /v1/account`: name, time zone, email (confirmed by link) |
 | Erasure (Art. 17) | `DELETE /v1/account` with the password, or `delete-user --email` by an operator for a request by email. The account is soft-deleted at once: signed out everywhere, links dead, login refused, address free for a new account. The `purge-accounts` job (beat, daily 05:00 New York) hard-deletes it 30 days later with its watchlist, saved filters, alert rules, notifications, consent records, tokens, subscriptions, API keys, usage counts, plan overrides and days active, and writes the counts to `account_deletion`. `restore-user --email` undoes it within the 30 days. |
 | Withdraw consent, object (Art. 7(3), 21) | `PATCH /v1/me/privacy` |

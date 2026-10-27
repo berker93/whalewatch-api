@@ -460,6 +460,9 @@ def test_every_public_read_is_cached() -> None:
         "/v1/saved-filters",
         "/v1/api-keys",
         "/v1/billing",
+        "/v1/me/notifications",
+        # Kept in Redis per user, by its own key, which a mark-read replaces.
+        "/v1/me/notifications/count",
         # With no `tz`, the answer is in the signed-in user's zone.
         "/v1/timeline",
         "/v1/timeline/upcoming",
@@ -488,7 +491,8 @@ def test_every_read_of_filing_data_is_gated() -> None:
         "/v1/meta/periods",
         "/v1/meta/freshness",
         "/v1/meta/data-sources",
-        # The caller's own account, watchlist, filters, keys, billing and export.
+        # The caller's own account, watchlist, filters, keys, billing, export and
+        # notifications (as they were sent, whatever the plan reads now).
         "/v1/account",
         "/v1/auth/session",
         "/v1/me",
@@ -498,6 +502,8 @@ def test_every_read_of_filing_data_is_gated() -> None:
         "/v1/saved-filters",
         "/v1/api-keys",
         "/v1/billing",
+        "/v1/me/notifications",
+        "/v1/me/notifications/count",
     }
     reads = {
         path: route

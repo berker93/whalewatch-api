@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.schemas.types import Money
 from app.db.models import Basis, Purpose
 
 
@@ -187,6 +188,39 @@ class ExportSavedFilter(BaseModel):
     created_at: datetime = Field(description="When it was saved.", examples=[_AT])
 
 
+class ExportAlertRule(BaseModel):
+    """One thing the account asked to be told about."""
+
+    kind: str = Field(description="The kind of event.", examples=["filer_filed"])
+    filer_slug: str | None = Field(
+        description="The investor it is about. Null for a kind about none.",
+        examples=["berkshire-hathaway"],
+    )
+    cusip: str | None = Field(
+        description="The stock it is about. Null for a kind about none.", examples=["037833100"]
+    )
+    min_value: Money | None = Field(
+        description="Dollars below which an event is not told. Null: every event.",
+        examples=[None],
+    )
+    channels: list[str] = Field(description="Where it is told.", examples=[["in_app"]])
+    is_active: bool = Field(description="Whether it is on.", examples=[True])
+    created_at: datetime = Field(description="When it was made.", examples=[_AT])
+
+
+class ExportNotification(BaseModel):
+    """One thing the account was told."""
+
+    kind: str = Field(description="The kind of event.", examples=["filer_filed"])
+    title: str = Field(description="As it was sent.", examples=["Berkshire Hathaway filed"])
+    body: str = Field(description="As it was sent.", examples=[""])
+    payload: dict[str, Any] = Field(
+        description="What it was about.", examples=[{"filer_slug": "berkshire-hathaway"}]
+    )
+    created_at: datetime = Field(description="When it was sent.", examples=[_AT])
+    read_at: datetime | None = Field(description="When it was read.", examples=[None])
+
+
 class ExportConsent(BaseModel):
     """One row of the lawful-basis ledger."""
 
@@ -291,6 +325,12 @@ class Export(BaseModel):
     watchlist: ExportWatchlist = Field(description="What the account follows.")
     saved_filters: list[ExportSavedFilter] = Field(
         description="The screener filters saved, oldest first."
+    )
+    alert_rules: list[ExportAlertRule] = Field(
+        description="What the account asked to be told about, oldest first."
+    )
+    notifications: list[ExportNotification] = Field(
+        description="Everything the account was told, newest first."
     )
     consents: list[ExportConsent] = Field(description="The whole ledger, oldest first.")
     links: list[ExportLink] = Field(description="Emailed links still waiting to be used.")

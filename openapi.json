@@ -4990,7 +4990,7 @@
           "account"
         ],
         "summary": "Everything WhaleWatch holds on the signed-in user, as a JSON download",
-        "description": "The account, the watchlist, the saved filters, the whole consent\nledger, the links and sessions still live, the subscriptions, the API keys\n(never the keys themselves), each month's quota usage, the plans staff gave the account\nand why, the days it was used, and a list of what is held but left out (hashes, logs)\nand why. Each export is counted on its day. `Content-Disposition: attachment`, so a\nbrowser saves it. The format is versioned by `format`.",
+        "description": "The account, the watchlist, the saved filters, the alert rules, every\nnotification, the whole consent\nledger, the links and sessions still live, the subscriptions, the API keys\n(never the keys themselves), each month's quota usage, the plans staff gave the account\nand why, the days it was used, and a list of what is held but left out (hashes, logs)\nand why. Each export is counted on its day. `Content-Disposition: attachment`, so a\nbrowser saves it. The format is versioned by `format`.",
         "operationId": "exportMe",
         "responses": {
           "200": {
@@ -5027,6 +5027,242 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/notifications": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "The signed-in user's notifications, newest first",
+        "description": "Newest first, ties by `id`. None is `[]`, never a 404. A page with\n`unread_only` and the one after it are the unread as they were when each\nwas asked for: one marked read in between is not on the next.",
+        "operationId": "getNotifications",
+        "parameters": [
+          {
+            "name": "unread_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Only the notifications not yet marked read.",
+              "default": false,
+              "title": "Unread Only"
+            },
+            "description": "Only the notifications not yet marked read."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/notifications/count": {
+      "get": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "How many of the signed-in user's notifications are unread",
+        "description": "For the bell's badge, which polls it. Counted up to 100: 100 is 100 or\nmore. Up to 30 seconds behind a notification sent, never behind one marked\nread through `POST /v1/me/notifications/read`.",
+        "operationId": "getNotificationCount",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationCount"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/notifications/read": {
+      "post": {
+        "tags": [
+          "notifications"
+        ],
+        "summary": "Mark notifications read, by id or all",
+        "description": "`ids`, or `all`. Idempotent: one already read keeps when it was first\nread, and an id that is not the user's is no change, not a 404. Answers\nwith the unread count after.",
+        "operationId": "markNotificationsRead",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkRead"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationCount"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             }
@@ -9068,6 +9304,18 @@
         "title": "AdminUserRow",
         "description": "One account, as a row of the user list."
       },
+      "AlertKind": {
+        "type": "string",
+        "enum": [
+          "filer_filed",
+          "filer_position_change",
+          "stock_ownership_change",
+          "insider_cluster",
+          "season_digest"
+        ],
+        "title": "AlertKind",
+        "description": "What an alert is about. Text with a ``CHECK``, by the rule in\n:mod:`app.db.models.enums`: the set is ours and will grow."
+      },
       "AmendmentKind": {
         "type": "string",
         "enum": [
@@ -9878,6 +10126,22 @@
             "title": "Saved Filters",
             "description": "The screener filters saved, oldest first."
           },
+          "alert_rules": {
+            "items": {
+              "$ref": "#/components/schemas/ExportAlertRule"
+            },
+            "type": "array",
+            "title": "Alert Rules",
+            "description": "What the account asked to be told about, oldest first."
+          },
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/ExportNotification"
+            },
+            "type": "array",
+            "title": "Notifications",
+            "description": "Everything the account was told, newest first."
+          },
           "consents": {
             "items": {
               "$ref": "#/components/schemas/ExportConsent"
@@ -9963,6 +10227,8 @@
           "account",
           "watchlist",
           "saved_filters",
+          "alert_rules",
+          "notifications",
           "consents",
           "links",
           "sessions",
@@ -10102,6 +10368,106 @@
         ],
         "title": "ExportActivityDay",
         "description": "One day the account was used, signed in or with an API key, newest first."
+      },
+      "ExportAlertRule": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "The kind of event.",
+            "examples": [
+              "filer_filed"
+            ]
+          },
+          "filer_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filer Slug",
+            "description": "The investor it is about. Null for a kind about none.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "cusip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cusip",
+            "description": "The stock it is about. Null for a kind about none.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "min_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Value",
+            "description": "Dollars below which an event is not told. Null: every event.",
+            "examples": [
+              null
+            ]
+          },
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Channels",
+            "description": "Where it is told.",
+            "examples": [
+              [
+                "in_app"
+              ]
+            ]
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "description": "Whether it is on.",
+            "examples": [
+              true
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it was made.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "filer_slug",
+          "cusip",
+          "min_value",
+          "channels",
+          "is_active",
+          "created_at"
+        ],
+        "title": "ExportAlertRule",
+        "description": "One thing the account asked to be told about."
       },
       "ExportApiKey": {
         "properties": {
@@ -10396,6 +10762,81 @@
         ],
         "title": "ExportLink",
         "description": "An emailed link not yet used. The token itself is not kept, so not exported."
+      },
+      "ExportNotification": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "The kind of event.",
+            "examples": [
+              "filer_filed"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "As it was sent.",
+            "examples": [
+              "Berkshire Hathaway filed"
+            ]
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": "As it was sent.",
+            "examples": [
+              ""
+            ]
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload",
+            "description": "What it was about.",
+            "examples": [
+              {
+                "filer_slug": "berkshire-hathaway"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it was sent.",
+            "examples": [
+              "2026-10-24T09:30:00Z"
+            ]
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read At",
+            "description": "When it was read.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "title",
+          "body",
+          "payload",
+          "created_at",
+          "read_at"
+        ],
+        "title": "ExportNotification",
+        "description": "One thing the account was told."
       },
       "ExportPlanOverride": {
         "properties": {
@@ -14158,6 +14599,58 @@
         "title": "LoginRequest",
         "description": "An email and a password, and whether to stay signed in."
       },
+      "MarkRead": {
+        "properties": {
+          "ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]{0,17}$",
+                  "description": "A notification's `id`.",
+                  "examples": [
+                    "4812"
+                  ]
+                },
+                "type": "array",
+                "maxItems": 200,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ids",
+            "description": "Up to 200 ids. One that is not the user's, or no longer exists, is no change.",
+            "examples": [
+              [
+                "4812",
+                "4810"
+              ]
+            ]
+          },
+          "all": {
+            "anyOf": [
+              {
+                "type": "boolean",
+                "const": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "All",
+            "description": "Every unread notification.",
+            "examples": [
+              true
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MarkRead",
+        "description": "Which notifications to mark read: `ids`, or `all`. Exactly one."
+      },
       "MarketHolding": {
         "properties": {
           "cusip": {
@@ -15007,6 +15500,243 @@
         ],
         "title": "NewSavedFilter",
         "description": "A filter to save."
+      },
+      "Notification": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,17}$",
+            "title": "Id",
+            "description": "A notification's `id`.",
+            "examples": [
+              "4812"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AlertKind",
+            "description": "What kind of event it is.",
+            "examples": [
+              "filer_filed"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "One line, as it was sent.",
+            "examples": [
+              "Berkshire Hathaway filed for 2026Q3"
+            ]
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": "A sentence or two, as it was sent. May be empty.",
+            "examples": [
+              "42 positions; 3 opened, 5 exited."
+            ]
+          },
+          "payload": {
+            "$ref": "#/components/schemas/NotificationPayload",
+            "description": "What it is about, as it was when sent: enough to link it to its view."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it was sent.",
+            "examples": [
+              "2026-11-14T21:58:03Z"
+            ]
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read At",
+            "description": "When it was first marked read. Null while unread.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "body",
+          "payload",
+          "created_at",
+          "read_at"
+        ],
+        "title": "Notification",
+        "description": "One thing the user was told."
+      },
+      "NotificationCount": {
+        "properties": {
+          "unread": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Unread",
+            "description": "Unread notifications, counted up to 100: 100 is 100 or more.",
+            "examples": [
+              3
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "unread"
+        ],
+        "title": "NotificationCount",
+        "description": "How many notifications are unread, for the bell's badge."
+      },
+      "NotificationEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/Notification"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "NotificationEnvelope",
+        "description": "The user's notifications, newest first."
+      },
+      "NotificationPayload": {
+        "properties": {
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "The stock's ticker as of the event. Null for a kind about no stock.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "filer_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filer Slug",
+            "description": "The investor, as `/v1/investors/{slug}` takes it. Null for a kind about none.",
+            "examples": [
+              "berkshire-hathaway"
+            ]
+          },
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the event is about. Null for a Form 4 event.",
+            "examples": [
+              "2026Q3"
+            ]
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta",
+            "description": "The change, as a decimal string: dollars for a value. Null when none.",
+            "examples": [
+              "-1250000000.00"
+            ]
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence",
+            "description": "How sure the numbers are, where a price was estimated. Null otherwise.",
+            "examples": [
+              "high"
+            ]
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of",
+            "description": "The ISO date the event is as of: the filing, trade or quarter-end date.",
+            "examples": [
+              "2026-09-30"
+            ]
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "ticker",
+          "filer_slug",
+          "period",
+          "delta",
+          "confidence",
+          "as_of"
+        ],
+        "title": "NotificationPayload",
+        "description": "What the notification is about, for a link to it. Every key is always\npresent, null where it does not apply to the kind; a kind may add keys of\nits own."
       },
       "OtherHolders": {
         "properties": {

@@ -62,6 +62,7 @@ from app.api.routers import (
     market,
     me,
     meta,
+    notifications,
     portfolio,
     saved_filters,
     search,
@@ -241,7 +242,7 @@ def create_app(settings: Settings) -> FastAPI:
             responses={**RATE_LIMITED, **METERED},
             dependencies=[MeteredDep],
         )
-    for router in (auth, me, account, watchlist, saved_filters, api_keys, billing):
+    for router in (auth, me, notifications, account, watchlist, saved_filters, api_keys, billing):
         app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)
     # The admin console: outside /v1, which is the product's, and on its own sessions.
     app.include_router(admin.router, responses=RATE_LIMITED)

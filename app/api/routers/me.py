@@ -46,11 +46,13 @@ from app.api.schemas.privacy import (
     Export,
     ExportAccount,
     ExportActivityDay,
+    ExportAlertRule,
     ExportApiKey,
     ExportConsent,
     ExportInsider,
     ExportInvestor,
     ExportLink,
+    ExportNotification,
     ExportPlanOverride,
     ExportSavedFilter,
     ExportSession,
@@ -66,11 +68,13 @@ from app.api.schemas.privacy import (
 from app.db.models import (
     BASES,
     AccountToken,
+    AlertRule,
     ApiKey,
     AppUser,
     ConsentRecord,
     Filer,
     Insider,
+    Notification,
     Plan,
     PlanOverride,
     Purpose,
@@ -240,6 +244,25 @@ async def _watchlist(session: AsyncSession, user_id: int) -> ExportWatchlist:
     )
 
 
+async def _alert_rules(session: AsyncSession, user_id: int) -> list[ExportAlertRule]:
+    rows = await session.execute(
+        select(
+            AlertRule.kind,
+            Filer.slug.label("filer_slug"),
+            Security.cusip,
+            AlertRule.min_value,
+            AlertRule.channels,
+            AlertRule.is_active,
+            AlertRule.created_at,
+        )
+        .outerjoin(Filer, Filer.id == AlertRule.filer_id)
+        .outerjoin(Security, Security.id == AlertRule.security_id)
+        .where(AlertRule.user_id == user_id)
+        .order_by(AlertRule.id)
+    )
+    return [ExportAlertRule.model_validate(row, from_attributes=True) for row in rows]
+
+
 async def _subscriptions(session: AsyncSession, user_id: int) -> list[ExportSubscription]:
     plan, grandfathered = aliased(Plan), aliased(Plan)
     rows = await session.execute(
@@ -283,7 +306,8 @@ def _account(user: AppUser) -> ExportAccount:
 async def export_me(
     viewer: ViewerDep, session: SessionDep, store: SessionStoreDep, response: Response
 ) -> Export:
-    """The account, the watchlist, the saved filters, the whole consent
+    """The account, the watchlist, the saved filters, the alert rules, every
+    notification, the whole consent
     ledger, the links and sessions still live, the subscriptions, the API keys
     (never the keys themselves), each month's quota usage, the plans staff gave the account
     and why, the days it was used, and a list of what is held but left out (hashes, logs)
@@ -310,6 +334,15 @@ async def export_me(
             ExportSavedFilter.model_validate(row, from_attributes=True)
             for row in await session.scalars(
                 select(SavedFilter).where(SavedFilter.user_id == user.id).order_by(SavedFilter.id)
+            )
+        ],
+        alert_rules=await _alert_rules(session, user.id),
+        notifications=[
+            ExportNotification.model_validate(row, from_attributes=True)
+            for row in await session.scalars(
+                select(Notification)
+                .where(Notification.user_id == user.id)
+                .order_by(Notification.created_at.desc(), Notification.id.desc())
             )
         ],
         consents=[

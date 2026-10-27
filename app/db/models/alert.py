@@ -232,11 +232,15 @@ class Notification(Base):
             name="dedupe_key_names_its_kind",
         ),
         UniqueConstraint("user_id", "dedupe_key", name="uq_notification_user_id_dedupe_key"),
-        # The unread count, and the unread list newest first.
+        # The notification centre, newest first, in the keyset order it is
+        # paged in (app/api/routers/notifications.py): every row, and the
+        # unread ones, which the bell's count reads too.
+        Index("ix_notification_feed", "user_id", desc("created_at"), desc("id")),
         Index(
             "ix_notification_unread",
             "user_id",
             desc("created_at"),
+            desc("id"),
             postgresql_where=text("read_at IS NULL"),
         ),
     )
