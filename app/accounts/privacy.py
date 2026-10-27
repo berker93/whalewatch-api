@@ -56,11 +56,13 @@ from app.db.models import (
     BASES,
     AccountDeletion,
     AccountToken,
+    AlertRule,
     ApiKey,
     AppUser,
     ConsentRecord,
     ConsentSource,
     DeletionRequester,
+    Notification,
     PlanOverride,
     Purpose,
     SavedFilter,
@@ -293,6 +295,8 @@ _CASCADED: Final = (
     UsageCounter,
     PlanOverride,
     UserActivityDay,
+    AlertRule,
+    Notification,
 )
 
 

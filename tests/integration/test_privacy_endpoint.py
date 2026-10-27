@@ -19,13 +19,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.accounts import privacy
 from app.accounts.sessions import SessionStore, now
 from app.db.models import (
+    PAYLOAD_KEYS,
     AccountDeletion,
     AccountToken,
+    AlertRule,
     AppUser,
     ConsentRecord,
     ConsentSource,
     DeletionRequester,
     Filer,
+    Notification,
     SignupRequest,
     Subscription,
     SubscriptionEntitlement,
@@ -369,6 +372,17 @@ async def _deleted_user(session: AsyncSession, email: str = "ada@example.com") -
         insert(Filer).values(name=f"FILER {user_id}", slug=f"filer-{user_id}").returning(Filer.id)
     )
     session.add(WatchlistItem(user_id=user_id, filer_id=filer_id))
+    session.add(AlertRule(user_id=user_id, kind="filer_filed", filer_id=filer_id))
+    session.add(
+        Notification(
+            user_id=user_id,
+            kind="filer_filed",
+            title="Filer filed",
+            body="",
+            payload=dict.fromkeys(PAYLOAD_KEYS),
+            dedupe_key=f"filer_filed:filer-{user_id}:2026Q3",
+        )
+    )
     await subscribe(session, user_id, "pro", overrides={"watchlist_items": 50})
     await privacy.delete_account(
         session,
@@ -387,7 +401,15 @@ async def test_the_purge_erases_the_account_and_the_audit_row_survives(
     purged = await privacy.purge_due(db_session, at=now() + timedelta(days=30, seconds=1))
 
     assert [p.user_id for p in purged] == [user.id]
-    for model in (AppUser, WatchlistItem, ConsentRecord, Subscription, SubscriptionEntitlement):
+    for model in (
+        AppUser,
+        WatchlistItem,
+        ConsentRecord,
+        Subscription,
+        SubscriptionEntitlement,
+        AlertRule,
+        Notification,
+    ):
         assert await db_session.scalar(select(func.count()).select_from(model)) == 0, model
     [deletion] = (
         await db_session.execute(select(AccountDeletion.purged_at, AccountDeletion.erased))
@@ -404,6 +426,8 @@ async def test_the_purge_erases_the_account_and_the_audit_row_survives(
         "usage_counter": 0,
         "plan_override": 0,
         "user_activity_day": 0,
+        "alert_rule": 1,
+        "notification": 1,
     }
 
 
