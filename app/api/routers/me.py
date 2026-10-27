@@ -2,7 +2,9 @@
 
 ``GET /v1/me``
     Who is signed in, their plan and their entitlements, in one call: what an
-    app page needs to decide what to show before it shows anything. One
+    app page needs to decide what to show before it shows anything. Signed out
+    it answers too, with no user and Free's entitlements, so a 401 from it means
+    only that a session has ended. One
     indexed read of the user; the session is already in Redis, and holds the
     user's grant, which the plan catalog resolves (:mod:`app.accounts.entitlements`).
     With what the account has spent of its monthly quotas (``usage``), from
@@ -28,7 +30,14 @@ from sqlalchemy.orm import aliased
 from app.accounts import activity, privacy
 from app.accounts.entitlements import entitlements, plan_of, subscription_overrides
 from app.accounts.sessions import now
-from app.api.auth import UNAUTHORIZED, NoStoreDep, SessionStoreDep, ViewerDep
+from app.api.auth import (
+    SESSION_ENDED,
+    UNAUTHORIZED,
+    NoStoreDep,
+    SessionStoreDep,
+    ViewerDep,
+    ViewerOrAnonymousDep,
+)
 from app.api.deps import SessionDep
 from app.api.errors import INVALID
 from app.api.metering import get_meter, usage_of
@@ -81,13 +90,23 @@ router = APIRouter(prefix="/me", tags=["account"], dependencies=[NoStoreDep])
     operation_id="getMe",
     response_model=Me,
     summary="The signed-in user, their plan and what it lets them do",
-    responses=UNAUTHORIZED,
+    responses=SESSION_ENDED,
 )
-async def read_me(request: Request, viewer: ViewerDep, session: SessionDep) -> Me:
-    """A 401 `unauthenticated` signed out, `session_expired` when the session
-    has ended. `entitlements.save` is false until the email is verified: the
-    account reads everything and saves nothing. `usage` is this month's
-    calls against each monthly quota, and when they reset."""
+async def read_me(request: Request, viewer: ViewerOrAnonymousDep, session: SessionDep) -> Me:
+    """Signed out, a 200 with `user` and `usage` null, the Free plan and its
+    entitlements. A 401 `session_expired` only when the cookie names a session
+    that has ended, and the cookie is cleared. `entitlements.save` is false
+    until the email is verified, and signed out: the account reads everything
+    and saves nothing. `usage` is this month's calls against each monthly
+    quota, and when they reset."""
+    if viewer is None:
+        free = plan_of(None)
+        return Me(
+            user=None,
+            plan=MePlan(id=free.slug, name=free.name),
+            entitlements=MeEntitlements.model_validate({"save": False, **entitlements(None)}),
+            usage=None,
+        )
     user = viewer.user
     plan = plan_of(viewer)
     return Me(

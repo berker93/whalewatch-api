@@ -3,7 +3,7 @@
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.integration.accounts import make_user, sign_in, subscribe
+from tests.integration.accounts import FRONTEND, make_user, sign_in, subscribe
 
 
 async def test_me_is_the_user_their_plan_and_what_it_allows(
@@ -74,8 +74,28 @@ async def test_an_unverified_account_is_entitled_to_read_only(
     assert body["entitlements"]["save"] is False
 
 
-async def test_me_signed_out_is_a_401(client: AsyncClient) -> None:
+async def test_me_signed_out_is_no_user_and_what_free_allows(client: AsyncClient) -> None:
+    """A 200, not a 401: never signed in is an answer, not a failure."""
+    response = await client.get("/v1/me")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["user"], body["usage"]) == (None, None)
+    assert body["plan"] == {"id": "free", "name": "Free"}
+    assert body["entitlements"]["save"] is False
+    assert body["entitlements"]["history_quarters"] == 4
+
+
+async def test_me_for_an_ended_session_is_the_only_401(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await make_user(db_session)
+    await sign_in(client)
+    await client.post("/v1/auth/logout", headers=FRONTEND)
+    client.cookies.set("ww_session", "a-session-that-has-ended")
+
     response = await client.get("/v1/me")
 
     assert response.status_code == 401
-    assert response.json()["error"]["code"] == "unauthenticated"
+    assert response.json()["error"]["code"] == "session_expired"
+    assert "Max-Age=0" in response.headers["set-cookie"]

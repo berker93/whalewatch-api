@@ -9,13 +9,15 @@
     session that has ended is a 401 ``session_expired``, so the frontend can say
     so rather than quietly showing a signed-out page.
 ``POST /v1/auth/register``
-    A new account, while ``SIGNUPS_OPEN``, signed in but unverified: a link to
-    verify the address is emailed, and until it is followed the account reads
-    everything and saves nothing. Closed, the request is recorded and no
-    session starts. Either way only with the terms accepted, and with
-    marketing email as its own box was left (:mod:`app.accounts.privacy`).
+    A new account, while ``SIGNUPS_OPEN``, waiting for its address to be
+    verified: a link is emailed, and no session starts. An address that already
+    has an account gets the same answer, and its owner an email instead, so the
+    answer never says which addresses have accounts. Closed, the request is
+    recorded. Either way only with the terms accepted, and with marketing email
+    as its own box was left (:mod:`app.accounts.privacy`).
 ``POST /v1/auth/verify-email`` and ``.../resend``
-    Verify the address from its link; email another link, signed in.
+    Verify the address from its link, which starts the session: the address is
+    proved before the account is used. Email another link, signed in.
 ``POST /v1/auth/password``
     Change the password, signed in. Signs out every other session.
 ``POST /v1/auth/password-reset`` and ``.../confirm``
@@ -56,6 +58,7 @@ from app.accounts.mail import (
     email_verification,
     mailer_for,
     password_reset,
+    registration_attempt,
 )
 from app.accounts.passwords import DUMMY_HASH, hash_password, needs_rehash, verify_password
 from app.accounts.sessions import (
@@ -82,7 +85,7 @@ from app.api.auth import (
 from app.api.deps import SessionDep, SettingsDep
 from app.api.errors import INVALID, RATE_LIMITED, ApiError, Responses
 from app.api.schemas.auth import (
-    Authed,
+    CheckEmail,
     EmailVerifyRequest,
     LoginRequest,
     PasswordChangeRequest,
@@ -138,12 +141,6 @@ def refused(code: ErrorCode, field: str, message: str) -> ApiError:
     )
 
 
-def _email_taken() -> ApiError:
-    return ApiError(
-        409, ErrorCode.EMAIL_TAKEN, "That address already has an account. Log in instead."
-    )
-
-
 def _invalid_credentials() -> ApiError:
     return ApiError(403, ErrorCode.INVALID_CREDENTIALS, "Wrong email or password.")
 
@@ -162,6 +159,13 @@ def _session(user: AppUser, expires_at: datetime) -> Session:
 def _live_user(email: str) -> Select[tuple[AppUser]]:
     """The account ``email`` logs in to, compared without case by the column."""
     return select(AppUser).where(AppUser.email == email, AppUser.deleted_at.is_(None))
+
+
+def _send_verification(
+    background: BackgroundTasks, settings: Settings, *, to: str, token: str
+) -> None:
+    hours = int(EMAIL_VERIFY_TTL.total_seconds() // 3600)
+    _send_later(background, settings, email_verification(settings, to=to, token=token, hours=hours))
 
 
 def _send_later(background: BackgroundTasks, settings: Settings, message: Message) -> None:
@@ -256,34 +260,28 @@ async def read_session(
 @router.post(
     "/register",
     operation_id="register",
+    status_code=status.HTTP_202_ACCEPTED,
     response_model=RegisterResult,
     summary="Make an account, or ask for one while signups are closed",
-    responses={
-        **_REFUSED,
-        status.HTTP_409_CONFLICT: {
-            "model": Problem,
-            "description": "`email_taken`: the address already has an account.",
-        },
-        **_FORBIDDEN,
-        **RATE_LIMITED,
-    },
+    responses={**_REFUSED, **_FORBIDDEN, **RATE_LIMITED},
 )
 async def register(
     body: RegisterRequest,
     request: Request,
-    response: Response,
     background: BackgroundTasks,
     session: SessionDep,
-    store: SessionStoreDep,
     settings: SettingsDep,
 ) -> RegisterResult:
-    """While signups are closed, `status: recorded`: the request is kept and no
-    session starts. Open, `status: authed`, with the session cookie set and a
-    link to verify the address emailed; until it is followed the account reads
-    everything and saves nothing. Either way the fields are checked first:
-    `invalid_name`, `invalid_email`, `weak_password` and `terms_not_accepted`,
-    in that order. Then at most 5 attempts in 15 minutes from one address, and
-    for one email.
+    """While signups are closed, `status: recorded`: the request is kept. Open,
+    `status: check_email`, and an email goes to the address: a link to verify
+    a new account, or, when the address already has an account, a note to its
+    owner and nothing made (an unverified one is sent a fresh link). The answer,
+    its status and its timing are the same either way, so none of them says
+    which addresses have accounts, and no session starts: the link starts it.
+
+    The fields are checked first: `invalid_name`, `invalid_email`,
+    `weak_password` and `terms_not_accepted`, in that order. Then at most 5
+    attempts in 15 minutes from one address, and for one email.
 
     The terms and privacy policy in force are recorded as accepted, product
     email as on (legitimate interest, objectable later), and marketing email
@@ -323,13 +321,20 @@ async def register(
         await session.commit()
         return RegisterResult(Recorded(status="recorded"))
 
-    if await session.scalar(_live_user(email).with_only_columns(AppUser.id)) is not None:
-        raise _email_taken()
+    check_email = RegisterResult(CheckEmail(status="check_email"))
+    # Before looking, so an address with an account takes the same argon2 work
+    # as one without; every email goes after the answer.
+    password_hash = await hash_password(body.password)
+    existing = await session.scalar(_live_user(email))
+    if existing is not None:
+        await _tell_existing(session, background, settings, existing)
+        return check_email
+
     joined = now()
     user = AppUser(
         email=email,
         name=name,
-        password_hash=await hash_password(body.password),
+        password_hash=password_hash,
         time_zone=time_zone,
         last_seen_at=joined,
     )
@@ -337,9 +342,9 @@ async def register(
     try:
         await session.flush()
     except IntegrityError:
-        # Registered by a request that raced this one.
+        # Registered by a request that raced this one, which sent the link.
         await session.rollback()
-        raise _email_taken() from None
+        return check_email
     privacy.record_signup(
         session, user.id, marketing_email=body.marketing_email, source=ConsentSource.REGISTER
     )
@@ -347,35 +352,57 @@ async def register(
     await privacy.forget_signup_request(session, email)
     token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
     await session.commit()
-    started = await store.start(user.id, remember=True)
-    set_session_cookie(response, settings, started)
-    hours = int(EMAIL_VERIFY_TTL.total_seconds() // 3600)
-    _send_later(
-        background, settings, email_verification(settings, to=email, token=token, hours=hours)
-    )
-    return RegisterResult(Authed(status="authed", session=_session(user, started.expires_at)))
+    _send_verification(background, settings, to=email, token=token)
+    return check_email
+
+
+async def _tell_existing(
+    session: AsyncSession, background: BackgroundTasks, settings: Settings, user: AppUser
+) -> None:
+    """Registering with an address that has an account changes nothing in it.
+    Verified, its owner hears that someone tried. Not yet, the owner is most
+    likely registering again for a link that never came: a fresh one goes,
+    replacing the last, and the account keeps the name and password it has."""
+    if user.email_verified_at is not None:
+        _send_later(background, settings, registration_attempt(settings, to=user.email))
+        return
+    token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
+    await session.commit()
+    _send_verification(background, settings, to=user.email, token=token)
 
 
 @router.post(
     "/verify-email",
     operation_id="verifyEmail",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Verify the account's email from its link",
+    response_model=Session,
+    summary="Verify the account's email from its link, and sign in",
     responses={**_FORBIDDEN, **_REFUSED},
     dependencies=[AuthRateLimitDep],
 )
-async def verify_email(body: EmailVerifyRequest, session: SessionDep) -> None:
-    """From then on the account saves. Needs no session: the link may be
+async def verify_email(
+    body: EmailVerifyRequest,
+    response: Response,
+    session: SessionDep,
+    store: SessionStoreDep,
+    settings: SettingsDep,
+) -> Session:
+    """Verifies the address and sets the session cookie: following the link is
+    how a new account is first signed in. Needs no session: the link may be
     opened on another device, and the token is the proof. A token that is
     unknown, used, replaced by a later one, or past its 24 hours is a 422
-    `invalid_token`. Following a second link once verified is no change."""
+    `invalid_token`."""
     token = await redeem_token(session, body.token, TokenPurpose.EMAIL_VERIFY)
     user = None if token is None else await session.get(AppUser, token.user_id)
     if user is None or user.deleted_at is not None:
-        raise _invalid_token("ask for a new one from your account page")
+        raise _invalid_token("ask for a new one")
     if user.email_verified_at is None:
         user.email_verified_at = now()
+    user.last_seen_at = now()
+    await activity.mark_active(session, user.id, user.last_seen_at)
     await session.commit()
+    started = await store.start(user.id, remember=True)
+    set_session_cookie(response, settings, started)
+    return _session(user, started.expires_at)
 
 
 @router.post(
@@ -400,10 +427,7 @@ async def resend_verification(
     await limit_attempts(request, "verify_email", user.email)
     token = await issue_token(session, user.id, TokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
     await session.commit()
-    hours = int(EMAIL_VERIFY_TTL.total_seconds() // 3600)
-    _send_later(
-        background, settings, email_verification(settings, to=user.email, token=token, hours=hours)
-    )
+    _send_verification(background, settings, to=user.email, token=token)
 
 
 @router.post(
@@ -503,9 +527,12 @@ async def confirm_password_reset(
 
 
 async def _set_password(session: AsyncSession, user_id: int, password: str) -> None:
+    """A verification link signs in too, so a new password ends those as well
+    as the reset links: neither gets past a password change."""
     await session.execute(
         update(AppUser)
         .where(AppUser.id == user_id)
         .values(password_hash=await hash_password(password), password_changed_at=now())
     )
     await revoke_tokens(session, user_id, TokenPurpose.PASSWORD_RESET)
+    await revoke_tokens(session, user_id, TokenPurpose.EMAIL_VERIFY)

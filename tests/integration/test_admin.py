@@ -164,7 +164,8 @@ async def test_an_admin_session_is_not_a_user_session(
     """Even when the admin's address has a user account too: two identities."""
     await make_user(db_session, ADMIN)
 
-    assert _error(await client.get("/v1/me")) == (401, "unauthenticated")
+    assert (await client.get("/v1/me")).json()["user"] is None
+    assert _error(await client.get("/v1/account")) == (401, "unauthenticated")
 
 
 async def test_the_admin_cookie_names_no_user_session(

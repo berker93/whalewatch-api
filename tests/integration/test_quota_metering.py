@@ -422,7 +422,9 @@ async def test_a_key_signs_nobody_in(
 ) -> None:
     key = await keyed(client, db_session)
 
-    for path in ("/v1/me", "/v1/api-keys", "/v1/watchlist"):
+    me = await client.get("/v1/me", headers=bearer(key))
+    assert (me.status_code, me.json()["user"]) == (200, None)
+    for path in ("/v1/api-keys", "/v1/watchlist"):
         response = await client.get(path, headers=bearer(key))
         assert response.status_code == 401, path
         assert response.json()["error"]["code"] == "unauthenticated", path

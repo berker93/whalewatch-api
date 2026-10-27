@@ -4430,7 +4430,7 @@
           "auth"
         ],
         "summary": "Make an account, or ask for one while signups are closed",
-        "description": "While signups are closed, `status: recorded`: the request is kept and no\nsession starts. Open, `status: authed`, with the session cookie set and a\nlink to verify the address emailed; until it is followed the account reads\neverything and saves nothing. Either way the fields are checked first:\n`invalid_name`, `invalid_email`, `weak_password` and `terms_not_accepted`,\nin that order. Then at most 5 attempts in 15 minutes from one address, and\nfor one email.\n\nThe terms and privacy policy in force are recorded as accepted, product\nemail as on (legitimate interest, objectable later), and marketing email\nas `marketing_email` says: off unless the user ticked its own box.",
+        "description": "While signups are closed, `status: recorded`: the request is kept. Open,\n`status: check_email`, and an email goes to the address: a link to verify\na new account, or, when the address already has an account, a note to its\nowner and nothing made (an unverified one is sent a fresh link). The answer,\nits status and its timing are the same either way, so none of them says\nwhich addresses have accounts, and no session starts: the link starts it.\n\nThe fields are checked first: `invalid_name`, `invalid_email`,\n`weak_password` and `terms_not_accepted`, in that order. Then at most 5\nattempts in 15 minutes from one address, and for one email.\n\nThe terms and privacy policy in force are recorded as accepted, product\nemail as on (legitimate interest, objectable later), and marketing email\nas `marketing_email` says: off unless the user ticked its own box.",
         "operationId": "register",
         "requestBody": {
           "content": {
@@ -4443,7 +4443,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -4481,16 +4481,6 @@
               }
             }
           },
-          "409": {
-            "description": "`email_taken`: the address already has an account.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
           "403": {
             "description": "`invalid_credentials`, or `forbidden_origin` for a write from elsewhere.",
             "content": {
@@ -4509,8 +4499,8 @@
         "tags": [
           "auth"
         ],
-        "summary": "Verify the account's email from its link",
-        "description": "From then on the account saves. Needs no session: the link may be\nopened on another device, and the token is the proof. A token that is\nunknown, used, replaced by a later one, or past its 24 hours is a 422\n`invalid_token`. Following a second link once verified is no change.",
+        "summary": "Verify the account's email from its link, and sign in",
+        "description": "Verifies the address and sets the session cookie: following the link is\nhow a new account is first signed in. Needs no session: the link may be\nopened on another device, and the token is the proof. A token that is\nunknown, used, replaced by a later one, or past its 24 hours is a 422\n`invalid_token`.",
         "operationId": "verifyEmail",
         "requestBody": {
           "content": {
@@ -4523,8 +4513,15 @@
           "required": true
         },
         "responses": {
-          "204": {
-            "description": "Successful Response"
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
           },
           "429": {
             "description": "Too many requests from this address. Wait `Retry-After` seconds.",
@@ -4825,7 +4822,7 @@
           "account"
         ],
         "summary": "The signed-in user, their plan and what it lets them do",
-        "description": "A 401 `unauthenticated` signed out, `session_expired` when the session\nhas ended. `entitlements.save` is false until the email is verified: the\naccount reads everything and saves nothing. `usage` is this month's\ncalls against each monthly quota, and when they reset.",
+        "description": "Signed out, a 200 with `user` and `usage` null, the Free plan and its\nentitlements. A 401 `session_expired` only when the cookie names a session\nthat has ended, and the cookie is cleared. `entitlements.save` is false\nuntil the email is verified, and signed out: the account reads everything\nand saves nothing. `usage` is this month's calls against each monthly\nquota, and when they reset.",
         "operationId": "getMe",
         "responses": {
           "200": {
@@ -4857,7 +4854,7 @@
             }
           },
           "401": {
-            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "description": "`session_expired`: the session the cookie named has ended.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9161,30 +9158,6 @@
         "title": "ApiKeys",
         "description": "The account's keys that work, oldest first."
       },
-      "Authed": {
-        "properties": {
-          "status": {
-            "type": "string",
-            "const": "authed",
-            "title": "Status",
-            "description": "Signed in.",
-            "examples": [
-              "authed"
-            ]
-          },
-          "session": {
-            "$ref": "#/components/schemas/Session",
-            "description": "The new session."
-          }
-        },
-        "type": "object",
-        "required": [
-          "status",
-          "session"
-        ],
-        "title": "Authed",
-        "description": "Signups are open: the account exists and the response set its session cookie.\nA link to verify the address has been emailed; until it is followed,\n`session.user.email_verified` is false and the account saves nothing."
-      },
       "Basis": {
         "type": "string",
         "enum": [
@@ -9383,6 +9356,25 @@
         ],
         "title": "ChangeCounts",
         "description": "Positions opened, added to, trimmed and exited in one filing's quarter."
+      },
+      "CheckEmail": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "check_email",
+            "title": "Status",
+            "description": "Look in the address's inbox.",
+            "examples": [
+              "check_email"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "CheckEmail",
+        "description": "Signups are open, and something went to the address: a link to verify a\nnew account, or, for an address that already has one, a note to its owner.\nThe answer is the same either way, so it says nothing about which addresses\nhave accounts. No session starts: following the link starts one."
       },
       "CheckoutLink": {
         "properties": {
@@ -14367,20 +14359,34 @@
       "Me": {
         "properties": {
           "user": {
-            "$ref": "#/components/schemas/MeUser",
-            "description": "Who is signed in."
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeUser"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who is signed in. Null signed out."
           },
           "plan": {
             "$ref": "#/components/schemas/MePlan",
-            "description": "Which plan the account is on: Free without a subscription."
+            "description": "Which plan the account is on: Free without a subscription, and signed out."
           },
           "entitlements": {
             "$ref": "#/components/schemas/MeEntitlements",
-            "description": "What the account may do now."
+            "description": "What the account, or a visitor, may do now."
           },
           "usage": {
-            "$ref": "#/components/schemas/Usage",
-            "description": "This month's spending of each monthly quota."
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "This month's spending of each monthly quota. Null signed out."
           }
         },
         "type": "object",
@@ -14391,7 +14397,7 @@
           "usage"
         ],
         "title": "Me",
-        "description": "The signed-in user, their plan and their entitlements."
+        "description": "The signed-in user, their plan and their entitlements; signed out, no\nuser, and what Free allows."
       },
       "MeEntitlements": {
         "properties": {
@@ -16740,15 +16746,15 @@
             "$ref": "#/components/schemas/Recorded"
           },
           {
-            "$ref": "#/components/schemas/Authed"
+            "$ref": "#/components/schemas/CheckEmail"
           }
         ],
         "title": "RegisterResult",
-        "description": "What registering did, by `status`: `recorded` while signups are closed,\n`authed` once they are open.",
+        "description": "What registering did, by `status`: `recorded` while signups are closed,\n`check_email` once they are open.",
         "discriminator": {
           "propertyName": "status",
           "mapping": {
-            "authed": "#/components/schemas/Authed",
+            "check_email": "#/components/schemas/CheckEmail",
             "recorded": "#/components/schemas/Recorded"
           }
         }

@@ -1,4 +1,5 @@
-"""Account emails: verify an address, confirm an email change, tell the old address,
+"""Account emails: verify an address, tell an account someone registered with its
+address, confirm an email change, tell the old address,
 reset a password, say an account was deleted, warn that a monthly quota is 80% spent,
 and each step of a failed renewal's dunning.
 
@@ -104,6 +105,22 @@ def email_verification(settings: Settings, *, to: str, token: str, hours: int) -
             f"investors and insiders to your watchlist, within {hours} hours:\n"
             f"{link(settings, VERIFY_EMAIL_PATH, token)}\n\n"
             "If you didn't make an account, ignore this message."
+        ),
+    )
+
+
+def registration_attempt(settings: Settings, *, to: str) -> Message:
+    """To an account's own address, when someone registers with it: registering
+    answers the same either way, so only the inbox hears which happened."""
+    return Message(
+        to=to,
+        subject="Someone tried to make a WhaleWatch account with your email",
+        body=(
+            "Someone asked to make a WhaleWatch account with this address, which "
+            "already has one. Nothing was changed, and no new account was made.\n\n"
+            f"If it was you, log in instead:\n{settings.web_url}\n\n"
+            "If you've forgotten your password, ask for a reset link from the login "
+            "page. If it wasn't you, ignore this message: your account is as it was."
         ),
     )
 

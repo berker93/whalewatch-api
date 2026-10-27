@@ -84,9 +84,14 @@ class MeEntitlements(BaseModel):
 
 
 class Me(BaseModel):
-    """The signed-in user, their plan and their entitlements."""
+    """The signed-in user, their plan and their entitlements; signed out, no
+    user, and what Free allows."""
 
-    user: MeUser = Field(description="Who is signed in.")
-    plan: MePlan = Field(description="Which plan the account is on: Free without a subscription.")
-    entitlements: MeEntitlements = Field(description="What the account may do now.")
-    usage: Usage = Field(description="This month's spending of each monthly quota.")
+    user: MeUser | None = Field(description="Who is signed in. Null signed out.")
+    plan: MePlan = Field(
+        description="Which plan the account is on: Free without a subscription, and signed out."
+    )
+    entitlements: MeEntitlements = Field(description="What the account, or a visitor, may do now.")
+    usage: Usage | None = Field(
+        description="This month's spending of each monthly quota. Null signed out."
+    )

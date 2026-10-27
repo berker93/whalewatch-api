@@ -95,7 +95,7 @@ async def test_an_open_registration_records_a_basis_for_each_purpose(
 
     response = await _register(client, accept_terms=True)
 
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     assert await _ledger(db_session, await _user_id(db_session)) == [
         ("account", "contract", True, privacy.TERMS_VERSION, "register"),
         ("product_email", "legitimate_interest", True, None, "register"),
@@ -162,6 +162,7 @@ async def test_privacy_lists_every_purpose_with_its_basis(
 ) -> None:
     app.state.settings = make_settings(signups_open=True)
     await _register(client, accept_terms=True)
+    await sign_in(client)
 
     body = await _privacy(client)
 
@@ -239,6 +240,7 @@ async def test_the_export_is_everything_held_and_no_secret(
 ) -> None:
     app.state.settings = make_settings(signups_open=True)
     await _register(client, accept_terms=True, time_zone="Europe/London")
+    await sign_in(client)
     user_id = await _user_id(db_session)
     filer_id = await db_session.scalar(
         insert(Filer)
@@ -325,7 +327,7 @@ async def test_deleting_signs_out_frees_the_address_and_records_the_request(
 
     assert response.status_code == 204, response.text
     assert "ww_session" not in client.cookies
-    assert _error(await client.get("/v1/me")) == (401, "unauthenticated")
+    assert (await client.get("/v1/me")).json()["user"] is None
     login = await client.post(
         "/v1/auth/login", json={"email": "ada@example.com", "password": PASSWORD}, headers=FRONTEND
     )
@@ -340,7 +342,7 @@ async def test_deleting_signs_out_frees_the_address_and_records_the_request(
 
     app.state.settings = make_settings(signups_open=True)
     again = await _register(client, accept_terms=True)
-    assert again.status_code == 200, again.text
+    assert again.status_code == 202, again.text
 
 
 async def test_every_other_session_ends_too(

@@ -15,7 +15,7 @@ How whalewatch-web replaces the `501` / `unavailable` stubs in `apiSource` and `
 | `AuthAdapter.login` | `POST /v1/auth/login` | BE prereq | Sets the session cookie |
 | `AuthAdapter.logout` | `POST /v1/auth/logout` | BE prereq | `204`, idempotent |
 | `AuthAdapter.getSession` | `GET /v1/auth/session` | BE prereq | `{session: null}` when signed out |
-| `AuthAdapter.register` | `POST /v1/auth/register` | BE prereq | `recorded` while signups are closed |
+| `AuthAdapter.register` | `POST /v1/auth/register` | BE prereq | `202`: `recorded` while signups are closed, `check_email` once open. No cookie either way |
 | `AuthAdapter.requestPasswordReset` | `POST /v1/auth/password-reset` | BE prereq | `204` whether or not the address has an account |
 | *(new, see §6)* | `POST /v1/auth/password-reset/confirm` | BE prereq | Target of the reset link |
 | `AuthAdapter.changePassword` | `POST /v1/auth/password` | BE-3 | `204`. Signs out every other session |
@@ -40,7 +40,7 @@ Read these before mapping. Each is a deliberate change, not an oversight.
 4. **`GET /v1/auth/session` answers `{ session: Session | null }`**, and `Session` has an `expires_at` beside `user`.
 5. **`AccountProfile.pending_email` exists** (BE-2's AC), so a reload still shows "Confirmation link sent to …".
 6. **Registration takes an optional `time_zone`, but don't send it.** Every new account starts on `America/New_York` (Q2, settled), and the user changes it on the account page.
-7. **One new error code, `email_taken`** (409), for registering an address that already has an account. `AuthErrorCode` has no code for it yet (§5).
+7. **Registering never says whether an address has an account.** The answer is `202 { status: 'check_email' }` either way, with no cookie; the inbox hears which. There is no `email_taken` on register.
 
 ---
 
@@ -80,7 +80,7 @@ Errors keep the existing shape, `{ error: { code, message, detail, request_id } 
 | 403 | `forbidden_origin` | any write | The `Origin` isn't on the API's allow-list. A config error, not a user error |
 | 403 | `email_unverified` | watchlist `PUT` / `DELETE`, saved-filter `POST` / `DELETE` | The account's email isn't verified yet: it reads everything and saves nothing. Offer "resend the link" (§5) |
 | 402 | `plan_limit` | any 13F or Form 4 read, watchlist `PUT`, saved-filter `POST` | The plan doesn't reach that far back, or holds no more. `detail` is `{ limit, allowed, needed, plan }`: `limit` is the entitlement key (`history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters`), and `plan` is the cheapest public plan that lifts it (`{ slug, name, price_cents, currency, interval, value }`), or `null` when none does. Show an upgrade prompt from it, not an error |
-| 409 | `email_taken` | register | The address already has an account (only while signups are open) |
+| 409 | `email_taken` | account email change | The new address already has an account. Never from register |
 | 422 | `validation_error` | everywhere | `detail.errors[].loc` is `["body", "<wire field>"]` or `["query", "<param>"]` |
 | 422 | `weak_password` / `invalid_email` / `invalid_name` | register, change password, reset | Same `detail.errors` shape, with its own code |
 | 422 | `terms_not_accepted` | register | `accept_terms` wasn't `true`. `detail.errors[].loc` is `["body","accept_terms"]`: show it under the terms checkbox |
@@ -325,13 +325,13 @@ The current quarter is the one that ended most recently in `tz`; `meta.period` a
 | `POST /v1/auth/login` | `{ email, password, remember? }` (`remember` defaults to `true`) | `Session` + cookie |
 | `POST /v1/auth/logout` | none | `204`, cookie cleared |
 | `GET /v1/auth/session` | none | `{ session: Session \| null }`, or `401 session_expired` |
-| `POST /v1/auth/register` | `{ name, email, password, time_zone?, accept_terms, marketing_email? }` | `{ status: 'recorded' }` or `{ status: 'authed', session }` + cookie |
+| `POST /v1/auth/register` | `{ name, email, password, time_zone?, accept_terms, marketing_email? }` | `202 { status: 'recorded' }` or `202 { status: 'check_email' }`. Never a cookie, and the same answer whether or not the address has an account |
 | `POST /v1/auth/password` | `{ current_password, new_password }` | `204` |
 | `POST /v1/auth/password-reset` | `{ email }` | `204`, always |
 | `POST /v1/auth/password-reset/confirm` | `{ token, new_password }` | `204` |
-| `POST /v1/auth/verify-email` | `{ token }` | `204`. No session needed |
+| `POST /v1/auth/verify-email` | `{ token }` | `200 Session` + cookie: the link signs in. No session needed |
 | `POST /v1/auth/verify-email/resend` | none, signed in | `204`. Nothing is sent once verified |
-| `GET /v1/me` | none, signed in | `{ user, plan, entitlements, usage }` (below) |
+| `GET /v1/me` | none | `{ user, plan, entitlements, usage }` (below). Signed out: `200` with `user` and `usage` null, Free's plan and entitlements. `401 session_expired` only for a session that has ended |
 
 `Session` is `{ user: { email, email_verified }, expires_at }`. The FE's `Session` only needs `user`.
 
@@ -347,7 +347,6 @@ The current quarter is the one that ended most recently in `tz`; `meta.period` a
 |---|---|
 | `invalid_credentials`, `invalid_email`, `invalid_name`, `weak_password`, `session_expired` | same |
 | `unauthenticated` (from `changePassword`) | `session_expired`. TA-12: a 401 reads as "Your session ended" |
-| `email_taken` | No FE code yet. Add `'email_taken'` to `AuthErrorCode` with copy like "That address already has an account. Log in instead.", or map it to `invalid_email` for now |
 | `email_unverified` | No FE code yet. Show a "verify your email" banner with a resend button rather than an error |
 | `rate_limited`, `unavailable`, anything else, network failure | `unavailable` (TA-12: a `rate_limited` code can come later) |
 
@@ -369,7 +368,6 @@ function toAuthError(error: unknown): AuthError {
   const code = (error as { error?: { code?: string } } | undefined)?.error?.code ?? ''
   if (PASSED_THROUGH.has(code)) return new AuthError(code as AuthErrorCode)
   if (code === 'unauthenticated') return new AuthError('session_expired')
-  if (code === 'email_taken') return new AuthError('invalid_email') // until AuthErrorCode has it
   return new AuthError('unavailable')
 }
 
@@ -393,10 +391,8 @@ export const apiAuth: AuthAdapter = {
 
   register: async ({ name, email, password }) => {
     // No time_zone: every account starts on America/New_York (Q2).
-    const result = await call(api.POST('/v1/auth/register', { body: { name, email, password } }))
-    return result.status === 'authed'
-      ? { status: 'authed', session: toSession(result.session) }
-      : { status: 'recorded' }
+    const result = await call(api.POST('/v1/auth/register', { body: { name, email, password, accept_terms, marketing_email } }))
+    return { status: result.status } // 'recorded' or 'check_email': never a session
   },
 
   logout: async () => {
@@ -433,7 +429,7 @@ export const apiAuth: AuthAdapter = {
 - **Login takes the same time for a wrong email and a wrong password**, and both answer `403 invalid_credentials`. A password reset request answers `204` as fast whether or not the address has an account: the email goes after the answer.
 - **Signups:** `SIGNUPS_OPEN=false` by default, matching `FEATURES.signupsOpen`. Registration validates the fields, records the request and answers `recorded`. Accounts are made with the `create-user` CLI verb, and count as verified.
 - **Terms and marketing consent are two checkboxes.** `accept_terms` must be `true` (required; link the terms and the privacy policy next to it). `marketing_email` is its own checkbox, **unticked by default**, never merged into the terms box; left out, it's `false`. The API records both, with the document versions, as the account's lawful-basis ledger (§5a).
-- **Open signups start unverified.** `status: 'authed'` with `session.user.email_verified: false`, and a verification link (24 hours, one use) goes to the address. The account can browse, and its watchlist writes are `403 email_unverified` until the link is followed. A password reset link verifies the address too.
+- **Open signups start with the link, not a session.** `202 { status: 'check_email' }`, no cookie, whether or not the address has an account. A new address gets a verification link (24 hours, one use); an address with a verified account gets a "someone tried to register" note; one with an unverified account gets a fresh link, and keeps the name and password it was made with. Following the link verifies the address **and starts the session**: `POST /v1/auth/verify-email` answers `200 Session` and sets the cookie. An unverified account can still log in with its password: it browses, and its watchlist writes are `403 email_unverified`. A new password (reset or change) ends any verification link still out, since the link signs in. A password reset link verifies the address too.
 
 ### 5a · Privacy: choices, export, deletion
 
@@ -459,7 +455,7 @@ An account on a plan with API calls (`entitlements.api_calls_month` above 0: the
 | `POST /v1/api-keys` | `{ name }` (1–80 characters) | `201 CreatedApiKey`: an `ApiKey` plus `key`. **Show `key` once**, with a copy button: it is never sent again. `402 plan_limit` on a plan with no API calls (offer `detail.plan`), `403 email_unverified`, `422` past 10 keys |
 | `DELETE /v1/api-keys/{id}` | none | `204`. The key stops working at once. Idempotent |
 
-A key only reads data. It is not a session, so `/v1/me`, the account, the watchlist and the keys themselves answer `401 unauthenticated` to a request with only a key. Deleting the account revokes every key.
+A key only reads data. It is not a session, so the account, the watchlist and the keys themselves answer `401 unauthenticated` to a request with only a key, and `/v1/me` answers as signed out. Deleting the account revokes every key.
 
 **Usage on the account page.** `GET /v1/me` has `usage.api_calls_month` and `usage.mcp_calls_month`, each `{ used, limit, remaining, period_start, resets_at }`. Show "8,125 of 10,000 calls this month, resets 14 November" with a meter, so the user sees the wall coming. The month runs from the subscription's anniversary at midnight UTC, not from the 1st. Free's month runs from the account's anniversary. A count can be a few minutes behind when calls land on several servers.
 
@@ -476,7 +472,7 @@ Both links are built as `WEB_URL + path + ?token=<token>`. `WEB_URL` is the app 
 | Page | Path | What it does |
 |---|---|---|
 | Confirm email change | `/account/confirm-email?token=…` | `POST /v1/account/email/confirm { token }`. `204` → "Email changed", then invalidate the account and session queries. `422 invalid_token` → "This link has expired. Change your email again." `422 invalid_email` → the address was taken in the meantime. **Works signed out**: the link may be opened on another device |
-| Verify email | `/verify-email?token=…` | `POST /v1/auth/verify-email { token }`. `204` → "Email verified", then invalidate the `me` and session queries. `422 invalid_token` → offer a new link (`POST /v1/auth/verify-email/resend`, signed in). **Works signed out** |
+| Verify email | `/verify-email?token=…` | `POST /v1/auth/verify-email { token }`. `200 Session` + cookie → "Email verified", signed in; invalidate `me`. `422 invalid_token` → offer a new link (`POST /v1/auth/verify-email/resend`, signed in; signed out, log in first). **Works signed out** |
 | Reset password | `/reset-password?token=…` | A new-password form → `POST /v1/auth/password-reset/confirm { token, new_password }`. `204` → "Password changed. Log in." (every session was signed out). `422 invalid_token` → offer to send a new link. `422 weak_password` → under the field |
 
 `AuthAdapter` needs one more method for the second, for example `confirmPasswordReset(token, next)`, and `DataSource` (or the account module) one for the first, for example `confirmEmailChange(token)`.
@@ -504,7 +500,6 @@ Both links are built as `WEB_URL + path + ?token=<token>`. `WEB_URL` is the app 
 - [ ] `credentials: 'include'` on the client
 - [ ] `apiSource`: account, watchlist, timeline and upcoming (§3, §4)
 - [ ] `apiAuth`: every method (§5)
-- [ ] `AuthErrorCode`: decide on `email_taken`
 - [ ] Optional: `pendingEmail` on the FE `AccountProfile`, read from `GET /v1/account`
 - [ ] Pages: verify email, confirm email change, reset password (§6)
 - [ ] `GET /v1/me` for the app shell; gate saving on `entitlements.save`, with a resend-link banner for `email_unverified`

@@ -199,7 +199,7 @@ async def test_while_signups_are_closed_registering_is_recorded_and_starts_nothi
         headers=FRONTEND,
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json() == {"status": "recorded"}
     assert "set-cookie" not in response.headers
     requests = await db_session.execute(select(SignupRequest.email, SignupRequest.name))
@@ -207,8 +207,8 @@ async def test_while_signups_are_closed_registering_is_recorded_and_starts_nothi
     assert await db_session.scalar(select(func.count()).select_from(AppUser)) == 0
 
 
-async def test_while_signups_are_open_registering_signs_in(
-    client: AsyncClient, db_session: AsyncSession, app: FastAPI
+async def test_while_signups_are_open_registering_emails_a_link_and_starts_nothing(
+    client: AsyncClient, db_session: AsyncSession, app: FastAPI, outbox: Outbox
 ) -> None:
     app.state.settings = make_settings(signups_open=True)
 
@@ -224,35 +224,84 @@ async def test_while_signups_are_open_registering_signs_in(
         headers=FRONTEND,
     )
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "authed"
-    assert response.json()["session"]["user"] == {
-        "email": "ada@example.com",
-        "email_verified": False,
-    }
-    account = (await client.get("/v1/account")).json()
-    assert account["time_zone"] == "Europe/London"
-    assert account["member_since"] == account["password_changed_at"]
+    assert response.status_code == 202
+    assert response.json() == {"status": "check_email"}
+    assert "set-cookie" not in response.headers
+    [message] = outbox.sent
+    assert "http://app.localhost:5173/verify-email?token=" in message.body
+    account = await db_session.scalar(select(AppUser))
+    assert account is not None
+    assert (account.time_zone, account.email_verified_at) == ("Europe/London", None)
 
 
-async def test_registering_a_taken_address_is_email_taken(
-    client: AsyncClient, db_session: AsyncSession, app: FastAPI
-) -> None:
-    app.state.settings = make_settings(signups_open=True)
-    await make_user(db_session)
-
-    response = await client.post(
+async def _register_as(client: AsyncClient, email: str, password: str = PASSWORD) -> Response:
+    return await client.post(
         "/v1/auth/register",
-        json={
-            "name": "Imposter",
-            "email": "ADA@example.com",
-            "password": PASSWORD,
-            "accept_terms": True,
-        },
+        json={"name": "Imposter", "email": email, "password": password, "accept_terms": True},
         headers=FRONTEND,
     )
 
-    assert _error(response) == (409, "email_taken")
+
+async def test_registering_a_taken_address_answers_the_same_and_tells_its_owner(
+    client: AsyncClient, db_session: AsyncSession, app: FastAPI, outbox: Outbox
+) -> None:
+    app.state.settings = make_settings(signups_open=True)
+    await make_user(db_session)
+    new = await _register_as(client, "someone.new@example.com")
+    outbox.sent.clear()
+
+    taken = await _register_as(client, "ADA@example.com", "another password")
+
+    assert (taken.status_code, taken.json()) == (new.status_code, new.json())
+    assert "set-cookie" not in taken.headers
+    [message] = outbox.sent
+    assert message.to == "ada@example.com"
+    assert "already has one" in message.body
+    assert "token=" not in message.body
+    # Nothing made, nothing changed.
+    assert await db_session.scalar(select(func.count()).select_from(AppUser)) == 2
+    await sign_in(client, "ada@example.com", PASSWORD)
+
+
+async def test_registering_again_before_verifying_sends_a_fresh_link_and_changes_nothing(
+    client: AsyncClient, db_session: AsyncSession, app: FastAPI, outbox: Outbox
+) -> None:
+    app.state.settings = make_settings(signups_open=True)
+    await _register_as(client, "ada@example.com")
+    old = outbox.token_for("ada@example.com")
+    outbox.sent.clear()
+
+    again = await _register_as(client, "ada@example.com", "another password")
+
+    assert again.json() == {"status": "check_email"}
+    new = outbox.token_for("ada@example.com")
+    assert _error(
+        await client.post("/v1/auth/verify-email", json={"token": old}, headers=FRONTEND)
+    ) == (422, "invalid_token")
+    assert (
+        await client.post("/v1/auth/verify-email", json={"token": new}, headers=FRONTEND)
+    ).status_code == 200
+    # The first password stands: registering again set none.
+    await sign_in(client, "ada@example.com", PASSWORD)
+
+
+async def test_a_taken_address_takes_the_same_argon2_work(
+    client: AsyncClient, db_session: AsyncSession, app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app.state.settings = make_settings(signups_open=True)
+    await make_user(db_session)
+    hashed: list[str] = []
+
+    async def spy(password: str) -> str:
+        hashed.append(password)
+        return hash_password_sync(password)
+
+    monkeypatch.setattr("app.api.routers.auth.hash_password", spy)
+
+    await _register_as(client, "ada@example.com", "taken address")
+    await _register_as(client, "new@example.com", "new address")
+
+    assert hashed == ["taken address", "new address"]
 
 
 @pytest.mark.parametrize(
@@ -289,7 +338,7 @@ async def test_ten_characters_is_enough_as_the_frontend_says(client: AsyncClient
         headers=FRONTEND,
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
 
 
 # --- changing the password --------------------------------------------------------
@@ -543,7 +592,7 @@ async def test_resets_and_registrations_are_limited_too(client: AsyncClient, app
     ]
 
     assert [r.status_code for r in resets] == [204] * 5 + [429]
-    assert [r.status_code for r in registrations] == [200] * 5 + [429]
+    assert [r.status_code for r in registrations] == [202] * 5 + [429]
 
 
 async def test_a_refused_field_is_not_a_registration_attempt(
@@ -663,7 +712,8 @@ async def test_an_address_is_one_account_whatever_its_case(
         },
         headers=FRONTEND,
     )
-    assert _error(again) == (409, "email_taken")
+    assert again.json() == {"status": "check_email"}
+    assert await db_session.scalar(select(func.count()).select_from(AppUser)) == 1
 
 
 async def test_the_database_refuses_a_second_account_by_case(db_session: AsyncSession) -> None:
@@ -765,7 +815,7 @@ async def _register(client: AsyncClient, app: FastAPI, email: str = "ada@example
         json={"name": "Ada Lovelace", "email": email, "password": PASSWORD, "accept_terms": True},
         headers=FRONTEND,
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     return response
 
 
@@ -777,7 +827,7 @@ async def _follow(client: AsyncClient) -> Response:
     )
 
 
-async def test_a_new_account_reads_but_saves_nothing_until_verified(
+async def test_the_link_signs_a_new_account_in_and_lets_it_save(
     client: AsyncClient, db_session: AsyncSession, app: FastAPI, outbox: Outbox
 ) -> None:
     await _register(client, app)
@@ -785,6 +835,28 @@ async def test_a_new_account_reads_but_saves_nothing_until_verified(
     [message] = outbox.sent
     assert message.to == "ada@example.com"
     assert "http://app.localhost:5173/verify-email?token=" in message.body
+    assert (await client.get("/v1/auth/session")).json() == {"session": None}
+
+    verified = await client.post(
+        "/v1/auth/verify-email",
+        json={"token": outbox.token_for("ada@example.com")},
+        headers=FRONTEND,
+    )
+
+    assert verified.status_code == 200
+    assert verified.json()["user"] == {"email": "ada@example.com", "email_verified": True}
+    cookie = verified.headers["set-cookie"]
+    assert cookie.startswith("ww_session=") and "HttpOnly" in cookie
+    # Past the gate: an unknown investor is the watchlist's own 404.
+    assert _error(await _follow(client)) == (404, "not_found")
+
+
+async def test_an_unverified_account_signed_in_reads_but_saves_nothing(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await make_user(db_session, verified=False)
+    await sign_in(client)
+
     assert (await client.get("/v1/watchlist")).status_code == 200
     assert _error(await _follow(client)) == (403, "email_unverified")
     assert _error(
@@ -796,17 +868,6 @@ async def test_a_new_account_reads_but_saves_nothing_until_verified(
         )
     ) == (403, "email_unverified")
 
-    verified = await client.post(
-        "/v1/auth/verify-email",
-        json={"token": outbox.token_for("ada@example.com")},
-        headers=FRONTEND,
-    )
-
-    assert verified.status_code == 204
-    # Past the gate: an unknown investor is the watchlist's own 404.
-    assert _error(await _follow(client)) == (404, "not_found")
-    assert (await client.get("/v1/auth/session")).json()["session"]["user"]["email_verified"]
-
 
 async def test_a_verification_link_works_once(
     client: AsyncClient, app: FastAPI, outbox: Outbox
@@ -817,14 +878,38 @@ async def test_a_verification_link_works_once(
     first = await client.post("/v1/auth/verify-email", json={"token": token}, headers=FRONTEND)
     second = await client.post("/v1/auth/verify-email", json={"token": token}, headers=FRONTEND)
 
-    assert first.status_code == 204
+    assert first.status_code == 200
     assert _error(second) == (422, "invalid_token")
+    assert "set-cookie" not in second.headers
+
+
+async def test_a_new_password_ends_the_verification_link(
+    client: AsyncClient, db_session: AsyncSession, app: FastAPI, outbox: Outbox
+) -> None:
+    """The link signs in, so it must not outlive a reset that signed everyone out."""
+    await _register(client, app)
+    verify = outbox.token_for("ada@example.com")
+    outbox.sent.clear()
+    await client.post(
+        "/v1/auth/password-reset", json={"email": "ada@example.com"}, headers=FRONTEND
+    )
+    await client.post(
+        "/v1/auth/password-reset/confirm",
+        json={"token": outbox.token_for("ada@example.com"), "new_password": "battery staple 1999"},
+        headers=FRONTEND,
+    )
+
+    followed = await client.post("/v1/auth/verify-email", json={"token": verify}, headers=FRONTEND)
+
+    assert _error(followed) == (422, "invalid_token")
 
 
 async def test_a_new_link_replaces_the_last_and_none_is_sent_once_verified(
-    client: AsyncClient, app: FastAPI, outbox: Outbox
+    client: AsyncClient, db_session: AsyncSession, outbox: Outbox
 ) -> None:
-    await _register(client, app)
+    await make_user(db_session, verified=False)
+    await sign_in(client)
+    await client.post("/v1/auth/verify-email/resend", headers=FRONTEND)
     old = outbox.token_for("ada@example.com")
     outbox.sent.clear()
 
@@ -837,7 +922,7 @@ async def test_a_new_link_replaces_the_last_and_none_is_sent_once_verified(
     ) == (422, "invalid_token")
     assert (
         await client.post("/v1/auth/verify-email", json={"token": new}, headers=FRONTEND)
-    ).status_code == 204
+    ).status_code == 200
     outbox.sent.clear()
     assert (await client.post("/v1/auth/verify-email/resend", headers=FRONTEND)).status_code == 204
     assert outbox.sent == []

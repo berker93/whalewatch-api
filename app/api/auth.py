@@ -16,6 +16,9 @@ The dependencies, by how much a route needs a session:
 - :data:`VerifiedViewerDep`: signed in with a verified email, or a 403
   ``email_unverified``. For every route that saves something: an unverified
   account reads everything and saves nothing.
+- :data:`ViewerOrAnonymousDep`: the viewer, or None for a request with no
+  cookie. A cookie naming a session that has ended is still the 401
+  ``session_expired``, so a 401 from a route that takes it means only that.
 - :data:`OptionalViewerDep`: the viewer when there is one, else None. An ended
   session is None here, and so is a Redis that cannot be reached: a route that
   works signed out does not fail for either.
@@ -77,6 +80,14 @@ UNAUTHORIZED: Final[Responses] = {
             "Not signed in. `unauthenticated` when the request had no session cookie, "
             "`session_expired` when the session it named has ended."
         ),
+    }
+}
+
+#: The 401 a route taking :data:`ViewerOrAnonymousDep` documents: only an ended session.
+SESSION_ENDED: Final[Responses] = {
+    status.HTTP_401_UNAUTHORIZED: {
+        "model": Problem,
+        "description": "`session_expired`: the session the cookie named has ended.",
     }
 }
 
@@ -211,6 +222,12 @@ async def require_verified(viewer: Annotated[Viewer, Depends(require_viewer)]) -
     return viewer
 
 
+async def viewer_or_anonymous(lookup: SessionLookupDep, settings: SettingsDep) -> Viewer | None:
+    if lookup.token is None:
+        return None
+    return await require_viewer(lookup, settings)
+
+
 async def optional_viewer(lookup: SessionLookupDep) -> Viewer | None:
     if lookup.unavailable is not None:
         logger.warning("sessions.unavailable", error=repr(lookup.unavailable.__cause__))
@@ -338,6 +355,7 @@ async def limit_attempts(request: Request, action: Attempt, email: str) -> None:
 
 ViewerDep = Annotated[Viewer, Depends(require_viewer)]
 VerifiedViewerDep = Annotated[Viewer, Depends(require_verified)]
+ViewerOrAnonymousDep = Annotated[Viewer | None, Depends(viewer_or_anonymous)]
 OptionalViewerDep = Annotated[Viewer | None, Depends(optional_viewer)]
 AuthRateLimitDep = Depends(auth_rate_limited)
 NoStoreDep = Depends(no_store)
