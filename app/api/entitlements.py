@@ -28,7 +28,9 @@ its defaults, a route answers from the window and says nothing.
 Writes
 ------
 A save that would go over a limit (``watchlist_items``,
-``screener_saved_filters``) is the same 402: :meth:`EntitlementContext.require_room`.
+``screener_saved_filters``, ``alert_rules``) is the same 402:
+:meth:`EntitlementContext.require_room`. So is one that needs a flag the plan
+does not have (``alerts_instant``): :meth:`EntitlementContext.require_flag`.
 
 The cache
 ---------
@@ -54,7 +56,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.accounts import entitlements
-from app.accounts.entitlements import Entitled, LimitKey
+from app.accounts.entitlements import Entitled, FlagKey, LimitKey
 from app.api.auth import ApiCallerDep, OptionalViewerDep
 from app.api.errors import ApiError, Responses
 from app.api.schemas.error import ErrorCode
@@ -250,6 +252,27 @@ class EntitlementContext:
             key, saved + 1, f"Your plan keeps {allowed} {what}, and {saved} are saved."
         )
 
+    def can(self, key: FlagKey) -> bool:
+        """Whether the caller's plan has ``key`` on."""
+        return entitlements.can(self.viewer, key)
+
+    def require_flag(self, key: FlagKey, *, message: str) -> None:
+        """Refuse what needs ``key`` when the caller's plan has it off: 402,
+        ``allowed`` 0 and ``needed`` 1.
+
+        :param message: What was refused and why, for a person: the plan that
+            has it is added.
+        """
+        if self.can(key):
+            return
+        plan = flag_offer(key)
+        raise PlanLimitError(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            ErrorCode.PLAN_LIMIT,
+            f"{message} {offer_sentence(plan, flag=True)}",
+            detail=PlanLimitDetail(limit=key, allowed=0, needed=1, plan=plan),
+        )
+
     def _refused(self, key: LimitKey, needed: int, message: str) -> PlanLimitError:
         allowed = self.limit(key)
         assert allowed is not None  # no limit is never refused
@@ -271,10 +294,28 @@ def offer(key: LimitKey, needed: int) -> PlanOffer | None:
     )
 
 
-def offer_sentence(plan: PlanOffer | None) -> str:
+def flag_offer(key: FlagKey) -> PlanOffer | None:
+    """The cheapest public plan with ``key`` on, as a refusal names it: its
+    ``value`` is 1, on."""
+    plan = entitlements.enabling_plan(key)
+    if plan is None:
+        return None
+    return PlanOffer(
+        slug=plan.slug,
+        name=plan.name,
+        price_cents=plan.price_cents,
+        currency=plan.currency,
+        interval=plan.interval,
+        value=1,
+    )
+
+
+def offer_sentence(plan: PlanOffer | None, *, flag: bool = False) -> str:
     """What a refusal's message ends with: who goes further, or that nobody does."""
     if plan is None:
         return "No plan goes further."
+    if flag:
+        return f"{plan.name} does."
     return f"{plan.name} " + ("has no limit." if plan.value is None else f"allows {plan.value}.")
 
 

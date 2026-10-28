@@ -23,7 +23,10 @@ class PlanOffer(BaseModel):
         description="How often `price_cents` is billed.", examples=["month"]
     )
     value: int | None = Field(
-        description="Its value of `limit`: a whole number, or null for no limit.",
+        description=(
+            "Its value of `limit`: a whole number, or null for no limit. For a flag "
+            "(`alerts_instant`), 1: on."
+        ),
         examples=[20],
     )
 
@@ -36,25 +39,32 @@ class PlanLimitDetail(BaseModel):
         "insider_months",
         "watchlist_items",
         "screener_saved_filters",
+        "alert_rules",
         "api_calls_month",
         "mcp_calls_month",
+        "alerts_instant",
     ] = Field(
         description=(
             "The entitlement that stopped the request: `history_quarters` (a period "
             "before the caller's window), `insider_months` (a trade day before it), "
-            "`watchlist_items` or `screener_saved_filters` (that many saved already), "
-            "`api_calls_month` or `mcp_calls_month` (the plan has no calls: 0)."
+            "`watchlist_items`, `screener_saved_filters` or `alert_rules` (that many "
+            "saved already, or on), `api_calls_month` or `mcp_calls_month` (the plan "
+            "has no calls: 0), `alerts_instant` (an alert other than the season "
+            "digest, which the plan does not send: a flag, so `allowed` 0 and `needed` 1)."
         ),
         examples=["history_quarters"],
     )
     allowed: int = Field(
-        description="The caller's value of `limit`. Never null: no limit is never refused.",
+        description=(
+            "The caller's value of `limit`. Never null: no limit is never refused. "
+            "0 for a flag that is off."
+        ),
         examples=[4],
     )
     needed: int = Field(
         description=(
             "What the request needed it to be: quarters or months back from today, "
-            "counting the current one, or one more than is saved."
+            "counting the current one, or one more than is saved; 1 for a flag."
         ),
         examples=[9],
     )

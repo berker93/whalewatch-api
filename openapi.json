@@ -5270,6 +5270,560 @@
         }
       }
     },
+    "/v1/me/alert-rules": {
+      "get": {
+        "tags": [
+          "alert-rules"
+        ],
+        "summary": "The signed-in user's alert rules",
+        "description": "Every rule, on and off, oldest first. None is an empty list, never a 404.",
+        "operationId": "getAlertRules",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRules"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "alert-rules"
+        ],
+        "summary": "Make an alert rule, or set the one there is",
+        "description": "One rule per kind and target: the first is made (201), and a second\nsets every setting of the first (200), `min_value` included, so one left\nout is cleared. On after either. A kind the plan does not send (every one\nbut `season_digest` on Free) is a 402 `plan_limit` on `alerts_instant`;\none rule on past the plan's `alert_rules`, a 402 on that; a ref of the\nwrong kind, or a threshold on a kind not about dollars, a 422.",
+        "operationId": "saveAlertRule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewAlertRule"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The rule for that kind and target was there: its settings are set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No stock with that CUSIP, or investor with that slug.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/alert-rules/presets": {
+      "put": {
+        "tags": [
+          "alert-rules"
+        ],
+        "summary": "Alert me about this investor, or this stock",
+        "description": "An investor: its filings, by email too, and its position changes of $1M\nor more. A stock: moves of $1M or more in who owns it, and its insiders\nbuying together. A rule of these there is already is turned on, with the\nthreshold and channels it has. Answers with every rule about `ref`.\n\nOn a plan that sends the season digest only, a 402 `plan_limit` on\n`alerts_instant`; past the plan's `alert_rules`, a 402 on that, and\nnothing is turned on. An insider is a 422: no alert is about one yet.",
+        "operationId": "applyAlertPresets",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertPresetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRules"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No stock with that CUSIP, or investor with that slug.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/alert-rules/{rule_id}": {
+      "patch": {
+        "tags": [
+          "alert-rules"
+        ],
+        "summary": "Change an alert rule, or turn it on or off",
+        "description": "Sets what is sent and leaves the rest. `min_value: null` clears the\nthreshold. Turning on a kind the plan does not send, or one rule past the\nplan's `alert_rules`, is a 402 `plan_limit`; turning off, and changing a\nsetting, never is. Another user's rule is a 404.",
+        "operationId": "changeAlertRule",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999999999999,
+              "minimum": 1,
+              "description": "The rule's `id`.",
+              "title": "Rule Id"
+            },
+            "description": "The rule's `id`."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRuleChange"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No alert rule with that id is the signed-in user's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "alert-rules"
+        ],
+        "summary": "Delete an alert rule",
+        "description": "Deletes it; the notifications it sent stay. One already deleted, or\nanother user's, is no change: 204 either way.",
+        "operationId": "deleteAlertRule",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999999999999,
+              "minimum": 1,
+              "description": "The rule's `id`.",
+              "title": "Rule Id"
+            },
+            "description": "The rule's `id`."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/alert-rules/{rule_id}/test": {
+      "post": {
+        "tags": [
+          "alert-rules"
+        ],
+        "summary": "Send a test alert",
+        "description": "Sends what an alert of this rule looks like, saying it is a test: a\nnotification, unread, with `payload.test` true and the rule's investor or\nstock, and, when the rule emails, an email, which is sent before this\nanswers. A rule that is off is a 422; one of a kind the plan does not\nsend, a 402 `plan_limit`; a second test of a rule within a minute, a 429\nwith `Retry-After`.",
+        "operationId": "testAlertRule",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 999999999999999999,
+              "minimum": 1,
+              "description": "The rule's `id`.",
+              "title": "Rule Id"
+            },
+            "description": "The rule's `id`."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertTest"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address, or this rule was tested less than a minute ago. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`email_unverified`: the account's email is not verified yet, so it saves nothing; `forbidden_origin`: a write from a site not allowed to call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No alert rule with that id is the signed-in user's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/account": {
       "get": {
         "tags": [
@@ -5588,7 +6142,7 @@
           "watchlist"
         ],
         "summary": "Follow a stock, an investor or an insider",
-        "description": "Adds `ref` at the end of its list. Already followed is no change, and\nnever refused. A ref that names nothing is a 404; a watchlist as full as\nthe plan allows (its `watchlist_items`: 10 on Free) a 402 `plan_limit`\nnaming the plan that keeps more; one at 500, the most any plan keeps, a\n422; an account whose email is not verified a 403 `email_unverified`.",
+        "description": "Adds `ref` at the end of its list. Already followed is no change, and\nnever refused. A ref that names nothing is a 404; a watchlist as full as\nthe plan allows (its `watchlist_items`: 10 on Free) a 402 `plan_limit`\nnaming the plan that keeps more; one at 500, the most any plan keeps, a\n422; an account whose email is not verified a 403 `email_unverified`.\n\nFollowing an investor turns on its alerts, as far as the plan's\n`alert_rules` has room: with instant alerts, its filings (by email too)\nand its position changes of $1M or more; without, the season digest, if\nthere is none. `GET /v1/me/alert-rules` lists them.",
         "operationId": "addWatchlistItem",
         "requestBody": {
           "content": {
@@ -5686,7 +6240,7 @@
           "watchlist"
         ],
         "summary": "Unfollow a stock, an investor or an insider",
-        "description": "Removes `ref`. Not followed is no change. A ref that names nothing is a\n404; an account whose email is not verified a 403 `email_unverified`.",
+        "description": "Removes `ref`, and turns off every alert about it, keeping their\nsettings. Not followed is no change. A ref that names nothing is a 404; an\naccount whose email is not verified a 403 `email_unverified`.",
         "operationId": "removeWatchlistItem",
         "requestBody": {
           "content": {
@@ -9045,6 +9599,10 @@
             "$ref": "#/components/schemas/AdminCount",
             "description": "Things followed."
           },
+          "alert_rules": {
+            "$ref": "#/components/schemas/AdminCount",
+            "description": "Alert rules on, of any kind: the plan's limit counts those it sends."
+          },
           "api_keys": {
             "$ref": "#/components/schemas/AdminApiKeys",
             "description": "API keys."
@@ -9068,6 +9626,7 @@
           "months",
           "saved_filters",
           "watchlist_items",
+          "alert_rules",
           "api_keys",
           "data_exports",
           "active_days_30"
@@ -9444,6 +10003,244 @@
         "title": "AlertKind",
         "description": "What an alert is about. Text with a ``CHECK``, by the rule in\n:mod:`app.db.models.enums`: the set is ours and will grow."
       },
+      "AlertPresetRequest": {
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/WatchRef",
+            "description": "An investor or a stock."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref"
+        ],
+        "title": "AlertPresetRequest",
+        "description": "Something on the watchlist to be alerted about."
+      },
+      "AlertRule": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,17}$",
+            "title": "Id",
+            "description": "A rule's `id`.",
+            "examples": [
+              "31"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AlertKind",
+            "description": "What kind of event.",
+            "examples": [
+              "filer_filed"
+            ]
+          },
+          "investor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuleInvestor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The investor, for `filer_filed` and `filer_position_change`; else null."
+          },
+          "stock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuleStock"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stock, for `stock_ownership_change` and `insider_cluster`; else null."
+          },
+          "min_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal",
+                "examples": [
+                  "1000000"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Value",
+            "description": "Dollars an event must reach to be told: a position change's traded value, a move in a stock's ownership, a cluster's buying. Null: every one. Only the kinds about dollars take one: `filer_position_change`, `stock_ownership_change`, `insider_cluster`.",
+            "examples": [
+              "1000000"
+            ]
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/Channel"
+            },
+            "type": "array",
+            "title": "Channels",
+            "description": "Where its alerts go besides the list: `in_app` (the bell) and `email`. At least one; to stop it, turn it off.",
+            "examples": [
+              [
+                "in_app",
+                "email"
+              ]
+            ]
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "description": "On. Off keeps its settings for when it is turned back on.",
+            "examples": [
+              true
+            ]
+          },
+          "sent": {
+            "type": "boolean",
+            "title": "Sent",
+            "description": "Whether the account's plan sends this kind now. False for every kind but `season_digest` on a plan without `alerts_instant`: such a rule, kept from a plan since left, sends nothing, and cannot be turned on or tested.",
+            "examples": [
+              true
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When it was made.",
+            "examples": [
+              "2026-10-28T09:30:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "investor",
+          "stock",
+          "min_value",
+          "channels",
+          "is_active",
+          "sent",
+          "created_at"
+        ],
+        "title": "AlertRule",
+        "description": "One thing the user asked to be told about."
+      },
+      "AlertRuleChange": {
+        "properties": {
+          "min_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal",
+                "examples": [
+                  "1000000"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Value",
+            "description": "Dollars an event must reach to be told: a position change's traded value, a move in a stock's ownership, a cluster's buying. Null: every one. Only the kinds about dollars take one: `filer_position_change`, `stock_ownership_change`, `insider_cluster`. Null clears it.",
+            "examples": [
+              "5000000"
+            ]
+          },
+          "channels": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Channel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channels",
+            "description": "Where its alerts go besides the list: `in_app` (the bell) and `email`. At least one; to stop it, turn it off.",
+            "examples": [
+              [
+                "in_app"
+              ]
+            ]
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active",
+            "description": "On or off.",
+            "examples": [
+              false
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AlertRuleChange",
+        "description": "What to change of a rule. Each one left out is left as it is."
+      },
+      "AlertRules": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AlertRule"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "Oldest first, on and off. Empty when none."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "title": "AlertRules",
+        "description": "The user's rules, oldest first."
+      },
+      "AlertTest": {
+        "properties": {
+          "notification": {
+            "$ref": "#/components/schemas/Notification",
+            "description": "The notification written: in the list, unread, with `payload.test` true."
+          },
+          "email": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmailStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How far its email got: `sent`, `suppressed` (the address bounced or complained, or the rule has left the list) or `failed`. Null when the rule does not email, or when the email could not even be logged.",
+            "examples": [
+              "sent"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "notification",
+          "email"
+        ],
+        "title": "AlertTest",
+        "description": "A test alert, sent as the rule would send one."
+      },
       "AmendmentKind": {
         "type": "string",
         "enum": [
@@ -9732,6 +10529,15 @@
         ],
         "title": "ChangeCounts",
         "description": "Positions opened, added to, trimmed and exited in one filing's quarter."
+      },
+      "Channel": {
+        "type": "string",
+        "enum": [
+          "in_app",
+          "email"
+        ],
+        "title": "Channel",
+        "description": "Where a rule's notifications go, besides the table."
       },
       "CheckEmail": {
         "properties": {
@@ -10161,6 +10967,21 @@
         ],
         "title": "EmailConfirm",
         "description": "The token from an email change's confirmation link."
+      },
+      "EmailStatus": {
+        "type": "string",
+        "enum": [
+          "sending",
+          "sent",
+          "soft_bounced",
+          "delivered",
+          "bounced",
+          "complained",
+          "failed",
+          "suppressed"
+        ],
+        "title": "EmailStatus",
+        "description": "Where a message got to. Webhooks only ever move a row up :data:`STATUS_RANKS`."
       },
       "EmailSubscription": {
         "properties": {
@@ -15221,6 +16042,21 @@
               3
             ]
           },
+          "alert_rules": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Rules",
+            "description": "How many alert rules the account keeps on at once, of the kinds its plan sends. Null: no limit but the 1001 any keeps.",
+            "examples": [
+              1
+            ]
+          },
           "api_calls_month": {
             "anyOf": [
               {
@@ -15262,7 +16098,7 @@
           "alerts_instant": {
             "type": "boolean",
             "title": "Alerts Instant",
-            "description": "Same-day filing alerts, rather than the Monday digest.",
+            "description": "Every kind of alert, sent as it happens. Without it, the season digest is the only alert sent.",
             "examples": [
               false
             ]
@@ -15283,6 +16119,7 @@
           "insider_months",
           "watchlist_items",
           "screener_saved_filters",
+          "alert_rules",
           "api_calls_month",
           "mcp_calls_month",
           "export_enabled",
@@ -15715,6 +16552,68 @@
         ],
         "title": "MetricSeries",
         "description": "Signups, actives and plan mix over a range of UTC days."
+      },
+      "NewAlertRule": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/AlertKind",
+            "description": "What kind of event.",
+            "examples": [
+              "filer_position_change"
+            ]
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WatchRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What it is about: an investor for `filer_filed` and `filer_position_change`, a stock for `stock_ownership_change` and `insider_cluster`, nothing for `season_digest`."
+          },
+          "min_value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal",
+                "examples": [
+                  "1000000"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Value",
+            "description": "Dollars an event must reach to be told: a position change's traded value, a move in a stock's ownership, a cluster's buying. Null: every one. Only the kinds about dollars take one: `filer_position_change`, `stock_ownership_change`, `insider_cluster`.",
+            "examples": [
+              "1000000"
+            ]
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/Channel"
+            },
+            "type": "array",
+            "title": "Channels",
+            "description": "Where its alerts go besides the list: `in_app` (the bell) and `email`. At least one; to stop it, turn it off. Left out: `in_app`.",
+            "examples": [
+              [
+                "in_app",
+                "email"
+              ]
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "NewAlertRule",
+        "description": "A rule to make, or the settings of one there is."
       },
       "NewApiKey": {
         "properties": {
@@ -16528,11 +17427,13 @@
               "insider_months",
               "watchlist_items",
               "screener_saved_filters",
+              "alert_rules",
               "api_calls_month",
-              "mcp_calls_month"
+              "mcp_calls_month",
+              "alerts_instant"
             ],
             "title": "Limit",
-            "description": "The entitlement that stopped the request: `history_quarters` (a period before the caller's window), `insider_months` (a trade day before it), `watchlist_items` or `screener_saved_filters` (that many saved already), `api_calls_month` or `mcp_calls_month` (the plan has no calls: 0).",
+            "description": "The entitlement that stopped the request: `history_quarters` (a period before the caller's window), `insider_months` (a trade day before it), `watchlist_items`, `screener_saved_filters` or `alert_rules` (that many saved already, or on), `api_calls_month` or `mcp_calls_month` (the plan has no calls: 0), `alerts_instant` (an alert other than the season digest, which the plan does not send: a flag, so `allowed` 0 and `needed` 1).",
             "examples": [
               "history_quarters"
             ]
@@ -16540,7 +17441,7 @@
           "allowed": {
             "type": "integer",
             "title": "Allowed",
-            "description": "The caller's value of `limit`. Never null: no limit is never refused.",
+            "description": "The caller's value of `limit`. Never null: no limit is never refused. 0 for a flag that is off.",
             "examples": [
               4
             ]
@@ -16548,7 +17449,7 @@
           "needed": {
             "type": "integer",
             "title": "Needed",
-            "description": "What the request needed it to be: quarters or months back from today, counting the current one, or one more than is saved.",
+            "description": "What the request needed it to be: quarters or months back from today, counting the current one, or one more than is saved; 1 for a flag.",
             "examples": [
               9
             ]
@@ -16698,7 +17599,7 @@
               }
             ],
             "title": "Value",
-            "description": "Its value of `limit`: a whole number, or null for no limit.",
+            "description": "Its value of `limit`: a whole number, or null for no limit. For a flag (`alerts_instant`), 1: on.",
             "examples": [
               20
             ]
@@ -17758,6 +18659,76 @@
         ],
         "title": "Role",
         "description": "What a reporting owner checked on the filing: what they were to the issuer."
+      },
+      "RuleInvestor": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "As `/v1/investors/{slug}` takes it.",
+            "examples": [
+              "berkshire"
+            ]
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "For a person.",
+            "examples": [
+              "Berkshire Hathaway"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "display_name"
+        ],
+        "title": "RuleInvestor",
+        "description": "The investor a rule is about."
+      },
+      "RuleStock": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "Its CUSIP.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Its ticker today. Null when it has none.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "type": "string",
+            "title": "Issuer Name",
+            "description": "As the SEC's list names it.",
+            "examples": [
+              "APPLE INC"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "ticker",
+          "issuer_name"
+        ],
+        "title": "RuleStock",
+        "description": "The stock a rule is about."
       },
       "SavedFilter": {
         "properties": {

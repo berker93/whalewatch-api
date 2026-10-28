@@ -63,6 +63,7 @@ LIMIT_KEYS: Final = (
     "insider_months",
     "watchlist_items",
     "screener_saved_filters",
+    "alert_rules",
     "api_calls_month",
     "mcp_calls_month",
 )

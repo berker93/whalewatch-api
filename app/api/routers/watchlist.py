@@ -13,6 +13,9 @@
     (:mod:`app.api.entitlements`); past :data:`MAX_WATCHLIST_ITEMS`, which no
     plan lifts, a 422. Following what is already followed is never refused.
 
+    Following an investor turns on its alerts, and unfollowing anything turns
+    off every alert about it (:func:`app.accounts.alert_rules.on_follow`).
+
 An insider is shown as their latest Form 4 gives them: name, roles and title
 from their latest filing, its issuer, and the ticker of the security its lines
 are linked to.
@@ -26,6 +29,7 @@ from sqlalchemy import Select, delete, func, select, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts import alert_rules
 from app.accounts.entitlements import MAX_WATCHLIST_ITEMS
 from app.api.auth import UNAUTHORIZED, UNVERIFIED, NoStoreDep, VerifiedViewerDep, ViewerDep
 from app.api.deps import SessionDep
@@ -265,7 +269,12 @@ async def add_watchlist_item(
     never refused. A ref that names nothing is a 404; a watchlist as full as
     the plan allows (its `watchlist_items`: 10 on Free) a 402 `plan_limit`
     naming the plan that keeps more; one at 500, the most any plan keeps, a
-    422; an account whose email is not verified a 403 `email_unverified`."""
+    422; an account whose email is not verified a 403 `email_unverified`.
+
+    Following an investor turns on its alerts, as far as the plan's
+    `alert_rules` has room: with instant alerts, its filings (by email too)
+    and its position changes of $1M or more; without, the season digest, if
+    there is none. `GET /v1/me/alert-rules` lists them."""
     target = await resolve_ref(session, body.ref.root)
     user_id = viewer.user.id
     mine = WatchlistItem.user_id == user_id
@@ -282,6 +291,7 @@ async def add_watchlist_item(
     await session.execute(
         insert(WatchlistItem).values(user_id=user_id, **target).on_conflict_do_nothing()
     )
+    await alert_rules.on_follow(session, entitled.viewer, user_id, target)
     await session.commit()
     return await build_watchlist(session, user_id)
 
@@ -296,8 +306,9 @@ async def add_watchlist_item(
 async def remove_watchlist_item(
     body: WatchlistItemRequest, viewer: VerifiedViewerDep, session: SessionDep
 ) -> Watchlist:
-    """Removes `ref`. Not followed is no change. A ref that names nothing is a
-    404; an account whose email is not verified a 403 `email_unverified`."""
+    """Removes `ref`, and turns off every alert about it, keeping their
+    settings. Not followed is no change. A ref that names nothing is a 404; an
+    account whose email is not verified a 403 `email_unverified`."""
     target = await resolve_ref(session, body.ref.root)
     [(column, target_id)] = target.items()
     user_id = viewer.user.id
@@ -306,5 +317,7 @@ async def remove_watchlist_item(
             WatchlistItem.user_id == user_id, getattr(WatchlistItem, column) == target_id
         )
     )
+    if column != "insider_id":
+        await alert_rules.on_unfollow(session, user_id, target)
     await session.commit()
     return await build_watchlist(session, user_id)

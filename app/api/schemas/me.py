@@ -69,6 +69,13 @@ class MeEntitlements(BaseModel):
     screener_saved_filters: int | None = Field(
         description="How many screener filters the account may save.", examples=[3]
     )
+    alert_rules: int | None = Field(
+        description=(
+            "How many alert rules the account keeps on at once, of the kinds its plan "
+            "sends. Null: no limit but the 1001 any keeps."
+        ),
+        examples=[1],
+    )
     api_calls_month: int | None = Field(
         description="API calls a month, made with the account's API keys. 0: no API access.",
         examples=[0],
@@ -78,7 +85,11 @@ class MeEntitlements(BaseModel):
     )
     export_enabled: bool = Field(description="CSV export of tables.", examples=[False])
     alerts_instant: bool = Field(
-        description="Same-day filing alerts, rather than the Monday digest.", examples=[False]
+        description=(
+            "Every kind of alert, sent as it happens. Without it, the season digest is "
+            "the only alert sent."
+        ),
+        examples=[False],
     )
     mcp_enabled: bool = Field(description="Access through the MCP server.", examples=[False])
 

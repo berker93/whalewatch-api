@@ -30,6 +30,7 @@ from sqlalchemy.orm import aliased
 from app.accounts.entitlements import FREE, Grant, override_is_live, subscription_is_live
 from app.db.models import (
     AdminUser,
+    AlertRule,
     ApiKey,
     AppUser,
     Plan,
@@ -255,6 +256,7 @@ class Counts:
 
     saved_filters: int
     watchlist_items: int
+    alert_rules_on: int
     live_api_keys: int
     api_key_last_used_at: datetime | None
     data_exports: int
@@ -294,6 +296,10 @@ async def counts(session: AsyncSession, user_id: int, today: date) -> Counts:
                 .select_from(WatchlistItem)
                 .where(WatchlistItem.user_id == user_id)
                 .scalar_subquery(),
+                select(func.count())
+                .select_from(AlertRule)
+                .where(AlertRule.user_id == user_id, AlertRule.is_active)
+                .scalar_subquery(),
                 keys.c.live,
                 keys.c.last_used_at,
                 exports.c.total,
@@ -307,11 +313,12 @@ async def counts(session: AsyncSession, user_id: int, today: date) -> Counts:
     return Counts(
         saved_filters=row[0],
         watchlist_items=row[1],
-        live_api_keys=row[2],
-        api_key_last_used_at=row[3],
-        data_exports=int(row[4]),
-        last_data_export=row[5],
-        active_days_30=row[6],
+        alert_rules_on=row[2],
+        live_api_keys=row[3],
+        api_key_last_used_at=row[4],
+        data_exports=int(row[5]),
+        last_data_export=row[6],
+        active_days_30=row[7],
     )
 
 

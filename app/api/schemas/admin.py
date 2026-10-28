@@ -181,6 +181,9 @@ class AdminUsage(BaseModel):
     )
     saved_filters: AdminCount = Field(description="Screener filters saved.")
     watchlist_items: AdminCount = Field(description="Things followed.")
+    alert_rules: AdminCount = Field(
+        description="Alert rules on, of any kind: the plan's limit counts those it sends."
+    )
     api_keys: AdminApiKeys = Field(description="API keys.")
     data_exports: AdminExports = Field(description="Data exports taken.")
     active_days_30: int = Field(

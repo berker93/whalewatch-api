@@ -74,6 +74,14 @@ FILER_KINDS: Final = (AlertKind.FILER_FILED, AlertKind.FILER_POSITION_CHANGE)
 #: The kinds about one stock: their rule names it in ``security_id``.
 SECURITY_KINDS: Final = (AlertKind.STOCK_OWNERSHIP_CHANGE, AlertKind.INSIDER_CLUSTER)
 
+#: The kinds whose events are a number of dollars, and so can be too small to
+#: tell: their rule may have a ``min_value``. A filing, and a season, are not.
+THRESHOLD_KINDS: Final = (
+    AlertKind.FILER_POSITION_CHANGE,
+    AlertKind.STOCK_OWNERSHIP_CHANGE,
+    AlertKind.INSIDER_CLUSTER,
+)
+
 
 class Channel(StrEnum):
     """Where a rule's notifications go, besides the table."""
@@ -135,7 +143,9 @@ class AlertRule(Base):
     )
 
     min_value: Mapped[Decimal | None] = mapped_column(MONEY)
-    """Dollars below which an event is not worth telling. Null for every event."""
+    """Dollars below which an event is not worth telling: a trade's, a
+    position change's, a cluster's. Null for every event, and always null for
+    a kind outside :data:`THRESHOLD_KINDS`."""
 
     channels: Mapped[list[str]] = mapped_column(
         ARRAY(Text), server_default=text(f"'{{{Channel.IN_APP}}}'")
@@ -157,6 +167,10 @@ class AlertRule(Base):
             name="security_kinds_name_a_security",
         ),
         CheckConstraint("min_value > 0", name="min_value_is_positive"),
+        CheckConstraint(
+            f"min_value IS NULL OR kind IN ({_quoted(THRESHOLD_KINDS)})",
+            name="min_value_has_dollars_to_compare",
+        ),
         CheckConstraint(
             f"cardinality(channels) >= 1 AND channels <@ ARRAY[{_quoted(tuple(Channel))}]",
             name="channels_are_known",

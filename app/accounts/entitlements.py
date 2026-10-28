@@ -83,6 +83,7 @@ LimitKey = Literal[
     "insider_months",
     "watchlist_items",
     "screener_saved_filters",
+    "alert_rules",
     "api_calls_month",
     "mcp_calls_month",
 ]
@@ -503,6 +504,22 @@ def lifting_plan(key: LimitKey, needed: int) -> PlanTerms | None:
         value = plan.values[key]
         if plan.slug != FREE and plan.is_public and (value is None or value >= needed):
             offers.append(plan)
+    return min(offers, key=lambda plan: (plan.price_cents, plan.slug), default=None)
+
+
+def enabling_plan(key: FlagKey) -> PlanTerms | None:
+    """The cheapest public paid plan with ``key`` on: what a refusal offers.
+    None when no plan has it.
+
+    :raises EntitlementsUnavailableError: before a catalog has loaded.
+    """
+    if key not in FLAG_KEYS:
+        raise ValueError(f"{key!r} is not a flag")
+    offers = [
+        plan
+        for plan in current().plans.values()
+        if plan.slug != FREE and plan.is_public and plan.values[key] is True
+    ]
     return min(offers, key=lambda plan: (plan.price_cents, plan.slug), default=None)
 
 

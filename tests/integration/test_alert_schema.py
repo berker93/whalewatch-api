@@ -241,7 +241,7 @@ async def test_one_rule_per_kind_and_target(db_session: AsyncSession) -> None:
 
     await _refused(
         db_session,
-        AlertRule(user_id=user_id, kind="filer_filed", filer_id=filer_id, min_value=1),
+        AlertRule(user_id=user_id, kind="filer_filed", filer_id=filer_id, channels=["email"]),
         "uq_alert_rule_user_id_kind_target",
     )
 
@@ -281,8 +281,23 @@ async def test_a_threshold_of_nothing_is_refused(db_session: AsyncSession) -> No
     """Null is "every event": one way to say it."""
     user_id = await make_user(db_session)
 
+    filer_id = await _filer(db_session)
+
     await _refused(
         db_session,
-        AlertRule(user_id=user_id, kind="season_digest", min_value=0),
+        AlertRule(user_id=user_id, kind="filer_position_change", filer_id=filer_id, min_value=0),
         "ck_alert_rule_min_value_is_positive",
+    )
+
+
+@pytest.mark.parametrize("kind", ["filer_filed", "season_digest"])
+async def test_a_threshold_needs_dollars_to_compare(db_session: AsyncSession, kind: str) -> None:
+    """ALR-4: a filing and a season are not a number of dollars."""
+    user_id = await make_user(db_session)
+    filer_id = await _filer(db_session) if kind == "filer_filed" else None
+
+    await _refused(
+        db_session,
+        AlertRule(user_id=user_id, kind=kind, filer_id=filer_id, min_value=10_000),
+        "ck_alert_rule_min_value_has_dollars_to_compare",
     )

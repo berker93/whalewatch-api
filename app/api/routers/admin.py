@@ -307,6 +307,9 @@ async def get_user(
         watchlist_items=AdminCount(
             count=counts.watchlist_items, limit=entitlements.limit(subject, "watchlist_items")
         ),
+        alert_rules=AdminCount(
+            count=counts.alert_rules_on, limit=entitlements.limit(subject, "alert_rules")
+        ),
         api_keys=AdminApiKeys(live=counts.live_api_keys, last_used_at=counts.api_key_last_used_at),
         data_exports=AdminExports(total=counts.data_exports, last_on=counts.last_data_export),
         active_days_30=counts.active_days_30,

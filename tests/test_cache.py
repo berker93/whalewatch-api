@@ -461,6 +461,7 @@ def test_every_public_read_is_cached() -> None:
         "/v1/api-keys",
         "/v1/billing",
         "/v1/me/notifications",
+        "/v1/me/alert-rules",
         # Kept in Redis per user, by its own key, which a mark-read replaces.
         "/v1/me/notifications/count",
         # One person's, by the link's token, and changed by its POST at once.
@@ -493,8 +494,9 @@ def test_every_read_of_filing_data_is_gated() -> None:
         "/v1/meta/periods",
         "/v1/meta/freshness",
         "/v1/meta/data-sources",
-        # The caller's own account, watchlist, filters, keys, billing, export and
-        # notifications (as they were sent, whatever the plan reads now).
+        # The caller's own account, watchlist, filters, keys, billing, export,
+        # notifications (as they were sent, whatever the plan reads now) and
+        # alert rules (their targets' names, no period).
         "/v1/account",
         "/v1/auth/session",
         "/v1/me",
@@ -506,6 +508,7 @@ def test_every_read_of_filing_data_is_gated() -> None:
         "/v1/billing",
         "/v1/me/notifications",
         "/v1/me/notifications/count",
+        "/v1/me/alert-rules",
         # Which list an unsubscribe link leaves: a label, no filing data.
         "/v1/email/unsubscribe",
     }

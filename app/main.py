@@ -52,6 +52,7 @@ from app.api.rate_limit import (
 from app.api.routers import (
     account,
     admin,
+    alert_rules,
     api_keys,
     auth,
     billing,
@@ -247,6 +248,7 @@ def create_app(settings: Settings) -> FastAPI:
         auth,
         me,
         notifications,
+        alert_rules,
         account,
         watchlist,
         saved_filters,
