@@ -7,7 +7,7 @@ needs Postgres; tests/integration/test_jobs.py runs the real ones.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,9 +17,11 @@ from celery.exceptions import Retry, SoftTimeLimitExceeded
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from app.alerts.dispatch import message
 from app.ingestion.edgar.client import EdgarRateLimited, EdgarServerError
 from app.ingestion.enrichment.figi import OpenFIGIRateLimited, OpenFIGIResponseError
 from app.jobs import tasks
+from app.jobs.alerts import Emitted
 from app.jobs.celery_app import COMPUTE_QUEUE, INGESTION_QUEUE
 from app.jobs.errors import JobError
 from app.jobs.retry import (
@@ -178,6 +180,62 @@ def test_a_transient_failure_asks_celery_to_retry_with_backoff(
 
     assert asked["exc"] is failure
     assert 0 <= asked["countdown"] <= BACKOFF_FACTOR_SECONDS
+
+
+def _emitted(calls: list[dict[str, Any]], *outcomes: BaseException | None) -> Any:
+    """An ``emit_alerts`` job that raises or returns an empty emission in turn."""
+    remaining = list(outcomes)
+
+    async def job(settings: object, **arguments: Any) -> Emitted:
+        calls.append(arguments)
+        outcome = remaining.pop(0)
+        if outcome is not None:
+            raise outcome
+        return Emitted(events=[], told=[], emails=[])
+
+    return job
+
+
+def test_the_alerts_task_reads_the_pairs_a_rebuild_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("app.jobs.alerts.emit_alerts", _emitted(calls, None, None))
+    pairs = frozenset({(7, date(2026, 6, 30)), (3, date(2026, 3, 31))})
+
+    summary = tasks.emit_alerts(**message(pairs))
+    tasks.emit_alerts(**message(None))
+
+    assert calls == [{"pairs": [(3, date(2026, 3, 31)), (7, date(2026, 6, 30))]}, {"pairs": None}]
+    assert summary == {
+        "job": "emit-alerts",
+        "events": 0,
+        "notifications": 0,
+        "emails": 0,
+        "emails_sent": 0,
+    }
+
+
+def test_the_alerts_task_is_told_what_to_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match="pairs, or everything"):
+        tasks.emit_alerts()
+    with pytest.raises(ValueError, match="pairs, or everything"):
+        tasks.emit_alerts(pairs=[], everything=True)
+
+
+def test_the_alerts_task_retries_a_transient_failure_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "app.jobs.alerts.emit_alerts",
+        _emitted(calls, _db_error("40P01"), None, JobError("no catalog")),
+    )
+
+    recovered = tasks.emit_alerts.apply(kwargs={"everything": True})
+    failed = tasks.emit_alerts.apply(kwargs={"everything": True})
+
+    assert recovered.state == "SUCCESS"
+    assert failed.state == "FAILURE"
+    assert len(calls) == 3
 
 
 def test_a_permanent_failure_is_raised_without_a_retry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -407,5 +465,6 @@ def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -
         "snapshot_metrics": COMPUTE_QUEUE,
         "poll_13f": COMPUTE_QUEUE,
         "daily_form4": COMPUTE_QUEUE,
+        "emit_alerts": COMPUTE_QUEUE,
         "ping": COMPUTE_QUEUE,
     }

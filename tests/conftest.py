@@ -28,6 +28,7 @@ from app.api.auth import OptionalViewerDep
 from app.api.deps import get_redis
 from app.api.entitlements import GATED, EntitlementContext, entitlement_context
 from app.core.config import Settings
+from app.derived.scope import Pair
 from app.main import create_app
 from tests.fake_redis import FakeRedis
 
@@ -71,6 +72,19 @@ async def unlimited_entitlements(request: Request, viewer: OptionalViewerDep) ->
     """
     setattr(request.state, GATED, True)
     return EntitlementContext.unlimited(viewer=viewer)
+
+
+@pytest.fixture(autouse=True)
+def alert_queue(monkeypatch: pytest.MonkeyPatch) -> list[frozenset[Pair] | None]:
+    """What every committed rebuild sent the alerts task, kept instead of sent.
+
+    For every test: a load or a recompute anywhere in the suite would
+    otherwise send a message to whatever broker the environment names.
+    ``None`` is a rebuild of everything.
+    """
+    sent: list[frozenset[Pair] | None] = []
+    monkeypatch.setattr("app.alerts.dispatch.enqueue", sent.append)
+    return sent
 
 
 @pytest.fixture

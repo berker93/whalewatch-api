@@ -100,6 +100,7 @@ def test_tasks_are_found_by_autodiscovery_not_imported() -> None:
                 "purge_accounts",
                 "poll_13f",
                 "daily_form4",
+                "emit_alerts",
                 "ping",
             )
         }

@@ -52,6 +52,8 @@ TRACKED: Final = {
     "check-data": ("check-data", [], "success"),
     "recompute": ("recompute", ["--all"], "success"),
     "detect-splits": ("detect-splits", ["--all"], "success"),
+    # Nothing filed for recently, so nothing to tell.
+    "emit-alerts": ("emit-alerts", ["--all"], "success"),
     "refresh-views": ("refresh-views", [], "success"),
     "reconcile": ("reconcile", [], "success"),
     "import-13f-list": (

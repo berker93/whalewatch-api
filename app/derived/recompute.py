@@ -81,6 +81,15 @@ The rebuild's ``INSERT`` takes a ``KEY SHARE`` lock on each ``filing`` row a
 snapshot row points at. A load that upserted that row first, and then waited
 for the lock, would hold the row against the rebuild holding the lock: a
 deadlock. Taking this lock first, always, rules that out.
+
+Alerts
+------
+What a rebuild publishes is somebody's news: a filing, and the positions it
+changed. So each rebuild names the pairs it touched, its scope, the period
+after each and the pairs across a split that moved, to
+:func:`app.alerts.dispatch.after_commit`, which sends them to the alerts task
+once the caller's transaction commits, and forgets them if it rolls back. The
+task reads the events from the tables as they are then (:mod:`app.alerts`).
 """
 
 from __future__ import annotations
@@ -95,6 +104,7 @@ from typing import Final, cast
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.alerts.dispatch import after_commit
 from app.db.models.position_snapshot import PositionSnapshot
 from app.db.queries.periods import FILER_PERIOD
 from app.derived.implied_price import (
@@ -139,6 +149,13 @@ class Recomputed:
     """Pairs outside :attr:`scope` and :attr:`following` whose changes cross a
     split that appeared, disappeared or changed its ratio."""
 
+    @property
+    def touched(self) -> frozenset[Pair] | None:
+        """Every pair whose rows this rebuilt: ``None`` for every pair there is."""
+        if self.scope.pairs is None:
+            return None
+        return self.scope.pairs | self.following | self.crossing
+
 
 @dataclass(frozen=True, slots=True)
 class Redetected:
@@ -173,7 +190,8 @@ async def recompute(
     each. The changes last, adjusted for the splits: for ``scope``, for the
     next published period after each pair in it, and for every pair across a
     split that moved. All in the caller's transaction, which commits them
-    together: a reader sees every table rebuilt, or none.
+    together: a reader sees every table rebuilt, or none. Once it commits, the
+    pairs it touched go to the alerts task (:attr:`Recomputed.touched`).
 
     :param include_suspect: Publish the periods in scope that a suspect filing
         counts toward, marked ``suspect``, instead of withholding them.
@@ -198,7 +216,7 @@ async def recompute(
     changes = await recompute_position_change(
         session, scope | Scope.of(following) | Scope.of(crossing)
     )
-    return Recomputed(
+    rebuilt = Recomputed(
         scope=scope,
         snapshot=snapshot,
         changes=changes,
@@ -207,6 +225,8 @@ async def recompute(
         splits=splits,
         crossing=crossing,
     )
+    after_commit(session, rebuilt.touched)
+    return rebuilt
 
 
 async def detect_splits(session: AsyncSession, *, period: date | None = None) -> Redetected:
@@ -236,6 +256,7 @@ async def detect_splits(session: AsyncSession, *, period: date | None = None) ->
         if crossing
         else ChangeRebuild(new=0, add=0, trim=0, hold=0, exit=0)
     )
+    after_commit(session, crossing)
     return Redetected(splits=splits, crossing=crossing, changes=changes)
 
 

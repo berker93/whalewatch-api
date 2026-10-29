@@ -249,12 +249,8 @@ def judge(candidate: Candidate) -> Verdict:
         return no(f"{candidate.agreeing} of {candidate.holders} holders agree")
     if product is None:
         return no("no price on one side")
-    low, high = PRODUCT_BAND
     size = max(fraction, 1 / fraction)
-    # Nearer one than the fraction is: product² < fraction going up, and
-    # product² > fraction going down. Exact, in Fraction.
-    squared = Fraction(product) ** 2
-    if not low <= product <= high or (squared >= fraction if fraction > 1 else squared <= fraction):
+    if not price_corroborates(fraction, product):
         return no(f"the price moved {_times(candidate.price_ratio)}")
     majority = candidate.agreeing >= 3 and candidate.agreeing * 2 > candidate.holders
     if size < EXACT_NOT_REQUIRED_FROM and not candidate.exact:
@@ -267,6 +263,71 @@ def judge(candidate: Candidate) -> Verdict:
     if candidate.exact or candidate.agreeing >= 3:
         return Verdict(candidate, SplitConfidence.MEDIUM, "an exact holder or three agreeing")
     return Verdict(candidate, SplitConfidence.LOW, "two holders agree")
+
+
+def price_corroborates(fraction: Fraction, product: Decimal) -> bool:
+    """Whether ``product``, ``fraction`` times the price ratio, is a split's:
+    within :data:`PRODUCT_BAND`, and nearer one than the fraction is."""
+    low, high = PRODUCT_BAND
+    # Nearer one: product² < fraction going up, and product² > fraction going
+    # down. Exact, in Fraction.
+    squared = Fraction(product) ** 2
+    return low <= product <= high and (squared < fraction if fraction > 1 else squared > fraction)
+
+
+def nearest_fraction(shares_ratio: Decimal) -> Fraction | None:
+    """The one of :data:`SPLIT_FRACTIONS` nearest ``shares_ratio``, as a factor,
+    if it is within :data:`AGREEMENT_TOLERANCE`: what the median is snapped to."""
+    if shares_ratio <= 0:
+        return None
+    ratio = Fraction(shares_ratio)
+    nearest = min(SPLIT_FRACTIONS, key=lambda fraction: max(ratio / fraction, fraction / ratio))
+    near = max(ratio / nearest, nearest / ratio) <= Fraction(AGREEMENT_TOLERANCE)
+    return nearest if near else None
+
+
+def looks_like_split(prev_shares: Decimal, shares: Decimal, price_ratio: Decimal | None) -> bool:
+    """Whether one holder's change could be a split nobody has detected yet.
+
+    :func:`judge` needs :data:`MIN_AGREEING` holders, so the first to file a
+    quarter after a split publishes its shares as filed, unadjusted: a holder
+    of 100 that has 1,000 after a 10-for-1 is an ``add`` of 900%. This is the
+    rule for that one holder, by the detector's own tiers. Its shares moved by
+    a fraction and the price corroborates it, and below
+    :data:`MAJORITY_ENOUGH_FROM`, where trading imitates a split, its shares
+    are exact to the share. With no price ratio, exact to the share alone.
+
+    Or the price moved by :data:`OUTLIER_FACTOR` or more, either way, however
+    the shares moved. A holder that traded across a split is no fraction:
+    across NVDA's 10-for-1, Appaloosa's shares rose 56% and its price fell to
+    a seventh, a sale of five sixths of the position filed as an add; across
+    AVGO's, Caxton's fell 12%, a sale of nine tenths filed as a small trim.
+    The price is all that gives either away.
+
+    Leans the other way from :func:`judge`, since one holder can be no
+    majority. A 3-for-1 without a holder exact to the share is a split here.
+    A manager who traded a stock that lost three fifths of its price in a
+    quarter, or gained one and a half times it, is indistinguishable from one,
+    and is not told about until the split is detected, or ever, if there was
+    none.
+
+    :param price_ratio: The price the holder reported now, over the one before.
+    """
+    if prev_shares <= 0 or shares <= 0:
+        return False
+    shares_ratio = shares / prev_shares
+    if price_ratio is not None and not 1 / OUTLIER_FACTOR < price_ratio < OUTLIER_FACTOR:
+        return price_ratio > 0
+    fraction = nearest_fraction(shares_ratio)
+    if fraction is None:
+        return False
+    exact = abs(shares - prev_shares * fraction.numerator / fraction.denominator) <= EXACT_SHARES
+    if price_ratio is None:
+        return exact
+    product = price_ratio * fraction.numerator / fraction.denominator
+    if not price_corroborates(fraction, product):
+        return False
+    return exact or max(fraction, 1 / fraction) >= MAJORITY_ENOUGH_FROM
 
 
 def is_outlier(verdict: Verdict) -> bool:

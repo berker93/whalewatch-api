@@ -19,6 +19,7 @@ task                       CLI verb                    job
 ``purge_accounts``         ``purge-accounts``          app/jobs/accounts.py
 ``run_billing``            ``billing``                 app/jobs/accounts.py
 ``snapshot_metrics``       ``snapshot-metrics``        app/jobs/accounts.py
+``emit_alerts``            ``emit-alerts``             app/jobs/alerts.py
 =========================  ==========================  ==============================
 
 What a task adds is only what a message needs: arguments that are JSON
@@ -45,9 +46,11 @@ Beat sends a task, not a chain, so :func:`poll_13f` and :func:`daily_form4`
 apply them (app/jobs/schedule.py). They are not jobs: no lock and no row of
 their own, since each link takes its own job's lock and writes its own row.
 
-The exception is :func:`ping`, which checks the broker and the worker and
+The exceptions are :func:`ping`, which checks the broker and the worker and
 nothing else: a row every five minutes from the heartbeat would bury the runs
-worth reading, and a ping that needed Postgres would fail for the wrong reason.
+worth reading, and a ping that needed Postgres would fail for the wrong reason;
+and :func:`emit_alerts`, sent once per rebuild, which must never be skipped for
+a lock (app/jobs/alerts.py).
 
 Found by autodiscovery (app/jobs/celery_app.py), never imported by hand, and
 ``shared_task`` so that a task binds to whichever app is current.
@@ -60,7 +63,7 @@ import os
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, NoReturn
 
 from celery import Task, chain, shared_task
 
@@ -69,7 +72,7 @@ from app.core.logging import get_logger
 from app.core.periods import parse_period
 from app.derived.scope import Pair
 from app.ingestion.insider_discovery import new_york_today
-from app.jobs import accounts, derived, enrichment, form4, thirteen_f
+from app.jobs import accounts, alerts, derived, enrichment, form4, thirteen_f
 from app.jobs.celery_app import COMPUTE_QUEUE, INGESTION_QUEUE
 from app.jobs.retry import MAX_RETRIES, is_transient, retry_countdown
 from app.jobs.schedule import should_poll_now
@@ -97,15 +100,7 @@ def _run[T](
     except JobLocked as locked:
         return {"job": locked.job_name, "skipped": "locked"}
     except Exception as failure:
-        if not is_transient(failure):
-            raise
-        retries, error = task.request.retries, f"{type(failure).__name__}: {failure}"
-        if task.max_retries is not None and retries >= task.max_retries:
-            logger.error("task.retries_exhausted", error=error, attempts=retries + 1)
-            raise
-        countdown = retry_countdown(failure, retries)
-        logger.warning("task.retrying", error=error, attempt=retries + 1, countdown=countdown)
-        raise task.retry(exc=failure, countdown=countdown) from failure
+        _retry_or_raise(task, failure)
     return {
         "job": ran.run.job_name,
         "run_id": str(ran.run.id),
@@ -115,6 +110,20 @@ def _run[T](
         "errors": len(ran.run.errors),
         **(extra(ran.value) if extra is not None else {}),
     }
+
+
+def _retry_or_raise(task: Task[Any, Any], failure: Exception) -> NoReturn:
+    """Retry ``task`` after a transient ``failure``, with backoff, until its
+    retries run out; raise anything else, and the last, as it is."""
+    if not is_transient(failure):
+        raise failure
+    retries, error = task.request.retries, f"{type(failure).__name__}: {failure}"
+    if task.max_retries is not None and retries >= task.max_retries:
+        logger.error("task.retries_exhausted", error=error, attempts=retries + 1)
+        raise failure
+    countdown = retry_countdown(failure, retries)
+    logger.warning("task.retrying", error=error, attempt=retries + 1, countdown=countdown)
+    raise task.retry(exc=failure, countdown=countdown) from failure
 
 
 def _skipped(job_name: str, reason: str) -> Summary:
@@ -298,6 +307,39 @@ def snapshot_metrics(self: Task[Any, Any]) -> Summary:
     """``snapshot-metrics``: the admin console's signups, actives and plan mix
     for the days since the last written."""
     return _run(self, accounts.snapshot_metrics)
+
+
+# --- alerts ------------------------------------------------------------------
+
+
+@shared_task(bind=True, queue=COMPUTE_QUEUE, max_retries=MAX_RETRIES)
+def emit_alerts(
+    self: Task[Any, Any], pairs: list[list[Any]] | None = None, everything: bool = False
+) -> Summary:
+    """``emit-alerts``: the events in the pairs a rebuild touched, told.
+
+    Sent by every rebuild once it commits (app/alerts/dispatch.py), never by
+    beat. ``pairs`` are ``[filer_id, "2026-09-30"]``; ``everything`` is every
+    pair filed for recently, after ``recompute --all``.
+    """
+    if everything == (pairs is not None):
+        raise ValueError("say what to tell: pairs, or everything, which takes none")
+    scope: list[Pair] | None = (
+        None
+        if pairs is None
+        else [(int(filer_id), date.fromisoformat(day)) for filer_id, day in pairs]
+    )
+    try:
+        emitted = asyncio.run(alerts.emit_alerts(get_settings(), pairs=scope))
+    except Exception as failure:
+        _retry_or_raise(self, failure)
+    return {
+        "job": "emit-alerts",
+        "events": len(emitted.events),
+        "notifications": len(emitted.told),
+        "emails": len(emitted.emails),
+        "emails_sent": emitted.sent,
+    }
 
 
 # --- chains ------------------------------------------------------------------

@@ -184,7 +184,7 @@ from app.derived.recompute import (
     detect_splits,
 )
 from app.derived.reconcile import INVARIANTS, SAMPLE, Reconciliation, reconcile
-from app.derived.scope import Pair, Scope
+from app.derived.scope import Pair, Scope, resolve_scope
 from app.derived.security_split import SplitRebuild, Verdict, ratio_label
 from app.derived.views import MATERIALISED_VIEWS, Refreshed
 from app.ingestion.archive import (
@@ -284,8 +284,9 @@ from app.ingestion.parsers.thirteen_f_list import (
 )
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
 from app.jobs.accounts import purge_accounts, run_billing, snapshot_metrics
+from app.jobs.alerts import emit_alerts
 from app.jobs.cache import invalidate_cache
-from app.jobs.derived import recompute_positions, refresh_matviews
+from app.jobs.derived import filer_id_of, recompute_positions, refresh_matviews
 from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
 from app.jobs.errors import JobError
 from app.jobs.form4 import (
@@ -2788,6 +2789,82 @@ def _quarters(scope: Scope) -> str:
 
 
 # --- detect-splits -----------------------------------------------------------
+
+
+@app.command("emit-alerts")
+def emit_alerts_command(
+    filer: Annotated[
+        str | None,
+        typer.Option("--filer", metavar="SLUG", help="Only this filer's periods."),
+    ] = None,
+    period: Annotated[
+        date | None,
+        typer.Option(
+            "--period",
+            metavar="YYYYQN",
+            parser=_quarter_end,
+            help="Only this quarter, e.g. 2026Q1.",
+        ),
+    ] = None,
+    everything: Annotated[
+        bool,
+        typer.Option("--all", help="Every pair filed for in the last 30 days."),
+    ] = False,
+) -> None:
+    """Tell the alert rules that ask about what the published 13Fs say.
+
+    For each (filer, period) --filer and --period pick out, together or
+    alone, or with --all every one filed for in the last 30 days: the filing,
+    to rules about the filer, and each position it opened, added to, trimmed
+    or exited, split-adjusted, to rules about the filer and rules about the
+    stock. A notification for each rule that hears an event, then an email
+    where the rule emails. Suspect periods, splits not yet detected, filings
+    older than 30 days and filings made before a rule was are told nothing.
+
+    Every rebuild does this by itself once it commits, through the
+    emit_alerts task. This is for a rebuild whose message the broker could
+    not take. An event told before is not told again, so a second run writes
+    nothing.
+
+    Exits 1 if --filer names no filer, and 2 without --filer, --period or --all.
+    """
+    if everything == (filer is not None or period is not None):
+        typer.secho(
+            "error: --all tells everything recent, so it takes no --filer or --period"
+            if everything
+            else "error: say what to tell: --filer, --period, or --all",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    try:
+        asyncio.run(_emit_alerts(filer, period=period))
+    except UnknownFilerError as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+async def _emit_alerts(slug: str | None, *, period: date | None) -> None:
+    """Every recent pair when neither ``slug`` nor ``period`` is given: --all."""
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    async with track_run(settings, "emit-alerts", filer=slug, period=period) as run:
+        pairs: frozenset[Pair] | None = None
+        if slug is not None or period is not None:
+            async with session_scope(settings) as session:
+                scope = await resolve_scope(
+                    session, filer_id=await filer_id_of(session, slug), period=period
+                )
+            pairs = scope.pairs
+        emitted = await emit_alerts(settings, pairs=pairs)
+        run.items_seen = len(emitted.events)
+        run.items_written = len(emitted.told)
+        run.metrics["emails_sent"] = emitted.sent
+    typer.echo(
+        f"emit-alerts  {_count(len(emitted.events), 'event')}: "
+        f"{_count(len(emitted.told), 'notification')} written, "
+        f"{_count(emitted.sent, 'email')} sent"
+    )
 
 
 @app.command("detect-splits")

@@ -200,6 +200,8 @@ What reaches the bell and the inbox, under `/v1/me/alert-rules`. Session only; e
 
 **Defaults.** Following an investor on a plan with `alerts_instant` turns on its two presets as far as `alert_rules` has room (the follow itself is never refused for it). On Free it makes the season digest (bell and email) if there is none; one turned off stays off. Following a stock or an insider turns nothing on.
 
+**When alerts fire (ALR-5).** A 13F is told minutes after it is published, by a worker, never in the request that asked. `filer_filed` is once per investor and quarter (a restatement is not told again). Each position it opened, added to, trimmed or exited is a `filer_position_change` to those following the investor, and a `stock_ownership_change` to those following the stock; someone following both is told once, as the investor's. At most 10 changes per filing per user, the largest. Nothing fires for a suspect filing, for a split the data hasn't confirmed yet (the change is told once it is, split-adjusted), for a filing over 30 days old, or for a rule made after the filing. `insider_cluster` and `season_digest` don't fire yet. Besides the six keys, a change's `payload` has `cusip`, `action` (`new`, `add`, `trim`, `exit`), `shares_delta`, `shares_delta_pct` and `split_ratio` (decimal strings or `null`), and `implied_price`, which is `null` when `confidence` is `low`: don't show a low-confidence price. `delta` is the dollars traded, signed. A filing's `payload` adds `positions` and `value_usd`.
+
 `toggleWatch` has to know whether the ref is held. Read it from the watchlist the app already has in the query cache, or fetch it:
 
 ```ts
