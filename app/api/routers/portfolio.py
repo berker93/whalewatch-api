@@ -333,7 +333,7 @@ def _portfolio_keyset(positions: Subquery, sort: PortfolioSort, order: SortOrder
 def portfolio_query(
     filer_id: FilerId,
     period: PeriodEnd,
-    page: PageParams,
+    page: PageParams | None,
     *,
     sort: PortfolioSort = PortfolioSort.WEIGHT,
     order: SortOrder = SortOrder.DESC,
@@ -416,7 +416,7 @@ ACTIVITY_KEYSET: Final = Keyset(
 
 def activity_query(
     filer_id: FilerId,
-    page: PageParams,
+    page: PageParams | None,
     *,
     start: date | None = None,
     end: date | None = None,

@@ -356,7 +356,9 @@ async def _owners_period(
     return period
 
 
-def owners_query(security_id: SecurityId, period: PeriodEnd, page: PageParams) -> Select[Any]:
+def owners_query(
+    security_id: SecurityId, period: PeriodEnd, page: PageParams | None
+) -> Select[Any]:
     """One page of the stock's holders in ``period``, named and with the
     estimates (:mod:`app.api.estimates`), in :data:`OWNERS_KEYSET` order.
 

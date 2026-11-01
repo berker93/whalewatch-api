@@ -270,14 +270,21 @@ async def paginate(
     return page_of(rows, keyset, params)
 
 
-def page_statement(statement: Select[Any], keyset: Keyset, params: PageParams) -> Select[Any]:
+def page_statement(
+    statement: Select[Any], keyset: Keyset, params: PageParams | None
+) -> Select[Any]:
     """:func:`paginate`'s query, unexecuted: ``statement``'s rows for one page, and one more.
 
     For a listing that joins something per row it returns, which should be
     joined to the page rather than to every row the page is cut from. Wrap
     this in a CTE, join to that, restore the order with
     ``keyset.order_by(on=cte)``, and hand what it returns to :func:`page_of`.
+
+    ``params`` None is every row, in the same order: what a CSV export
+    (:mod:`app.api.csv_export`) streams, so it is the listing's own rows.
     """
+    if params is None:
+        return statement.order_by(*keyset.order_by())
     if params.cursor is not None:
         statement = statement.where(keyset.after(position(params.cursor, keyset)))
     return statement.order_by(*keyset.order_by()).limit(params.limit + 1)

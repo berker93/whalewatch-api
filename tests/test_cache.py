@@ -470,6 +470,12 @@ def test_every_public_read_is_cached() -> None:
         # With no `tz`, the answer is in the signed-in user's zone.
         "/v1/timeline",
         "/v1/timeline/upcoming",
+        # Streamed, so there is no answer to keep, and each one is counted.
+        "/v1/investors/{slug}/portfolio.csv",
+        "/v1/investors/{slug}/activity.csv",
+        "/v1/stocks/{ticker}/owners.csv",
+        "/v1/flows.csv",
+        "/v1/insiders/transactions.csv",
     }
     reads = {
         path: route

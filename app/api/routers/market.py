@@ -380,7 +380,7 @@ _SORTED_BY: Final[dict[FlowSort, tuple[str, type[Decimal] | type[int]]]] = {
 def flows_query(
     flows: TableClause,
     period: PeriodEnd,
-    page: PageParams,
+    page: PageParams | None,
     *,
     sort: FlowSort = FlowSort.NET_VALUE,
     order: SortOrder = SortOrder.DESC,
@@ -513,6 +513,41 @@ FlowMetricParam = Annotated[
         )
     ),
 ]
+SectorParam = Annotated[
+    str | None,
+    Query(
+        description=(
+            "Not available yet: no source of sectors is loaded, so every stock's "
+            "`sector` is null, and asking for one is a 422 rather than an empty page."
+        )
+    ),
+]
+MinInvestorsParam = Annotated[
+    int | None,
+    Query(ge=0, description="Only stocks held by at least this many filers at the period end."),
+]
+MinValueParam = Annotated[
+    Decimal | None,
+    Query(
+        ge=0,
+        description="Only stocks the filers hold at least this many dollars of at the period end.",
+    ),
+]
+DirectionParam = Annotated[
+    Direction | None,
+    Query(description="`buy`: net bought (`net_value_usd` above zero). `sell`: net sold."),
+]
+FlowSortParam = Annotated[
+    FlowSort,
+    Query(
+        description=(
+            "`net_value`, `gross_bought`, `gross_sold`, `buyers`, `sellers`, "
+            "`new_positions`, `exits`, `holders`, or `value_held`. Ties go to the "
+            "larger holding."
+        )
+    ),
+]
+FlowOrderParam = Annotated[SortOrder, Query(description="Largest first by default.")]
 _NOT_PUBLISHED = not_found("Nothing published for the period.")
 
 
@@ -677,52 +712,16 @@ async def read_flows(
     entitled: EntitlementContextDep,
     period: PeriodParam = None,
     period_type: PeriodTypeParam = PeriodType.QUARTER,
-    sector: Annotated[
-        str | None,
-        Query(
-            description=(
-                "Not available yet: no source of sectors is loaded, so every stock's "
-                "`sector` is null, and asking for one is a 422 rather than an empty page."
-            )
-        ),
-    ] = None,
-    min_investors: Annotated[
-        int | None,
-        Query(ge=0, description="Only stocks held by at least this many filers at the period end."),
-    ] = None,
-    min_value: Annotated[
-        Decimal | None,
-        Query(
-            ge=0,
-            description=(
-                "Only stocks the filers hold at least this many dollars of at the period end."
-            ),
-        ),
-    ] = None,
-    direction: Annotated[
-        Direction | None,
-        Query(description="`buy`: net bought (`net_value_usd` above zero). `sell`: net sold."),
-    ] = None,
-    sort: Annotated[
-        FlowSort,
-        Query(
-            description=(
-                "`net_value`, `gross_bought`, `gross_sold`, `buyers`, `sellers`, "
-                "`new_positions`, `exits`, `holders`, or `value_held`. Ties go to the "
-                "larger holding."
-            )
-        ),
-    ] = FlowSort.NET_VALUE,
-    order: Annotated[SortOrder, Query(description="Largest first by default.")] = SortOrder.DESC,
+    sector: SectorParam = None,
+    min_investors: MinInvestorsParam = None,
+    min_value: MinValueParam = None,
+    direction: DirectionParam = None,
+    sort: FlowSortParam = FlowSort.NET_VALUE,
+    order: FlowOrderParam = SortOrder.DESC,
 ) -> Envelope[StockFlow]:
     """Every stock traded or held through the period that passes the filters,
     paginated. Exits included: a stock every holder sold has no holders left."""
-    if sector is not None:
-        raise invalid(
-            "sector",
-            "Screening by sector is not available yet: no source of sectors is "
-            "loaded, so no stock has one. Leave sector out.",
-        )
+    refuse_sector(sector)
     flows = FLOWS[period_type]
     period = await _period(
         session, flows, period, what="flows", entitled=entitled, quarters=_quarters(period_type)
@@ -741,6 +740,17 @@ async def read_flows(
     envelope = await _flows_envelope(session, rows, period, period_type)
     envelope.page = page_info
     return envelope
+
+
+def refuse_sector(sector: str | None) -> None:
+    """422 for ``?sector=``: no stock has one yet, and an empty page would say
+    no stock in the sector traded."""
+    if sector is not None:
+        raise invalid(
+            "sector",
+            "Screening by sector is not available yet: no source of sectors is "
+            "loaded, so no stock has one. Leave sector out.",
+        )
 
 
 async def _flows_envelope(

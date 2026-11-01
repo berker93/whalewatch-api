@@ -209,7 +209,7 @@ DEFAULT_FILTERS: Final = Filters()
 
 
 def transactions_query(
-    page: PageParams,
+    page: PageParams | None,
     filters: Filters = DEFAULT_FILTERS,
     *,
     security_id: SecurityId | None = None,

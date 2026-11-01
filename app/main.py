@@ -58,6 +58,7 @@ from app.api.routers import (
     auth,
     billing,
     email,
+    exports,
     filings,
     health,
     insiders,
@@ -238,7 +239,17 @@ def create_app(settings: Settings) -> FastAPI:
     app.include_router(
         filings.router, responses={**RATE_LIMITED, **METERED}, dependencies=[MeteredDep]
     )
-    for router in (investors, portfolio, stocks, insiders, market, search, meta, timeline):
+    for router in (
+        investors,
+        portfolio,
+        stocks,
+        insiders,
+        market,
+        search,
+        meta,
+        timeline,
+        exports,
+    ):
         app.include_router(
             router.router,
             prefix="/v1",

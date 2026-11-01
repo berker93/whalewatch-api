@@ -4261,6 +4261,1044 @@
         }
       }
     },
+    "/v1/investors/{slug}/portfolio.csv": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "One investor's positions in one period, as a CSV file",
+        "description": "Every position `GET /v1/investors/{slug}/portfolio` pages through, with\nthe same parameters, in the same order, as\n`berkshire-hathaway_2026Q3_holdings.csv`. `filed_at` is the investor's\nlatest filing for the period; the `#` lines name what `meta.caveats` would.\nNeeds `export_enabled`.",
+        "operationId": "exportInvestorPortfolio",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`.",
+              "examples": [
+                "berkshire-hathaway"
+              ],
+              "title": "Slug"
+            },
+            "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`."
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for this investor, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for this investor, which `meta.period` states."
+          },
+          {
+            "name": "include_options",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Add the period's option lines, one row per security and `put_call`. Their value is the notional of the underlying, so they have no weight, and weights stay shares of the common-stock portfolio.",
+              "default": false,
+              "title": "Include Options"
+            },
+            "description": "Add the period's option lines, one row per security and `put_call`. Their value is the notional of the underlying, so they have no weight, and weights stay shares of the common-stock portfolio."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PortfolioSort",
+              "description": "`weight` (the same order as `value`, with option lines after stock), `value`, `shares`, or `change`: `shares_delta_pct`, with new positions as the largest increase and option lines last.",
+              "default": "weight"
+            },
+            "description": "`weight` (the same order as `value`, with option lines after stock), `value`, `shares`, or `change`: `shares_delta_pct`, with new positions as the largest increase and option lines last."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Largest first by default.",
+              "default": "desc"
+            },
+            "description": "Largest first by default."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file: UTF-8 with a BOM, a block of `#` lines, a header row, then every row. `Content-Disposition: attachment` names it.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No investor with that slug, or nothing published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/investors/{slug}/activity.csv": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "What one investor opened, added to, trimmed and exited, as a CSV file",
+        "description": "Every change `GET /v1/investors/{slug}/activity` pages through, with the\nsame parameters, in the same order, as\n`berkshire-hathaway_2025Q4-2026Q3_activity.csv`, the quarters the rows span.\n`filed_at` is the investor's latest filing for the row's period. Needs\n`export_enabled`.",
+        "operationId": "exportInvestorActivity",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`.",
+              "examples": [
+                "berkshire-hathaway"
+              ],
+              "title": "Slug"
+            },
+            "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first quarter to include, as `2026Q1` or `2026-03-31`.",
+              "title": "From"
+            },
+            "description": "The first quarter to include, as `2026Q1` or `2026-03-31`."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last quarter to include, as `2026Q1` or `2026-03-31`.",
+              "title": "To"
+            },
+            "description": "The last quarter to include, as `2026Q1` or `2026-03-31`."
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "new,exit"
+                ]
+              ],
+              "title": "Action"
+            },
+            "description": "Any of `new`, `add`, `trim`, `hold`, `exit`, comma-separated or repeated. Every action but `hold` by default."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file: UTF-8 with a BOM, a block of `#` lines, a header row, then every row. `Content-Disposition: attachment` names it.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No investor with that slug.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stocks/{ticker}/owners.csv": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Every tracked investor holding one stock in one period, as a CSV file",
+        "description": "Every holder `GET /v1/stocks/{ticker}/owners` pages through, in the same\norder, as `aapl_2026Q3_holders.csv`. `filed_at` is each holder's latest\nfiling for the period. Needs `export_enabled`.",
+        "operationId": "exportStockOwners",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter.",
+              "examples": [
+                "AAPL",
+                "037833100"
+              ],
+              "title": "Ticker"
+            },
+            "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter."
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for any investor, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for any investor, which `meta.period` states."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file: UTF-8 with a BOM, a block of `#` lines, a header row, then every row. `Content-Disposition: attachment` names it.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP, with suggestions; or nothing published for the period, without.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/StockNotFound"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ],
+                  "title": "Response 404 Exportstockowners"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/flows.csv": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "The screener's stocks, as a CSV file",
+        "description": "Every stock `GET /v1/flows` pages through, with the same filters, in the\nsame order, as `screener_2026Q3_flows.csv` (`screener_2025Q4-2026Q3_flows.csv`\nfor a year). `filed_at` is the newest filing the period's figures include,\nand the `#` lines say when the aggregates were refreshed. Needs\n`export_enabled`.",
+        "operationId": "exportFlows",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`, or with `period_type=year` the last of the year's four. Defaults to the latest one published, which `meta.period` states."
+          },
+          {
+            "name": "period_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PeriodType",
+              "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up.",
+              "default": "quarter"
+            },
+            "description": "`quarter`, or `year`: the four quarters ending at `period`, which `meta.quarters` names. A filer is counted once however many of them it traded in, and the dollars are the four quarters' added up."
+          },
+          {
+            "name": "sector",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Not available yet: no source of sectors is loaded, so every stock's `sector` is null, and asking for one is a 422 rather than an empty page.",
+              "title": "Sector"
+            },
+            "description": "Not available yet: no source of sectors is loaded, so every stock's `sector` is null, and asking for one is a 422 rather than an empty page."
+          },
+          {
+            "name": "min_investors",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only stocks held by at least this many filers at the period end.",
+              "title": "Min Investors"
+            },
+            "description": "Only stocks held by at least this many filers at the period end."
+          },
+          {
+            "name": "min_value",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0.0
+                },
+                {
+                  "type": "string",
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only stocks the filers hold at least this many dollars of at the period end.",
+              "title": "Min Value"
+            },
+            "description": "Only stocks the filers hold at least this many dollars of at the period end."
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Direction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`buy`: net bought (`net_value_usd` above zero). `sell`: net sold.",
+              "title": "Direction"
+            },
+            "description": "`buy`: net bought (`net_value_usd` above zero). `sell`: net sold."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/FlowSort",
+              "description": "`net_value`, `gross_bought`, `gross_sold`, `buyers`, `sellers`, `new_positions`, `exits`, `holders`, or `value_held`. Ties go to the larger holding.",
+              "default": "net_value"
+            },
+            "description": "`net_value`, `gross_bought`, `gross_sold`, `buyers`, `sellers`, `new_positions`, `exits`, `holders`, or `value_held`. Ties go to the larger holding."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Largest first by default.",
+              "default": "desc"
+            },
+            "description": "Largest first by default."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file: UTF-8 with a BOM, a block of `#` lines, a header row, then every row. `Content-Disposition: attachment` names it.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/insiders/transactions.csv": {
+      "get": {
+        "tags": [
+          "exports"
+        ],
+        "summary": "Insiders' Form 4 trades, as a CSV file",
+        "description": "Every line `GET /v1/insiders/transactions` pages through, with the same\nfilters, in the same order: open-market purchases and sales unless `code`\nsays otherwise, which the `#` lines state. As\n`insiders_2026-05-01-to-2026-11-01_trades.csv`, or `nvda_...` for one stock.\n`as_of_period` is the trade day and `filed_at` the Form 4's; a reported\nprice has no `confidence`. Needs `export_enabled`.",
+        "operationId": "exportInsiderTransactions",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its issuer's lines no security could be linked to are included.",
+              "title": "Ticker"
+            },
+            "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its issuer's lines no security could be linked to are included."
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "P,S"
+                ]
+              ],
+              "title": "Code"
+            },
+            "description": "Transaction codes, comma-separated or repeated: `P` open-market purchase, `S` open-market sale, `A` grant, `M` option exercise, `F` tax withholding, `G` gift, `C` conversion, and the SEC's others. `all` for every code. **Defaults to `P,S`**, which `meta.codes` and `meta.codes_default` state."
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "director"
+                ]
+              ],
+              "title": "Role"
+            },
+            "description": "Only insiders who checked any of these on the filing: `director`, `officer`, `ten_percent_owner`, `other`. Comma-separated or repeated."
+          },
+          {
+            "name": "min_value",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0.0
+                },
+                {
+                  "type": "string",
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only lines worth at least this many dollars. A line with no value (a grant, a gift, a price given only as a range) is left out.",
+              "title": "Min Value"
+            },
+            "description": "Only lines worth at least this many dollars. A line with no value (a grant, a gift, a price given only as a range) is left out."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first trade day to include, `2026-06-01`.",
+              "title": "From"
+            },
+            "description": "The first trade day to include, `2026-06-01`."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last trade day to include, `2026-06-30`.",
+              "title": "To"
+            },
+            "description": "The last trade day to include, `2026-06-30`."
+          },
+          {
+            "name": "exclude_10b5_1",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Leave out trades made under a Rule 10b5-1 plan, which was set up months before and says nothing about what the insider thinks now.",
+              "default": false,
+              "title": "Exclude 10B5 1"
+            },
+            "description": "Leave out trades made under a Rule 10b5-1 plan, which was set up months before and says nothing about what the insider thinks now."
+          },
+          {
+            "name": "insider_cik",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "0001197647"
+                ]
+              ],
+              "title": "Insider Cik"
+            },
+            "description": "Only these insiders, by CIK, comma-separated or repeated, with or without the leading zeros. Combine with `code=all` for everything they filed. A joint filing's lines are under its first owner's CIK."
+          },
+          {
+            "name": "filed_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first day, in UTC, the filing reached EDGAR, `2026-06-01`. Unlike `from`, which is the trade day: a late filing for an old trade is in.",
+              "title": "Filed From"
+            },
+            "description": "The first day, in UTC, the filing reached EDGAR, `2026-06-01`. Unlike `from`, which is the trade day: a late filing for an old trade is in."
+          },
+          {
+            "name": "filed_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last day, in UTC, the filing reached EDGAR, `2026-06-30`.",
+              "title": "Filed To"
+            },
+            "description": "The last day, in UTC, the filing reached EDGAR, `2026-06-30`."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/InsiderSort",
+              "description": "`date`, the trade day (the default), or `value`, in dollars.",
+              "default": "date"
+            },
+            "description": "`date`, the trade day (the default), or `value`, in dollars."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Newest or largest first by default.",
+              "default": "desc"
+            },
+            "description": "Newest or largest first by default."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file: UTF-8 with a BOM, a block of `#` lines, a header row, then every row. `Content-Disposition: attachment` names it.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/auth/login": {
       "post": {
         "tags": [
@@ -17694,10 +18732,11 @@
               "alert_rules",
               "api_calls_month",
               "mcp_calls_month",
-              "alerts_instant"
+              "alerts_instant",
+              "export_enabled"
             ],
             "title": "Limit",
-            "description": "The entitlement that stopped the request: `history_quarters` (a period before the caller's window), `insider_months` (a trade day before it), `watchlist_items`, `screener_saved_filters` or `alert_rules` (that many saved already, or on), `api_calls_month` or `mcp_calls_month` (the plan has no calls: 0), `alerts_instant` (an alert other than the season digest, which the plan does not send: a flag, so `allowed` 0 and `needed` 1).",
+            "description": "The entitlement that stopped the request: `history_quarters` (a period before the caller's window), `insider_months` (a trade day before it), `watchlist_items`, `screener_saved_filters` or `alert_rules` (that many saved already, or on), `api_calls_month` or `mcp_calls_month` (the plan has no calls: 0), `alerts_instant` (an alert other than the season digest, which the plan does not send), `export_enabled` (a CSV export). The last two are flags, so `allowed` 0 and `needed` 1.",
             "examples": [
               "history_quarters"
             ]
@@ -17863,7 +18902,7 @@
               }
             ],
             "title": "Value",
-            "description": "Its value of `limit`: a whole number, or null for no limit. For a flag (`alerts_instant`), 1: on.",
+            "description": "Its value of `limit`: a whole number, or null for no limit. For a flag (`alerts_instant`, `export_enabled`), 1: on.",
             "examples": [
               20
             ]

@@ -26,7 +26,7 @@ from app.derived.recompute import recompute
 from app.derived.scope import EVERYTHING
 from app.derived.views import refresh_views
 from tests.fake_redis import FakeRedis
-from tests.integration.accounts import make_user, sign_in
+from tests.integration.accounts import make_user, sign_in, subscribe
 from tests.integration.test_admin import admin_in, make_admin
 
 Q1: Final = date(2024, 3, 31)
@@ -114,9 +114,11 @@ async def test_every_endpoint_answers_200(
 ) -> None:
     app.dependency_overrides[get_redis] = lambda: _ReadyRedis()
     await _publish_two_quarters(db_session)
-    # Signed in, so /v1/account and /v1/watchlist answer too; and as an admin,
-    # so the console's pages do, the account's included.
+    # Signed in, so /v1/account and /v1/watchlist answer too; on Pro, so the
+    # CSV exports do; and as an admin, so the console's pages do, the
+    # account's included.
     user_id = await make_user(db_session)
+    await subscribe(db_session, user_id, "pro")
     await sign_in(client)
     app.state.admin_sessions = admin_store(FakeRedis(), settings)  # type: ignore[arg-type]
     await make_admin(db_session)

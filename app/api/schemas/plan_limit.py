@@ -25,7 +25,7 @@ class PlanOffer(BaseModel):
     value: int | None = Field(
         description=(
             "Its value of `limit`: a whole number, or null for no limit. For a flag "
-            "(`alerts_instant`), 1: on."
+            "(`alerts_instant`, `export_enabled`), 1: on."
         ),
         examples=[20],
     )
@@ -43,6 +43,7 @@ class PlanLimitDetail(BaseModel):
         "api_calls_month",
         "mcp_calls_month",
         "alerts_instant",
+        "export_enabled",
     ] = Field(
         description=(
             "The entitlement that stopped the request: `history_quarters` (a period "
@@ -50,7 +51,8 @@ class PlanLimitDetail(BaseModel):
             "`watchlist_items`, `screener_saved_filters` or `alert_rules` (that many "
             "saved already, or on), `api_calls_month` or `mcp_calls_month` (the plan "
             "has no calls: 0), `alerts_instant` (an alert other than the season "
-            "digest, which the plan does not send: a flag, so `allowed` 0 and `needed` 1)."
+            "digest, which the plan does not send), `export_enabled` (a CSV export). The "
+            "last two are flags, so `allowed` 0 and `needed` 1."
         ),
         examples=["history_quarters"],
     )
