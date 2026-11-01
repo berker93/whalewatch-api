@@ -66,6 +66,8 @@ LIMIT_KEYS: Final = (
     "alert_rules",
     "api_calls_month",
     "mcp_calls_month",
+    "export_rows",
+    "exports_month",
 )
 
 #: Entitlements that are on or off.

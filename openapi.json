@@ -4354,7 +4354,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -4526,7 +4526,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -4704,7 +4704,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -4883,7 +4883,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -5023,7 +5023,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -5172,7 +5172,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -5414,7 +5414,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -5649,7 +5649,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -5956,7 +5956,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -6264,7 +6264,7 @@
             }
           },
           "429": {
-            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "description": "`rate_limited`: too many requests from this address, or the hour's exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent, or the month's exports on a plan that limits them; `detail.limit` says which, and `resets_at` when it resets.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until a request will be answered.",
@@ -11838,7 +11838,7 @@
           "key": {
             "type": "string",
             "title": "Key",
-            "description": "`api_calls_month` or `mcp_calls_month`.",
+            "description": "`api_calls_month`, `mcp_calls_month` or `exports_month`.",
             "examples": [
               "api_calls_month"
             ]
@@ -11855,7 +11855,7 @@
           "count": {
             "type": "integer",
             "title": "Count",
-            "description": "Calls counted.",
+            "description": "Calls, or exports, counted.",
             "examples": [
               8125
             ]
@@ -14569,7 +14569,7 @@
           "key": {
             "type": "string",
             "title": "Key",
-            "description": "`api_calls_month` or `mcp_calls_month`.",
+            "description": "`api_calls_month`, `mcp_calls_month` or `exports_month`.",
             "examples": [
               "api_calls_month"
             ]
@@ -14586,7 +14586,7 @@
           "count": {
             "type": "integer",
             "title": "Count",
-            "description": "Calls counted, as last written from the live counter.",
+            "description": "Calls, or exports, counted, as last written from the live counter.",
             "examples": [
               8125
             ]
@@ -18432,10 +18432,40 @@
               0
             ]
           },
+          "export_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Rows",
+            "description": "The most rows one export may hold: a table with more is a 402. Null: no limit but the 1,048,575 a worksheet holds, for an `.xlsx`.",
+            "examples": [
+              0
+            ]
+          },
+          "exports_month": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exports Month",
+            "description": "Exports a month. Null: no limit, though at most 20 are taken in any hour. 0: none.",
+            "examples": [
+              0
+            ]
+          },
           "export_enabled": {
             "type": "boolean",
             "title": "Export Enabled",
-            "description": "CSV export of tables.",
+            "description": "CSV and Excel export of tables.",
             "examples": [
               false
             ]
@@ -18467,6 +18497,8 @@
           "alert_rules",
           "api_calls_month",
           "mcp_calls_month",
+          "export_rows",
+          "exports_month",
           "export_enabled",
           "alerts_instant",
           "mcp_enabled"
@@ -19775,11 +19807,13 @@
               "alert_rules",
               "api_calls_month",
               "mcp_calls_month",
+              "export_rows",
+              "exports_month",
               "alerts_instant",
               "export_enabled"
             ],
             "title": "Limit",
-            "description": "The entitlement that stopped the request: `history_quarters` (a period before the caller's window), `insider_months` (a trade day before it), `watchlist_items`, `screener_saved_filters` or `alert_rules` (that many saved already, or on), `api_calls_month` or `mcp_calls_month` (the plan has no calls: 0), `alerts_instant` (an alert other than the season digest, which the plan does not send), `export_enabled` (a CSV export). The last two are flags, so `allowed` 0 and `needed` 1.",
+            "description": "The entitlement that stopped the request: `history_quarters` (a period before the caller's window), `insider_months` (a trade day before it), `watchlist_items`, `screener_saved_filters` or `alert_rules` (that many saved already, or on), `api_calls_month`, `mcp_calls_month` or `exports_month` (the plan has none: 0), `export_rows` (an export of more rows than the plan's), `alerts_instant` (an alert other than the season digest, which the plan does not send), `export_enabled` (a CSV or Excel export). The last two are flags, so `allowed` 0 and `needed` 1.",
             "examples": [
               "history_quarters"
             ]
@@ -19795,7 +19829,7 @@
           "needed": {
             "type": "integer",
             "title": "Needed",
-            "description": "What the request needed it to be: quarters or months back from today, counting the current one, or one more than is saved; 1 for a flag.",
+            "description": "What the request needed it to be: quarters or months back from today, counting the current one, one more than is saved, or the export's rows; 1 for a flag.",
             "examples": [
               9
             ]
@@ -20641,7 +20675,8 @@
             "type": "string",
             "enum": [
               "api_calls_month",
-              "mcp_calls_month"
+              "mcp_calls_month",
+              "exports_month"
             ],
             "title": "Limit",
             "description": "The quota spent, by its entitlement's name.",
@@ -20660,7 +20695,7 @@
           "used": {
             "type": "integer",
             "title": "Used",
-            "description": "Calls counted this month: all of it.",
+            "description": "Calls, or exports, counted this month: all of it.",
             "examples": [
               10000
             ]
@@ -20762,7 +20797,7 @@
           "used": {
             "type": "integer",
             "title": "Used",
-            "description": "Calls counted this quota month.",
+            "description": "Calls, or exports, counted this quota month.",
             "examples": [
               8125
             ]
@@ -23130,12 +23165,17 @@
           "mcp_calls_month": {
             "$ref": "#/components/schemas/QuotaUsage",
             "description": "Calls made through the MCP server."
+          },
+          "exports_month": {
+            "$ref": "#/components/schemas/QuotaUsage",
+            "description": "CSV and Excel files taken, signed in or with an API key. `limit` null: no monthly limit, only the hourly one."
           }
         },
         "type": "object",
         "required": [
           "api_calls_month",
-          "mcp_calls_month"
+          "mcp_calls_month",
+          "exports_month"
         ],
         "title": "Usage",
         "description": "What the account has spent of each monthly quota.\n\nA count is at most a few minutes behind for an account whose calls are\nbeing counted on several servers at once, and exact otherwise."

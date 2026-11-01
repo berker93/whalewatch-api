@@ -10,7 +10,7 @@ from app.api.schemas.error import Problem, ProblemError
 from app.api.schemas.plan_limit import PlanOffer
 from app.db.models.usage import MAX_KEY_NAME
 
-Metered = Literal["api_calls_month", "mcp_calls_month"]
+Metered = Literal["api_calls_month", "mcp_calls_month", "exports_month"]
 
 
 # --- usage ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ Metered = Literal["api_calls_month", "mcp_calls_month"]
 class QuotaUsage(BaseModel):
     """One quota's month: spent, allowed, and when it starts again."""
 
-    used: int = Field(description="Calls counted this quota month.", examples=[8125])
+    used: int = Field(description="Calls, or exports, counted this quota month.", examples=[8125])
     limit: int | None = Field(
         description="The plan's quota a month: 0 for none, null for no limit.", examples=[10000]
     )
@@ -47,6 +47,12 @@ class Usage(BaseModel):
 
     api_calls_month: QuotaUsage = Field(description="Requests made with the account's API keys.")
     mcp_calls_month: QuotaUsage = Field(description="Calls made through the MCP server.")
+    exports_month: QuotaUsage = Field(
+        description=(
+            "CSV and Excel files taken, signed in or with an API key. `limit` null: "
+            "no monthly limit, only the hourly one."
+        )
+    )
 
 
 # --- the 429 -------------------------------------------------------------------------
@@ -59,7 +65,9 @@ class QuotaDetail(BaseModel):
         description="The quota spent, by its entitlement's name.", examples=["api_calls_month"]
     )
     allowed: int = Field(description="The month's quota.", examples=[10000])
-    used: int = Field(description="Calls counted this month: all of it.", examples=[10000])
+    used: int = Field(
+        description="Calls, or exports, counted this month: all of it.", examples=[10000]
+    )
     resets_at: datetime = Field(
         description="When the next month starts, as `X-RateLimit-Reset` says in seconds.",
         examples=["2026-11-14T00:00:00Z"],

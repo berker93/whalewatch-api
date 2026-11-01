@@ -163,10 +163,11 @@ class AdminUsageMonth(BaseModel):
     """One quota month of one metered thing, as last flushed."""
 
     key: str = Field(
-        description="`api_calls_month` or `mcp_calls_month`.", examples=["api_calls_month"]
+        description="`api_calls_month`, `mcp_calls_month` or `exports_month`.",
+        examples=["api_calls_month"],
     )
     period: date = Field(description="The quota month's first day.", examples=["2026-10-14"])
-    count: int = Field(description="Calls counted.", examples=[8125])
+    count: int = Field(description="Calls, or exports, counted.", examples=[8125])
     warned_at: datetime | None = Field(
         description="When the 80% email went that month.", examples=[None]
     )

@@ -265,8 +265,8 @@ def quota_warning(
         kind=EmailKind.QUOTA_WARNING,
         subject=f"You've used 80% of this month's WhaleWatch {what}",
         blocks=(
-            f"Your WhaleWatch account has made {used:,} of the {limit:,} {what} its plan "
-            f"allows this month. Once all {limit:,} are made, further calls are refused "
+            f"Your WhaleWatch account has used {used:,} of the {limit:,} {what} its plan "
+            f"allows this month. Once all {limit:,} are used, further ones are refused "
             f"until the month starts again on {resets_on:%d %B %Y}.",
             "Your usage, and the plans with more, are on your account page.",
             Button("Open your account", f"{settings.web_url}{ACCOUNT_PATH}"),

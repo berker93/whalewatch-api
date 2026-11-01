@@ -63,6 +63,8 @@ KEY_PREFIX: Final = "ww:rl:"
 AUTH_KEY_PREFIX: Final = "ww:rl:auth:"
 #: Logins, registrations and resets, per IP and per email (app.api.auth.limit_attempts).
 ATTEMPTS_KEY_PREFIX: Final = "ww:rl:attempts:"
+#: CSV and Excel exports, per account (app.api.routers.exports).
+EXPORT_KEY_PREFIX: Final = "ww:rl:export:"
 
 #: The load balancer's and the orchestrator's probes, which come from a few
 #: addresses many times a minute and would spend those addresses' budgets;

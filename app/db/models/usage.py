@@ -36,7 +36,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.models.base import Base
 
 #: The limits counted per month, by the plan entitlement that bounds them.
-METERED_KEYS: Final = ("api_calls_month", "mcp_calls_month")
+METERED_KEYS: Final = ("api_calls_month", "mcp_calls_month", "exports_month")
 
 METERED_KEY_CHECK: Final = "key IN ({})".format(", ".join(f"'{key}'" for key in METERED_KEYS))
 

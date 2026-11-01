@@ -151,6 +151,12 @@ class Settings(BaseSettings):
     # per client IP per minute, on top of rate_limit_per_minute.
     auth_rate_limit_per_minute: int = Field(default=10, ge=1)
 
+    # CSV and Excel exports per account (per client IP signed out) in any
+    # hour, whatever the plan: abuse protection, not a plan limit. Each export
+    # reads a whole table, so a script taking them in a loop is many listings'
+    # worth of database at once.
+    export_rate_limit_per_hour: int = Field(default=20, ge=1)
+
     # Whether POST /v1/auth/register makes an account. Closed, it records the
     # request (signup_request) and starts no session, as the frontend's
     # FEATURES.signupsOpen promises; `create-user` makes accounts by hand.

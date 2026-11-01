@@ -5,7 +5,8 @@ key (:data:`app.api.auth.ApiCallerDep`) is counted against its plan's
 ``api_calls_month`` before the route runs, in Redis (:mod:`app.accounts.usage`).
 A request without one is not counted: the website's own calls, signed in or
 not, spend nothing. The MCP server's calls are counted the same way against
-``mcp_calls_month``, by :func:`spend` with that key.
+``mcp_calls_month``, by :func:`spend` with that key, and so is every export
+against ``exports_month`` (:mod:`app.api.routers.exports`), whoever takes it.
 
 What a keyed request is told
 ----------------------------
@@ -49,7 +50,6 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.accounts import entitlements
-from app.accounts.api_keys import KeyHolder
 from app.accounts.delivery import Courier
 from app.accounts.entitlements import Grant
 from app.accounts.mail import quota_warning
@@ -130,18 +130,34 @@ def quota_headers(spent: Spent) -> dict[str, str]:
     }
 
 
+class Holder(Protocol):
+    """An account and its grant: a viewer, an API key's caller, or an account
+    an admin is looking at (:class:`app.admin.users.Subject`)."""
+
+    @property
+    def user(self) -> AppUser: ...
+
+    @property
+    def grant(self) -> Grant | None: ...
+
+
 async def spend(
     request: Request,
     background: BackgroundTasks,
     courier: Courier,
-    caller: KeyHolder,
+    caller: Holder,
     key: MeteredKey,
     session: AsyncSession,
     settings: Settings,
+    *,
+    headers: bool = True,
 ) -> Spent | None:
     """Count one ``key`` for ``caller``'s account, or refuse the request.
     None when nothing could count it.
 
+    :param headers: Whether the answer says where the month stands in
+        ``X-RateLimit-*``. Only one quota can, so an export, which a keyed
+        request also spends a call on, does not.
     :raises ApiError: 402 ``plan_limit`` for a plan with none of ``key``,
         429 ``quota_exceeded`` for a month with none left.
     """
@@ -165,7 +181,7 @@ async def spend(
     except (RedisError, OSError) as exc:
         logger.warning("usage.unavailable", error=repr(exc))
         return None
-    headers = quota_headers(spent)
+    said = quota_headers(spent) if headers else {}
     if not spent.admitted:
         assert spent.limit is not None  # no limit is never refused
         logger.info("usage.refused", key=key, used=spent.used, limit=spent.limit)
@@ -182,9 +198,10 @@ async def spend(
                 resets_at=period.resets_at,
                 plan=plan,
             ),
-            headers={**headers, "retry-after": str(period.seconds_left(at))},
+            headers={**said, "retry-after": str(period.seconds_left(at))},
         )
-    setattr(request.state, QUOTA_HEADERS, headers)
+    if headers:
+        setattr(request.state, QUOTA_HEADERS, said)
     if spent.warn:
         await _warn(meter, background, courier, caller, key, spent, session, settings)
     return spent
@@ -194,7 +211,7 @@ async def _warn(
     meter: UsageMeter,
     background: BackgroundTasks,
     courier: Courier,
-    caller: KeyHolder,
+    caller: Holder,
     key: MeteredKey,
     spent: Spent,
     session: AsyncSession,
@@ -230,22 +247,11 @@ async def _warn(
     )
 
 
-class Holder(Protocol):
-    """An account and its grant: a viewer, an API key's caller, or an account
-    an admin is looking at (:class:`app.admin.users.Subject`)."""
-
-    @property
-    def user(self) -> AppUser: ...
-
-    @property
-    def grant(self) -> Grant | None: ...
-
-
 async def usage_of(meter: UsageMeter | None, session: AsyncSession, who: Holder) -> Usage:
     """What ``who``'s account has spent of each quota this month: what the
     account page shows before the 429 does."""
     period = quota_period(anchor_of(who.user, entitlements.live_grant(who)), now())
-    keys: list[MeteredKey] = ["api_calls_month", "mcp_calls_month"]
+    keys: list[MeteredKey] = ["api_calls_month", "mcp_calls_month", "exports_month"]
     if meter is None:
         used = {key: await stored_count(session, who.user.id, key, period.start) for key in keys}
     else:
@@ -261,7 +267,11 @@ async def usage_of(meter: UsageMeter | None, session: AsyncSession, who: Holder)
             resets_at=period.resets_at,
         )
 
-    return Usage(api_calls_month=quota("api_calls_month"), mcp_calls_month=quota("mcp_calls_month"))
+    return Usage(
+        api_calls_month=quota("api_calls_month"),
+        mcp_calls_month=quota("mcp_calls_month"),
+        exports_month=quota("exports_month"),
+    )
 
 
 async def spend_api_call(

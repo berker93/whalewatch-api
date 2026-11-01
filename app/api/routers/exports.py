@@ -20,13 +20,33 @@ returns, an :class:`Export`, is written as CSV by :mod:`app.api.csv_export`
 and as a workbook by :mod:`app.api.xlsx_export`, so the two files of a surface
 have the same rows, the same columns and the same provenance.
 
-Who may
--------
-``export_enabled`` (Pro and the API plans), for either format: without it, a
-402 ``plan_limit`` before anything is read. Each export is counted on its UTC day for the
-account that took it (``user_activity_day.data_exports``), which the admin
-console shows. Not cached: a file is one person's and taken once, and it is
-streamed, so there is no answer to keep.
+Who may, and how much
+---------------------
+Every export takes :data:`AllowanceDep`, which asks, in this order:
+
+1. ``export_enabled`` (Pro and the API plans), for either format: without it,
+   a 402 ``plan_limit`` before anything is read. Signed out is Free, so the
+   same 402, never a 401 or 403: what the website shows for it is the plan
+   that has export, which the refusal names.
+2. The listing's own checks: a 404, a 422, a period before the plan's window.
+3. ``export_rows``, the plan's most rows in one file: a table with more is a
+   402 ``plan_limit`` naming how many it has and the plan that takes them.
+   Counted before the file starts, so it is a refusal, not a file cut short.
+4. :attr:`~app.core.config.Settings.export_rate_limit_per_hour` (20) exports
+   an hour per account, whatever its plan: a 429 ``rate_limited`` with
+   ``Retry-After``. Abuse protection, so a setting, not an entitlement.
+5. ``exports_month``, counted in the account's quota month
+   (:mod:`app.accounts.usage`) and kept in ``usage_counter``, which
+   ``GET /v1/me`` shows the account page. No limit on any paid plan today;
+   one set by an UPDATE is a 429 ``quota_exceeded`` once spent, as an API
+   key's calls are.
+
+Only an export that passed all of them is counted or limited: a refusal
+spends nothing. Each is also counted on its UTC day for the account that took
+it (``user_activity_day.data_exports``), which the admin console shows. Redis
+down lets an export through unlimited and uncounted, as it lets API calls.
+Not cached: a file is one person's and taken once, and it is streamed, so
+there is no answer to keep.
 
 Provenance
 ----------
@@ -59,27 +79,38 @@ from datetime import date, datetime
 from typing import Annotated, Any, Final
 from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 from fastapi.responses import StreamingResponse
+from redis.exceptions import RedisError
 from sqlalchemy import Row, Select, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncResult, AsyncSession
 
 from app.accounts import activity
 from app.accounts.api_keys import KeyHolder
+from app.accounts.delivery import Courier
 from app.accounts.sessions import Viewer, now
 from app.api import methodology
 from app.api.csv_export import CSV_FILE, Column, Kind, csv_response, filename, stream_rows
-from app.api.deps import SessionDep, SettingsDep
-from app.api.entitlements import PLAN_LIMITED, EntitlementContext, EntitlementContextDep
-from app.api.errors import INVALID, invalid, not_found
+from app.api.deps import CourierDep, SessionDep, SettingsDep
+from app.api.entitlements import (
+    PLAN_LIMITED,
+    EntitlementContext,
+    EntitlementContextDep,
+    plan_limit_error,
+)
+from app.api.errors import INVALID, ApiError, Responses, invalid, not_found
 from app.api.meta import period_meta
+from app.api.metering import METERED, spend
+from app.api.rate_limit import SlidingWindowLimiter, bucket
 from app.api.routers import insiders, market, portfolio, stocks
 from app.api.routers.investors import SlugParam
 from app.api.schemas.envelope import Coverage
-from app.api.schemas.error import Problem
+from app.api.schemas.error import ErrorCode, Problem
 from app.api.schemas.insider import CODE_LABELS, Role
 from app.api.schemas.stock import StockNotFound
 from app.api.xlsx_export import XLSX_FILE, Section, xlsx_response
+from app.core.config import Settings
+from app.core.logging import get_logger
 from app.core.periods import quarter_label
 from app.db.models import Filer, FilerCik, Filing
 from app.db.models.implied_price import ImpliedPrice
@@ -87,6 +118,8 @@ from app.db.models.position_change import ChangeAction, PositionChange
 from app.db.queries.amendments import period_concerns
 from app.db.queries.effective import EFFECTIVE_FILING
 from app.derived.views import CONSENSUS_HOLDINGS
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["exports"])
 
@@ -197,18 +230,134 @@ class Export:
         )
 
 
-def _require_export(entitled: EntitlementContext) -> None:
-    """402 unless the caller's plan has ``export_enabled``."""
+@dataclass(frozen=True, slots=True)
+class Allowance:
+    """What lets the caller take an export, and takes it: the plan's flag,
+    checked when the dependency is resolved, and its rows, the hour's limit
+    and the month's count in :meth:`take`, once the rows are known."""
+
+    request: Request
+    background: BackgroundTasks
+    courier: Courier
+    session: AsyncSession
+    settings: Settings
+    entitled: EntitlementContext
+
+    async def take(self, statement: Select[Any]) -> None:
+        """Refuse an export of ``statement``'s rows, or count it. Commits,
+        before the cursor opens its own transaction.
+
+        :raises PlanLimitError: 402, more rows than the plan's ``export_rows``.
+        :raises ApiError: 429, the hour's exports or the month's taken.
+        """
+        await self._rows(statement)
+        await self._hour()
+        who = self.entitled.viewer
+        if isinstance(who, Viewer | KeyHolder):
+            await spend(
+                self.request,
+                self.background,
+                self.courier,
+                who,
+                "exports_month",
+                self.session,
+                self.settings,
+                headers=False,
+            )
+            await activity.count_export(self.session, who.user.id, now())
+            await self.session.commit()
+
+    async def _rows(self, statement: Select[Any]) -> None:
+        """402 when ``statement`` has more rows than the plan exports.
+
+        Counted up to one past the cap, with no order, so a plain listing stops
+        there; one built on window functions (activity) is read whole either
+        way, about a third of its own query's time. The whole count only for a
+        refusal, to say how many it has.
+        """
+        cap = self.entitled.limit("export_rows")
+        if cap is None:
+            return
+        unordered = statement.order_by(None)
+        over = await self.session.scalar(_count(unordered.limit(cap + 1)))
+        if not over or over <= cap:
+            return
+        rows = await self.session.scalar(_count(unordered)) or over
+        raise plan_limit_error(
+            "export_rows",
+            allowed=cap,
+            needed=rows,
+            message=(
+                f"Your plan exports up to {cap:,} rows at once, and this table has "
+                f"{rows:,}. Narrow it with a filter or a shorter range."
+            ),
+        )
+
+    async def _hour(self) -> None:
+        """429 when the caller has taken the hour's exports. Per account, or
+        per address signed out; nothing to count with, nothing refused."""
+        limiter: SlidingWindowLimiter | None = getattr(
+            self.request.app.state, "export_limiter", None
+        )
+        if limiter is None:
+            return
+        who = self.entitled.viewer
+        if isinstance(who, Viewer | KeyHolder):
+            client = f"user:{who.user.id}"
+        elif self.request.client is not None:
+            client = f"ip:{bucket(self.request.client.host)}"
+        else:
+            return
+        try:
+            decision = await limiter.hit(client)
+        except (RedisError, OSError) as exc:
+            logger.warning("export_limit.unavailable", error=repr(exc))
+            return
+        if not decision.admitted:
+            hours = limiter.window_ms // 3_600_000
+            raise ApiError(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                ErrorCode.RATE_LIMITED,
+                f"Too many exports: at most {limiter.limit} "
+                f"{'an hour' if hours == 1 else f'in {hours} hours'}. "
+                f"Try again in {decision.retry_after} seconds.",
+                headers={"retry-after": str(decision.retry_after)},
+            )
+
+
+def _count(statement: Select[Any]) -> Select[tuple[int]]:
+    return select(func.count()).select_from(statement.subquery("counted"))
+
+
+async def allowance(
+    request: Request,
+    background: BackgroundTasks,
+    courier: CourierDep,
+    session: SessionDep,
+    settings: SettingsDep,
+    entitled: EntitlementContextDep,
+) -> Allowance:
+    """The caller's :class:`Allowance`: 402 unless the plan has ``export_enabled``."""
     entitled.require_flag("export_enabled", message="Exporting is not on your plan.")
+    return Allowance(request, background, courier, session, settings, entitled)
 
 
-async def _count_export(session: AsyncSession, entitled: EntitlementContext) -> None:
-    """Count the export for the account taking it, and commit, before the
-    cursor opens its own transaction."""
-    who = entitled.viewer
-    if isinstance(who, Viewer | KeyHolder):
-        await activity.count_export(session, who.user.id, now())
-        await session.commit()
+AllowanceDep = Annotated[Allowance, Depends(allowance)]
+
+#: What every export documents beside its own refusals: the metered routes'
+#: 429, which an export's two limits answer too.
+LIMITED: Final[Responses] = {
+    **PLAN_LIMITED,
+    status.HTTP_429_TOO_MANY_REQUESTS: {
+        **METERED[status.HTTP_429_TOO_MANY_REQUESTS],
+        "description": (
+            "`rate_limited`: too many requests from this address, or the hour's "
+            "exports are taken; wait `Retry-After` seconds. `quota_exceeded`: the API "
+            "key's month of calls is spent, or the month's exports on a plan that "
+            "limits them; `detail.limit` says which, and `resets_at` when it resets."
+        ),
+    },
+}
 
 
 def _label(period: date | None) -> str | None:
@@ -367,13 +516,13 @@ async def portfolio_export(
     session: SessionDep,
     settings: SettingsDep,
     entitled: EntitlementContextDep,
+    allowed: AllowanceDep,
     period: portfolio.PeriodParam = None,
     include_options: portfolio.IncludeOptions = False,
     sort: portfolio.SortParam = portfolio.PortfolioSort.WEIGHT,
     order: portfolio.OrderParam = portfolio.SortOrder.DESC,
 ) -> Export:
     """``GET /v1/investors/{slug}/portfolio``'s every row, as an :class:`Export`."""
-    _require_export(entitled)
     entitled.require_period(period)
     filer_id, period = await portfolio._portfolio_period(session, slug, period, entitled)
     meta = await period_meta(session, period, filer_id=filer_id)
@@ -389,7 +538,7 @@ async def portfolio_export(
         include_options=include_options,
         history_from=entitled.history_from,
     )
-    await _count_export(session, entitled)
+    await allowed.take(statement)
 
     label = quarter_label(period)
     columns = (
@@ -420,7 +569,7 @@ async def portfolio_export(
 
 PORTFOLIO_RESPONSES: Final = {
     **not_found("No investor with that slug, or nothing published for the period."),
-    **PLAN_LIMITED,
+    **LIMITED,
     **INVALID,
 }
 
@@ -465,12 +614,12 @@ async def activity_export(
     session: SessionDep,
     settings: SettingsDep,
     entitled: EntitlementContextDep,
+    allowed: AllowanceDep,
     start: portfolio.RangeStart = None,
     end: portfolio.RangeEnd = None,
     action: portfolio.ActionsParam = None,
 ) -> Export:
     """``GET /v1/investors/{slug}/activity``'s every row, as an :class:`Export`."""
-    _require_export(entitled)
     if start is not None and end is not None and start > end:
         raise invalid("from", f"from ({quarter_label(start)}) is after to ({quarter_label(end)}).")
     entitled.require_period(start)
@@ -503,7 +652,7 @@ async def activity_export(
         else _coverage((await period_meta(session, last)).coverage, quarter_label(last))
     )
     edgar = await _filer_on_edgar(session, filer_id)
-    await _count_export(session, entitled)
+    await allowed.take(statement)
 
     span = (
         "no quarters"
@@ -569,7 +718,7 @@ def _activity_span(
     )
 
 
-ACTIVITY_RESPONSES: Final = {**not_found("No investor with that slug."), **PLAN_LIMITED, **INVALID}
+ACTIVITY_RESPONSES: Final = {**not_found("No investor with that slug."), **LIMITED, **INVALID}
 
 
 @router.get(
@@ -614,10 +763,10 @@ async def owners_export(
     session: SessionDep,
     settings: SettingsDep,
     entitled: EntitlementContextDep,
+    allowed: AllowanceDep,
     period: stocks.PeriodParam = None,
 ) -> Export:
     """``GET /v1/stocks/{ticker}/owners``'s every row, as an :class:`Export`."""
-    _require_export(entitled)
     entitled.require_period(period)
     security = await stocks._resolve(session, ticker, on=period)
     period = await stocks._owners_period(session, period, entitled)
@@ -631,7 +780,7 @@ async def owners_export(
     )
     label = quarter_label(period)
     coverage = _coverage((await period_meta(session, period)).coverage, label)
-    await _count_export(session, entitled)
+    await allowed.take(statement)
 
     shown = security.ticker or security.cusip
     columns = (
@@ -664,7 +813,7 @@ OWNERS_RESPONSES: Final = {
         "published for the period, without.",
         StockNotFound | Problem,
     ),
-    **PLAN_LIMITED,
+    **LIMITED,
     **INVALID,
 }
 
@@ -706,6 +855,7 @@ async def flows_export(
     session: SessionDep,
     settings: SettingsDep,
     entitled: EntitlementContextDep,
+    allowed: AllowanceDep,
     period: market.PeriodParam = None,
     period_type: market.PeriodTypeParam = market.PeriodType.QUARTER,
     sector: market.SectorParam = None,
@@ -716,7 +866,6 @@ async def flows_export(
     order: market.FlowOrderParam = portfolio.SortOrder.DESC,
 ) -> Export:
     """``GET /v1/flows``'s every row, as an :class:`Export`."""
-    _require_export(entitled)
     market.refuse_sector(sector)
     flows = market.FLOWS[period_type]
     period = await market._period(
@@ -753,7 +902,7 @@ async def flows_export(
         )
         .order_by(*keyset.order_by(on=listed))
     )
-    await _count_export(session, entitled)
+    await allowed.take(statement)
 
     label = quarter_label(period)
     quarters = meta.quarters
@@ -793,7 +942,7 @@ async def flows_export(
 
 FLOWS_RESPONSES: Final = {
     **not_found("Nothing published for the period."),
-    **PLAN_LIMITED,
+    **LIMITED,
     **INVALID,
 }
 
@@ -883,6 +1032,7 @@ async def insider_transactions_export(
     session: SessionDep,
     settings: SettingsDep,
     entitled: EntitlementContextDep,
+    allowed: AllowanceDep,
     ticker: insiders.FeedTickerParam = None,
     code: insiders.CodesParam = None,
     role: insiders.RolesParam = None,
@@ -897,7 +1047,6 @@ async def insider_transactions_export(
     order: insiders.OrderParam = portfolio.SortOrder.DESC,
 ) -> Export:
     """``GET /v1/insiders/transactions``'s every line, as an :class:`Export`."""
-    _require_export(entitled)
     filters = insiders._filters(
         code,
         role,
@@ -923,7 +1072,7 @@ async def insider_transactions_export(
         if security is None
         else await session.scalar(insiders._issuer_ciks(security.id).limit(1))
     )
-    await _count_export(session, entitled)
+    await allowed.take(statement)
 
     first = filters.start or filters.trades_from
     last = filters.end or entitled.today
@@ -954,7 +1103,7 @@ INSIDER_RESPONSES: Final = {
         "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
         StockNotFound,
     ),
-    **PLAN_LIMITED,
+    **LIMITED,
     **INVALID,
 }
 

@@ -86,6 +86,8 @@ LimitKey = Literal[
     "alert_rules",
     "api_calls_month",
     "mcp_calls_month",
+    "export_rows",
+    "exports_month",
 ]
 """An entitlement that is a number of something: :func:`limit`."""
 

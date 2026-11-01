@@ -42,6 +42,8 @@ class PlanLimitDetail(BaseModel):
         "alert_rules",
         "api_calls_month",
         "mcp_calls_month",
+        "export_rows",
+        "exports_month",
         "alerts_instant",
         "export_enabled",
     ] = Field(
@@ -49,10 +51,11 @@ class PlanLimitDetail(BaseModel):
             "The entitlement that stopped the request: `history_quarters` (a period "
             "before the caller's window), `insider_months` (a trade day before it), "
             "`watchlist_items`, `screener_saved_filters` or `alert_rules` (that many "
-            "saved already, or on), `api_calls_month` or `mcp_calls_month` (the plan "
-            "has no calls: 0), `alerts_instant` (an alert other than the season "
-            "digest, which the plan does not send), `export_enabled` (a CSV export). The "
-            "last two are flags, so `allowed` 0 and `needed` 1."
+            "saved already, or on), `api_calls_month`, `mcp_calls_month` or "
+            "`exports_month` (the plan has none: 0), `export_rows` (an export of more "
+            "rows than the plan's), `alerts_instant` (an alert other than the season "
+            "digest, which the plan does not send), `export_enabled` (a CSV or Excel "
+            "export). The last two are flags, so `allowed` 0 and `needed` 1."
         ),
         examples=["history_quarters"],
     )
@@ -66,7 +69,8 @@ class PlanLimitDetail(BaseModel):
     needed: int = Field(
         description=(
             "What the request needed it to be: quarters or months back from today, "
-            "counting the current one, or one more than is saved; 1 for a flag."
+            "counting the current one, one more than is saved, or the export's rows; "
+            "1 for a flag."
         ),
         examples=[9],
     )

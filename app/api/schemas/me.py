@@ -83,7 +83,20 @@ class MeEntitlements(BaseModel):
     mcp_calls_month: int | None = Field(
         description="Calls through the MCP server a month. 0: none.", examples=[0]
     )
-    export_enabled: bool = Field(description="CSV export of tables.", examples=[False])
+    export_rows: int | None = Field(
+        description=(
+            "The most rows one export may hold: a table with more is a 402. Null: no "
+            "limit but the 1,048,575 a worksheet holds, for an `.xlsx`."
+        ),
+        examples=[0],
+    )
+    exports_month: int | None = Field(
+        description=(
+            "Exports a month. Null: no limit, though at most 20 are taken in any hour. 0: none."
+        ),
+        examples=[0],
+    )
+    export_enabled: bool = Field(description="CSV and Excel export of tables.", examples=[False])
     alerts_instant: bool = Field(
         description=(
             "Every kind of alert, sent as it happens. Without it, the season digest is "

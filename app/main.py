@@ -46,6 +46,7 @@ from app.api.middleware import (
 from app.api.rate_limit import (
     ATTEMPTS_KEY_PREFIX,
     AUTH_KEY_PREFIX,
+    EXPORT_KEY_PREFIX,
     RateLimitMiddleware,
     SlidingWindowLimiter,
 )
@@ -111,6 +112,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.auth_attempt_limit,
         settings.auth_attempt_window_seconds,
         prefix=ATTEMPTS_KEY_PREFIX,
+    )
+    app.state.export_limiter = SlidingWindowLimiter(
+        app.state.redis,
+        settings.export_rate_limit_per_hour,
+        60 * 60,
+        prefix=EXPORT_KEY_PREFIX,
     )
     app.state.sessions = SessionStore(app.state.redis)
     # The admin console's, under other keys: a user's cookie names none of them.

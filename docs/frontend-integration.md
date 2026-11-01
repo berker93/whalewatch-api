@@ -364,7 +364,7 @@ The current quarter is the one that ended most recently in `tz`; `meta.period` a
 
 `GET /v1/me` is the one call an app page needs before it renders: `user` (`email`, `name`, `time_zone`, `email_verified`, `email_verified_at`, `created_at`, `last_seen_at`), `plan` (`{ id, name }`: `free`, `pro`, `api_hobbyist` or `api_pro`; `free` without a subscription) and `entitlements`. Gate the follow buttons on `entitlements.save`, not on `email_verified`.
 
-`entitlements` is every capability the account has, resolved: `save` (verified email), the limits `history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters`, `alert_rules`, `api_calls_month` and `mcp_calls_month` (a whole number, or `null` for no limit), and the flags `export_enabled`, `alerts_instant` and `mcp_enabled`. They are rows in the database, changed without a release, so read them from here and never write a plan's numbers into the page. A change to a plan reaches a signed-in session within about a minute, and a change to one account's subscription within five. The API enforces `history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters`, `alert_rules`, `alerts_instant` and `export_enabled` (a `402 plan_limit` when one stops a request), and `api_calls_month` on requests made with an API key (§5b); `mcp_calls_month` and `mcp_enabled` have no endpoint yet. `export_enabled` gates the downloads beside five listings, each as `.csv` and `.xlsx` with the listing's own parameters: `/v1/investors/{slug}/portfolio`, `/v1/investors/{slug}/activity`, `/v1/stocks/{ticker}/owners`, `/v1/flows` and `/v1/insiders/transactions`. The response is the file itself, named by its `Content-Disposition: attachment`.
+`entitlements` is every capability the account has, resolved: `save` (verified email), the limits `history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters`, `alert_rules`, `api_calls_month`, `mcp_calls_month`, `export_rows` and `exports_month` (a whole number, or `null` for no limit), and the flags `export_enabled`, `alerts_instant` and `mcp_enabled`. They are rows in the database, changed without a release, so read them from here and never write a plan's numbers into the page. A change to a plan reaches a signed-in session within about a minute, and a change to one account's subscription within five. The API enforces `history_quarters`, `insider_months`, `watchlist_items`, `screener_saved_filters`, `alert_rules`, `alerts_instant`, `export_enabled` and `export_rows` (a `402 plan_limit` when one stops a request), `api_calls_month` on requests made with an API key (§5b), and `exports_month` (§5c); `mcp_calls_month` and `mcp_enabled` have no endpoint yet. `export_enabled` gates the downloads beside five listings, each as `.csv` and `.xlsx` with the listing's own parameters: `/v1/investors/{slug}/portfolio`, `/v1/investors/{slug}/activity`, `/v1/stocks/{ticker}/owners`, `/v1/flows` and `/v1/insiders/transactions`. The response is the file itself, named by its `Content-Disposition: attachment`. Its limits and the button's states are §5c.
 
 `remember: false` gives a cookie without `Max-Age`, which ends with the browser, and a server-side session of 12 hours. `remember: true` gives 30 days.
 
@@ -489,6 +489,23 @@ A key only reads data. It is not a session, so the account, the watchlist and th
 **What a program sees.** Every keyed answer carries `X-RateLimit-Limit` (the month's quota), `X-RateLimit-Remaining` and `X-RateLimit-Reset` (Unix seconds). These replace the per-minute headers of the same names. A spent month is `429 quota_exceeded` with `Remaining: 0`, `Retry-After` (the seconds to the reset) and `detail { limit, allowed, used, resets_at, plan }`. A key whose plan has no calls (a lapsed subscription) is `402 plan_limit`. An unknown or revoked key is `401 invalid_api_key`.
 
 At 80% of a month's quota the account gets one email: once per month, never twice.
+
+### 5c · Exports: who may, and how much (EXP-3)
+
+**The button.** Show the export button on every table that has one, on every plan. Disable its look, not its click, when `entitlements.export_enabled` is false: Free sees it, greyed, with a lock, and clicking it opens the upgrade sheet for `pro`. Signed out is Free.
+
+**Never a bare link.** Fetch the file (`credentials: 'include'`), then save the blob under the `Content-Disposition` name. A plain `<a href>` would show a refusal as a page of JSON. Every refusal is JSON with an `error.code`:
+
+| Status | `code` | When | Show |
+|---|---|---|---|
+| `402` | `plan_limit`, `detail.limit: "export_enabled"` | The plan has no export (Free, signed out) | The upgrade sheet, offering `detail.plan` |
+| `402` | `plan_limit`, `detail.limit: "export_rows"` | The table has more rows than the plan exports: `detail.allowed` is the plan's, `detail.needed` the table's | "This table has 148,000 rows; Pro exports up to 100,000. Narrow it with a filter." Offer `detail.plan` when it is not the current plan |
+| `429` | `rate_limited` | 20 exports in the last hour, per account | "Too many exports. Try again in N minutes", from `Retry-After` (seconds) |
+| `429` | `quota_exceeded`, `detail.limit: "exports_month"` | The month's exports, only on a plan given a monthly limit. None has one today | "This month's N exports are used; they reset on `detail.resets_at`" |
+
+A `402` is never silent: whichever limit it names, show what `error.message` says or the sheet. Refusals are checked before the file starts, so a `200` is always the whole table. A refused export is not counted and spends none of the hour.
+
+**On the account page.** `usage.exports_month` is `{ used, limit, remaining, period_start, resets_at }`, as the API quotas are: every export taken this month, CSV or Excel, on the site or with an API key. `limit` is `null` on every paid plan, so show "12 exports this month · no limit" with no meter, and "resets 23 November" from `resets_at`. Free's is `0`: show the row as not included. `entitlements.export_rows` is the per-file row cap, for the plans table.
 
 ---
 

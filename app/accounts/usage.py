@@ -1,9 +1,11 @@
 """Monthly quotas: what each account spends, counted in Redis and kept in Postgres.
 
-Two things are metered, each bounded by the plan entitlement of its name:
+Three things are metered, each bounded by the plan entitlement of its name:
 ``api_calls_month``, the requests made with the account's API keys
-(:mod:`app.api.metering`), and ``mcp_calls_month``, the calls made through the
-MCP server, which counts them the same way when it exists.
+(:mod:`app.api.metering`); ``mcp_calls_month``, the calls made through the
+MCP server, which counts them the same way when it exists; and
+``exports_month``, the CSV and Excel files the account takes
+(:mod:`app.api.routers.exports`), whichever way it asks for them.
 
 The quota month
 ---------------
@@ -73,7 +75,7 @@ from app.db.models import METERED_KEYS, AppUser, UsageCounter
 
 logger = get_logger(__name__)
 
-MeteredKey = Literal["api_calls_month", "mcp_calls_month"]
+MeteredKey = Literal["api_calls_month", "mcp_calls_month", "exports_month"]
 """A limit counted per quota month."""
 
 # The table's keys and the type's must be one list.
@@ -83,6 +85,7 @@ assert set(get_args(MeteredKey)) == set(METERED_KEYS)
 QUOTA_NAMES: Final[dict[str, str]] = {
     "api_calls_month": "API calls",
     "mcp_calls_month": "MCP calls",
+    "exports_month": "exports",
 }
 
 #: The share of a month's quota whose spending sends the warning email.
