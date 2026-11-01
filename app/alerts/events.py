@@ -33,7 +33,8 @@ is not adjusted and looks like a split to
 split is detected, ``recompute`` rebuilds every change across it and names
 those pairs too, and the adjusted change is told then, if it is news at all.
 
-**Unheard.** Only the filers and stocks some rule that is on is about. A
+**Unheard.** Only the filers and stocks some rule that is on is about, and
+the investors on the watchlist of someone whose season digest is on. A
 season is a few hundred thousand changes, and a few hundred are followed.
 
 **Old news.** Only pairs whose latest filing was filed in the last
@@ -63,7 +64,19 @@ from fractions import Fraction
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import ColumnElement, Select, and_, exists, func, or_, select, true, tuple_
+from sqlalchemy import (
+    BigInteger,
+    ColumnElement,
+    Select,
+    and_,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+    true,
+    tuple_,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.periods import quarter_label
@@ -77,6 +90,7 @@ from app.db.models import (
     PositionChange,
     PositionSnapshot,
     Security,
+    WatchlistItem,
 )
 from app.db.models.filing import ParseStatus
 from app.db.models.implied_price import PriceConfidence
@@ -179,11 +193,24 @@ async def read_events(
 
 
 async def _followed(session: AsyncSession) -> tuple[frozenset[int], frozenset[int]]:
-    """The filers, and the stocks, some rule that is on is about."""
+    """The filers, and the stocks, some rule that is on is about; and the
+    investors a digest that is on counts, its owner's watchlist's."""
+    digested = (
+        select(WatchlistItem.filer_id, literal(None, BigInteger).label("security_id"))
+        .join(
+            AlertRule,
+            and_(
+                AlertRule.user_id == WatchlistItem.user_id,
+                AlertRule.kind == AlertKind.SEASON_DIGEST.value,
+                AlertRule.is_active.is_(true()),
+            ),
+        )
+        .where(WatchlistItem.filer_id.is_not(None))
+    )
     rows = await session.execute(
         select(AlertRule.filer_id, AlertRule.security_id)
         .where(AlertRule.is_active.is_(true()))
-        .distinct()
+        .union(digested)
     )
     filers: set[int] = set()
     securities: set[int] = set()
@@ -343,6 +370,7 @@ def _filed(pair: _Published, counted: Counter[str]) -> Event:
             as_of=_filed_on(pair.filed_at),
             positions=pair.positions,
             value_usd=f"{pair.value_usd:.2f}",
+            filer_name=pair.filer_name,
         ),
     )
 

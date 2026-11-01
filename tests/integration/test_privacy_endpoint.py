@@ -267,6 +267,9 @@ async def test_the_export_is_everything_held_and_no_secret(
     assert body["format"] == "whalewatch-export/1"
     assert body["account"]["email"] == "ada@example.com"
     assert body["account"]["time_zone"] == "Europe/London"
+    assert body["account"]["quiet_time_zone"] == "Europe/London"
+    assert body["account"]["quiet_start"] == "22:00"
+    assert body["account"]["quiet_end"] == "08:00"
     assert body["watchlist"]["investors"][0]["slug"] == "berkshire-hathaway"
     assert [c["purpose"] for c in body["consents"]] == [
         "account",
@@ -428,6 +431,8 @@ async def test_the_purge_erases_the_account_and_the_audit_row_survives(
         "user_activity_day": 0,
         "alert_rule": 1,
         "notification": 1,
+        "alert_outbox": 0,
+        "alert_delivery": 0,
         "email_log": 0,
     }
 

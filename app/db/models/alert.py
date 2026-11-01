@@ -8,6 +8,13 @@
 ``notification``
     One thing one user was told. Written by the jobs that see events happen,
     never by a request; a request only marks it read.
+``alert_outbox``
+    One thing waiting to be emailed: a notification of a rule that emails,
+    held for its batch, or a filing for the season digest. Settled once it
+    goes, or once it no longer may.
+``alert_delivery``
+    One alert email that went, a batch or a digest, or a digest that went to
+    the bell only: what the daily cap counts, and when the last digest was.
 
 **``dedupe_key`` is the whole idempotency story.** It names the event, not
 the write: ``filer_filed:berkshire:2026Q3`` is Berkshire's 13F for 2026Q3
@@ -38,6 +45,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Text,
     UniqueConstraint,
     desc,
@@ -257,4 +265,131 @@ class Notification(Base):
             desc("id"),
             postgresql_where=text("read_at IS NULL"),
         ),
+    )
+
+
+class Route(StrEnum):
+    """How an outbox item is emailed."""
+
+    INSTANT = "instant"
+    """In the next batch: a notification of a rule that emails."""
+    DIGEST = "digest"
+    """In the next digest: a filing for the season digest, or an instant item
+    that found the day's emails spent."""
+
+
+class DeliveryKind(StrEnum):
+    BATCH = "batch"
+    """The instant items of one window, in one email."""
+    DIGEST = "digest"
+    """The evening's digest: the season's filings and the day's overflow."""
+
+
+class AlertOutbox(Base):
+    """One thing waiting to be emailed, drawn as it was when it was queued."""
+
+    __tablename__ = "alert_outbox"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app_user.id", ondelete="CASCADE"))
+
+    rule_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("alert_rule.id", ondelete="CASCADE")
+    )
+    """The rule it is for: whose channels and list it goes by when it goes. A
+    deleted rule takes what it had waiting with it."""
+
+    route: Mapped[str] = mapped_column(Text)
+    """One :class:`Route` value."""
+
+    kind: Mapped[str] = mapped_column(Text)
+    """The :class:`AlertKind` it is drawn as: a season item is a ``filer_filed``."""
+
+    title: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+    dedupe_key: Mapped[str] = mapped_column(Text)
+    """The notification's for an instant item; ``season_digest:`` and the
+    filing's for a season item, so a re-emission queues neither twice."""
+
+    filed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """For a season item, when the filing was filed: what "filed today" counts."""
+
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    """When it was queued: a batch's window opens at its first item's."""
+
+    delivery_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("alert_delivery.id", ondelete="CASCADE")
+    )
+    """The email or digest it went in. Null while waiting, and when dropped."""
+
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When it went or was dropped (its rule off, its address unverified). Null while waiting."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "route IN ({})".format(", ".join(f"'{route}'" for route in Route)),
+            name="route_is_known",
+        ),
+        CheckConstraint(KIND_CHECK, name="kind_is_known"),
+        CheckConstraint(
+            "delivery_id IS NULL OR settled_at IS NOT NULL", name="delivered_is_settled"
+        ),
+        UniqueConstraint("user_id", "dedupe_key", name="uq_alert_outbox_user_id_dedupe_key"),
+        # What is waiting, by user, oldest first: every run of the sender reads it.
+        Index(
+            "ix_alert_outbox_waiting",
+            "user_id",
+            "queued_at",
+            postgresql_where=text("settled_at IS NULL"),
+        ),
+        Index("ix_alert_outbox_rule_id", "rule_id"),
+        Index("ix_alert_outbox_delivery_id", "delivery_id"),
+    )
+
+
+class AlertDelivery(Base):
+    """One batch or digest that went: by email, to the bell, or both."""
+
+    __tablename__ = "alert_delivery"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app_user.id", ondelete="CASCADE"))
+
+    kind: Mapped[str] = mapped_column(Text)
+    """One :class:`DeliveryKind` value."""
+
+    local_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    """The user's wall clock when it went, in their quiet zone then: the day
+    the cap counts it in. A wall clock, so a later change of zone does not
+    move it into another day."""
+
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    items: Mapped[int] = mapped_column(Integer)
+
+    emailed: Mapped[bool] = mapped_column(Boolean)
+    """Whether an email was asked for: what the cap counts. False for a digest
+    that went to the bell only."""
+
+    email_status: Mapped[str | None] = mapped_column(Text)
+    """What the courier said: an :class:`~app.db.models.EmailStatus` value.
+    Null until it has, and when nothing was emailed."""
+
+    notification_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("notification.id", ondelete="SET NULL")
+    )
+    """A digest's own entry in the bell, when its rule rings it."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ({})".format(", ".join(f"'{kind}'" for kind in DeliveryKind)),
+            name="kind_is_known",
+        ),
+        CheckConstraint("items > 0", name="delivers_something"),
+        CheckConstraint("emailed OR email_status IS NULL", name="only_an_email_has_a_status"),
+        Index("ix_alert_delivery_user_id", "user_id", "local_at"),
     )

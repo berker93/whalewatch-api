@@ -58,6 +58,8 @@ from app.db.models import (
     BASES,
     AccountDeletion,
     AccountToken,
+    AlertDelivery,
+    AlertOutbox,
     AlertRule,
     ApiKey,
     AppUser,
@@ -308,6 +310,8 @@ _CASCADED: Final = (
     UserActivityDay,
     AlertRule,
     Notification,
+    AlertOutbox,
+    AlertDelivery,
     EmailLog,
 )
 

@@ -13,12 +13,16 @@ class EmailSubscription(BaseModel):
     mailing_list: str = Field(
         description=(
             "The list: `alert_rule:<id>` for one alert's emails (the season digest is "
-            "one), or `product_email` / `marketing_email`."
+            "one), `alert_email` for every alert's (a batch or digest drawn from more "
+            "than one), or `product_email` / `marketing_email`."
         ),
         examples=["alert_rule:42"],
     )
-    kind: Literal["alert_rule", "product_email", "marketing_email"] = Field(
-        description="What kind of list: one alert's emails, or a kind of email from WhaleWatch.",
+    kind: Literal["alert_rule", "alert_email", "product_email", "marketing_email"] = Field(
+        description=(
+            "What kind of list: one alert's emails, every alert's, or a kind of email "
+            "from WhaleWatch."
+        ),
         examples=["alert_rule"],
     )
     label: str = Field(

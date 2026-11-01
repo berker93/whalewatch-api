@@ -7,12 +7,20 @@ each send, never earlier, so no email queued before it goes after it.
 """
 
 from dataclasses import dataclass
+from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts import privacy
-from app.accounts.unsubscribe import PURPOSE_LABELS, PURPOSES, ListKind, MailingList, alert_label
+from app.accounts.unsubscribe import (
+    ALERT_EMAIL_LABEL,
+    PURPOSE_LABELS,
+    PURPOSES,
+    ListKind,
+    MailingList,
+    alert_label,
+)
 from app.db.models import AlertKind, AlertRule, AppUser, Channel, ConsentSource, Filer, Security
 
 
@@ -49,11 +57,37 @@ async def standing(session: AsyncSession, user_id: int, mailing_list: MailingLis
         label = alert_label(AlertKind(rule.kind), filer or ticker or security)
         subscribed = user is not None and rule.is_active and Channel.EMAIL in rule.channels
         return Standing(mailing_list, label, subscribed)
+    if mailing_list.kind is ListKind.ALERT_EMAIL:
+        emailing = await session.scalar(select(exists(_emailing(user_id))))
+        return Standing(mailing_list, ALERT_EMAIL_LABEL, user is not None and bool(emailing))
     purpose = PURPOSES[mailing_list.kind]
     granted = False
     if user is not None:
         granted = privacy.may_email(user, await privacy.standing(session, user_id), purpose)
     return Standing(mailing_list, PURPOSE_LABELS[mailing_list.kind], granted)
+
+
+def _emailing(user_id: int) -> Any:
+    """The user's rules that are on and email."""
+    return select(AlertRule.id).where(
+        AlertRule.user_id == user_id,
+        AlertRule.is_active.is_(true()),
+        AlertRule.channels.contains([Channel.EMAIL.value]),
+    )
+
+
+async def _stop_emailing(session: AsyncSession, rule: AlertRule) -> None:
+    """The rule's email off: its channel taken out, or the rule turned off
+    when email was all it had, so it does not start ringing a bell nobody
+    asked for."""
+    if Channel.EMAIL not in rule.channels:
+        return
+    if rule.channels == [Channel.EMAIL]:
+        values: dict[str, object] = {"is_active": False}
+    else:
+        values = {"channels": [c for c in rule.channels if c != Channel.EMAIL]}
+    await session.execute(update(AlertRule).where(AlertRule.id == rule.id).values(values))
+    await session.refresh(rule)
 
 
 async def is_subscribed(session: AsyncSession, user_id: int, mailing_list: MailingList) -> bool:
@@ -69,13 +103,17 @@ async def leave(session: AsyncSession, user_id: int, mailing_list: MailingList) 
             .where(AlertRule.id == mailing_list.rule_id, AlertRule.user_id == user_id)
             .with_for_update()
         )
-        if rule is not None and Channel.EMAIL in rule.channels:
-            if rule.channels == [Channel.EMAIL]:
-                values: dict[str, object] = {"is_active": False}
-            else:
-                values = {"channels": [c for c in rule.channels if c != Channel.EMAIL]}
-            await session.execute(update(AlertRule).where(AlertRule.id == rule.id).values(values))
-            await session.refresh(rule)
+        if rule is not None:
+            await _stop_emailing(session, rule)
+    elif mailing_list.kind is ListKind.ALERT_EMAIL:
+        found = await session.scalars(
+            select(AlertRule)
+            .where(AlertRule.user_id == user_id, AlertRule.channels.contains([Channel.EMAIL.value]))
+            .order_by(AlertRule.id)
+            .with_for_update()
+        )
+        for rule in found.all():
+            await _stop_emailing(session, rule)
     elif await _user(session, user_id) is not None:
         await privacy.choose(
             session,

@@ -304,6 +304,9 @@ async def register(
     time_zone = body.time_zone or rules.DEFAULT_TIME_ZONE
     if problem := await rules.time_zone_problem(session, time_zone):
         raise refused(ErrorCode.VALIDATION_ERROR, "time_zone", problem)
+    quiet_time_zone = body.quiet_time_zone or time_zone
+    if problem := await rules.time_zone_problem(session, quiet_time_zone):
+        raise refused(ErrorCode.VALIDATION_ERROR, "quiet_time_zone", problem)
     # After the fields, which the form checks too: a typo is not an attempt.
     await limit_attempts(request, "register", email)
 
@@ -313,6 +316,7 @@ async def register(
             "terms_version": privacy.TERMS_VERSION,
             "privacy_version": privacy.PRIVACY_VERSION,
             "marketing_email": body.marketing_email,
+            "quiet_time_zone": quiet_time_zone,
         }
         await session.execute(
             insert(SignupRequest)
@@ -337,6 +341,7 @@ async def register(
         name=name,
         password_hash=password_hash,
         time_zone=time_zone,
+        quiet_time_zone=quiet_time_zone,
         last_seen_at=joined,
     )
     session.add(user)

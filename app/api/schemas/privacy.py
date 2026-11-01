@@ -110,6 +110,12 @@ class ExportAccount(BaseModel):
     time_zone: str = Field(
         description="The IANA zone times are shown in.", examples=["Europe/London"]
     )
+    quiet_time_zone: str = Field(
+        description="The IANA zone quiet hours are kept in: the browser's at signup.",
+        examples=["Europe/Berlin"],
+    )
+    quiet_start: str = Field(description="When quiet hours begin, `HH:MM`.", examples=["22:00"])
+    quiet_end: str = Field(description="When they end, `HH:MM`.", examples=["08:00"])
     created_at: datetime = Field(description="When the account was made.", examples=[_AT])
     password_changed_at: datetime = Field(
         description="The last password change, or signup.", examples=[_AT]

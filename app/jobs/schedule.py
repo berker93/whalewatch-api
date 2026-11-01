@@ -146,6 +146,16 @@ BEAT_SCHEDULE: Final[dict[str, dict[str, Any]]] = {
         "schedule": crontab(minute=15),
         "options": {"expires": 60 * 60.0},
     },
+    # Alert email: each user's batch once its 15 minutes are up, and their
+    # digest at 19:00 on their own clock, outside their quiet hours. Every
+    # minute, since every user's clock is different: the decision is the
+    # task's (app/alerts/outbox.py). A send nobody consumed is stale before
+    # the next one, which takes everything due.
+    "alert-emails": {
+        "task": "app.jobs.tasks.send_alert_emails",
+        "schedule": 60.0,
+        "options": {"expires": 60.0},
+    },
     # The admin console's numbers for the UTC day just ended. 20:05 here is
     # 00:05 or 01:05 UTC, so the day is over, and expiring after an hour keeps
     # its plan mix close to the day's end. A day missed is caught up by the

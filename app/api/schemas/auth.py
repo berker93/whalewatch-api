@@ -53,6 +53,15 @@ class RegisterRequest(_Request):
         ),
         examples=["Europe/London"],
     )
+    quiet_time_zone: str | None = Field(
+        default=None,
+        description=(
+            "An IANA zone: the browser's, where the user is. Quiet hours (22:00 to "
+            "08:00 to start with) and the evening digest are on its clock. "
+            "`time_zone` when not given."
+        ),
+        examples=["Europe/Berlin"],
+    )
     accept_terms: bool = Field(
         default=False,
         description=(

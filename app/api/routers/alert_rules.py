@@ -94,6 +94,7 @@ def utc_now() -> datetime:
     """Now, which a test's minute is counted from."""
     return datetime.now(UTC)
 
+
 _NO_RULE: Final = not_found("No alert rule with that id is the signed-in user's.")
 
 _TESTED: Final[Responses] = {

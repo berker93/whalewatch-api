@@ -20,6 +20,7 @@ task                       CLI verb                    job
 ``run_billing``            ``billing``                 app/jobs/accounts.py
 ``snapshot_metrics``       ``snapshot-metrics``        app/jobs/accounts.py
 ``emit_alerts``            ``emit-alerts``             app/jobs/alerts.py
+``send_alert_emails``      ``send-alert-emails``       app/jobs/alerts.py
 =========================  ==========================  ==============================
 
 What a task adds is only what a message needs: arguments that are JSON
@@ -49,8 +50,9 @@ their own, since each link takes its own job's lock and writes its own row.
 The exceptions are :func:`ping`, which checks the broker and the worker and
 nothing else: a row every five minutes from the heartbeat would bury the runs
 worth reading, and a ping that needed Postgres would fail for the wrong reason;
-and :func:`emit_alerts`, sent once per rebuild, which must never be skipped for
-a lock (app/jobs/alerts.py).
+and the alerts tasks, :func:`emit_alerts`, sent once per rebuild, which must
+never be skipped for a lock, and :func:`send_alert_emails`, sent by beat every
+minute, whose runs skip each other's users instead (app/jobs/alerts.py).
 
 Found by autodiscovery (app/jobs/celery_app.py), never imported by hand, and
 ``shared_task`` so that a task binds to whichever app is current.
@@ -337,8 +339,28 @@ def emit_alerts(
         "job": "emit-alerts",
         "events": len(emitted.events),
         "notifications": len(emitted.told),
-        "emails": len(emitted.emails),
-        "emails_sent": emitted.sent,
+        "queued": emitted.queued,
+    }
+
+
+@shared_task(bind=True, queue=COMPUTE_QUEUE, max_retries=MAX_RETRIES)
+def send_alert_emails(self: Task[Any, Any]) -> Summary:
+    """``send-alert-emails``: what is waiting in the alert outbox, emailed as
+    each user's quiet hours, batch window, daily cap and digest allow. Sent by
+    beat every minute."""
+    try:
+        sent = asyncio.run(alerts.send_alert_emails(get_settings()))
+    except Exception as failure:
+        _retry_or_raise(self, failure)
+    decided = sent.decided
+    return {
+        "job": "send-alert-emails",
+        "users": decided.users,
+        "batches": decided.batches,
+        "digests": decided.digests,
+        "overflowed": decided.overflowed,
+        "dropped": decided.dropped,
+        "emails_sent": sent.sent,
     }
 
 

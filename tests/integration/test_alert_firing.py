@@ -21,13 +21,13 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts import entitlements
-from app.accounts.delivery import courier_for
 from app.alerts import dispatch
 from app.alerts.events import read_events
-from app.alerts.firing import MAX_CHANGES_PER_FILING, Told, deliver, fire
+from app.alerts.firing import MAX_CHANGES_PER_FILING, Told, fire, ring
 from app.core.config import Settings
 from app.db.models import (
     AlertKind,
+    AlertOutbox,
     AlertRule,
     AppUser,
     Filer,
@@ -36,6 +36,7 @@ from app.db.models import (
     PositionChange,
     Security,
     SecuritySplit,
+    WatchlistItem,
 )
 from app.derived.recompute import recompute
 from app.derived.scope import Pair, Scope
@@ -44,7 +45,6 @@ from app.ingestion.parsers.thirteen_f import parse_information_table, parse_prim
 from app.jobs.thirteen_f import Parsed, write_13f
 from tests.fake_redis import FakeRedis
 from tests.integration.accounts import Outbox, make_user, subscribe
-from tests.integration.conftest import in_session
 
 D = Decimal
 
@@ -231,12 +231,21 @@ async def _emit(
     told: list[Told] = []
     while queue:
         pairs = queue.pop(0)
-        written = await fire(session, await read_events(session, pairs, now=NOW))
+        fired = await fire(session, await read_events(session, pairs, now=NOW))
         await session.commit()
-        courier = courier_for(settings, in_session(session))
-        await deliver(settings, written, courier=courier, redis=FakeRedis())  # type: ignore[arg-type]
-        told.extend(written)
+        await ring(fired.told, redis=FakeRedis())  # type: ignore[arg-type]
+        told.extend(fired.told)
     return told
+
+
+async def _queued(session: AsyncSession) -> list[tuple[int, str, str, str]]:
+    """What waits in the outbox to be emailed: ``(user, route, title, dedupe key)``."""
+    rows = await session.execute(
+        select(
+            AlertOutbox.user_id, AlertOutbox.route, AlertOutbox.title, AlertOutbox.dedupe_key
+        ).order_by(AlertOutbox.id)
+    )
+    return [tuple(row) for row in rows]  # type: ignore[misc]
 
 
 async def _told(session: AsyncSession, *kinds: AlertKind) -> list[dict[str, Any]]:
@@ -370,9 +379,13 @@ async def test_a_filing_and_its_changes_are_told_to_those_who_follow_the_filer(
         "as_of": "2026-08-10",
         "positions": 2,
         "value_usd": "265000.00",
+        "filer_name": "FUND-A",
     }
-    # Only the rule that emails, emails.
-    assert [message.subject for message in outbox.sent] == ["FUND-A filed its 13F for 2026Q2"]
+    # Only the rule that emails is queued for its batch; nothing is sent here.
+    assert await _queued(db_session) == [
+        (pro, "instant", "FUND-A filed its 13F for 2026Q2", "filer_filed:fund-a:2026Q2")
+    ]
+    assert outbox.sent == []
     assert len(told) == 3
 
 
@@ -382,7 +395,6 @@ async def test_an_event_told_once_is_not_told_again(
     stocks: dict[str, int],
     pro: int,
     alert_queue: list[Any],
-    outbox: Outbox,
 ) -> None:
     filer_id, cik = await _fund(db_session, "fund-a")
     await _rule(
@@ -399,7 +411,7 @@ async def test_an_event_told_once_is_not_told_again(
 
     assert again == []
     assert len(await _told(db_session)) == 1
-    assert len(outbox.sent) == 1
+    assert len(await _queued(db_session)) == 1
 
 
 # --- splits: the AC's test ----------------------------------------------------
@@ -699,4 +711,29 @@ async def test_everything_is_every_followed_pair_filed_for_recently(
 
     assert [(event.kind, event.dedupe_key) for event in events] == [
         (AlertKind.FILER_FILED, "filer_filed:fund-a:2026Q2"),
+    ]
+
+
+async def test_a_digests_investors_are_read_and_their_filings_queued_for_it(
+    db_session: AsyncSession, settings: Settings, stocks: dict[str, int], alert_queue: list[Any]
+) -> None:
+    """Free: no rule names the investor; the watchlist the digest counts does."""
+    user_id = await make_user(db_session, "free@example.com")
+    filer_id, cik = await _fund(db_session, "fund-a")
+    await _rule(db_session, user_id, AlertKind.SEASON_DIGEST, channels=("in_app", "email"))
+    await db_session.execute(insert(WatchlistItem).values(user_id=user_id, filer_id=filer_id))
+    await _ingest(db_session, cik, Q1, (ALPHA, 1_000, D(100)))
+    await _ingest(db_session, cik, Q2, (ALPHA, 1_500, D(110)))
+
+    told = await _emit(db_session, settings, alert_queue)
+
+    # Nothing in the bell yet: the digest goes in the evening.
+    assert told == []
+    assert await _queued(db_session) == [
+        (
+            user_id,
+            "digest",
+            "FUND-A filed its 13F for 2026Q2",
+            "season_digest:filer_filed:fund-a:2026Q2",
+        )
     ]

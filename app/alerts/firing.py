@@ -21,11 +21,16 @@ notifications in one evening.
 
 Writing is ``INSERT ... ON CONFLICT DO NOTHING`` on the dedupe key, and only
 the rows written now are emailed. A second emission of an event already told
-writes nothing and sends nothing; two emissions at once write it once, and
-the one that wrote it sends it. Emailing comes after the commit (:func:`deliver`),
-through the courier, which checks the address and the rule's list once more
-as it sends. A worker that dies between the two has told the bell and not the
-mailbox: the email is best effort, as every email is.
+writes nothing and queues nothing; two emissions at once write it once, and
+the one that wrote it queues it.
+
+Emailing is not done here. A notification of a rule that emails is queued in
+``alert_outbox``, in the same transaction that writes it, and the sender
+(:mod:`app.alerts.outbox`) emails it with the rest of its batch, outside
+quiet hours and within the day's cap. So is each filing an investor on the
+watchlist of someone whose season digest is on makes during a filing window
+(:func:`_queue_season`): the digest is those, counted, once a day. After the
+commit, only the bell's kept counts are dropped (:func:`ring`).
 """
 
 from __future__ import annotations
@@ -42,21 +47,21 @@ from sqlalchemy import and_, or_, select, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.accounts import mail
 from app.accounts.alert_rules import sent_kinds
-from app.accounts.delivery import Courier
 from app.accounts.entitlements import Grant, grant_for
-from app.alerts.events import Event
+from app.alerts.events import EDGAR_TIME, Event
 from app.api.routers.notifications import forget_count
-from app.core.config import Settings
+from app.core.periods import in_filing_window
 from app.db.models import (
     FILER_KINDS,
     AlertKind,
+    AlertOutbox,
     AlertRule,
     AppUser,
     Channel,
-    EmailStatus,
     Notification,
+    Route,
+    WatchlistItem,
 )
 
 #: The most changes from one filing one user is told about, the largest first.
@@ -87,6 +92,7 @@ class Told:
     title: str
     body: str
     payload: dict[str, Any]
+    dedupe_key: str
     email: str | None
 
 
@@ -97,17 +103,26 @@ class _Account:
     grant: Grant | None
 
 
-async def fire(session: AsyncSession, events: list[Event]) -> list[Told]:
+@dataclass(frozen=True, slots=True)
+class Fired:
+    told: list[Told]
+    """The notifications written now, not those written before."""
+    queued: int
+    """The outbox items queued now: notifications to email, and filings for digests."""
+
+
+async def fire(session: AsyncSession, events: list[Event]) -> Fired:
     """Write a notification for every rule that hears an event, once per user
-    and event. The notifications written now, not those written before. Does
-    not commit."""
+    and event, and queue the ones whose rule emails; and queue each filing a
+    season digest counts. Does not commit."""
     if not events:
-        return []
+        return Fired([], 0)
+    told: list[Told] = []
     rules = await _rules(session, events)
-    if not rules:
-        return []
-    heard = await _heard(session, events, rules)
-    return await _write(session, heard)
+    if rules:
+        told = await _write(session, await _heard(session, events, rules))
+    queued = await _queue_instant(session, told) + await _queue_season(session, events)
+    return Fired(told, queued)
 
 
 async def _rules(session: AsyncSession, events: list[Event]) -> dict[tuple[str, int], list[_Rule]]:
@@ -251,6 +266,7 @@ async def _write(session: AsyncSession, heard: list[tuple[_Rule, Event]]) -> lis
                 title=event.title,
                 body=event.body,
                 payload=event.payload,
+                dedupe_key=dedupe_key,
                 email=rule.email if rule.emails else None,
             )
         )
@@ -269,30 +285,93 @@ def _feed_order(event: Event) -> tuple[Any, ...]:
     )
 
 
-async def deliver(
-    settings: Settings, told: Iterable[Told], *, courier: Courier, redis: Redis
-) -> list[EmailStatus | None]:
+async def _queue(session: AsyncSession, values: list[dict[str, Any]]) -> int:
+    if not values:
+        return 0
+    queued = await session.execute(
+        insert(AlertOutbox)
+        .values(values)
+        .on_conflict_do_nothing(constraint="uq_alert_outbox_user_id_dedupe_key")
+        .returning(AlertOutbox.id)
+    )
+    return len(queued.all())
+
+
+async def _queue_instant(session: AsyncSession, told: list[Told]) -> int:
+    """The notifications just written whose rule emails, for their batch."""
+    return await _queue(
+        session,
+        [
+            {
+                "user_id": one.user_id,
+                "rule_id": one.rule_id,
+                "route": Route.INSTANT.value,
+                "kind": str(one.kind),
+                "title": one.title,
+                "body": one.body,
+                "payload": one.payload,
+                "dedupe_key": one.dedupe_key,
+            }
+            for one in told
+            if one.email is not None
+        ],
+    )
+
+
+def _in_season(event: Event) -> bool:
+    """A filing made in a filing window, by EDGAR's day: the digest is silent
+    about the rest, the late filers and the restatements of the year."""
+    return in_filing_window(event.filed_at.astimezone(EDGAR_TIME).date())
+
+
+async def _queue_season(session: AsyncSession, events: list[Event]) -> int:
+    """Each filing in season, for the digest of every account that has the
+    investor on its watchlist and its digest on, made before the filing was.
+
+    Queued whatever the digest's channels: the digest rings the bell, emails,
+    or both, when it goes, by the rule as it is then. Its plan is checked
+    then too."""
+    filed: defaultdict[int, list[Event]] = defaultdict(list)
+    for event in events:
+        if event.kind is AlertKind.FILER_FILED and _in_season(event):
+            filed[event.filer_id].append(event)
+    if not filed:
+        return 0
+    rows = await session.execute(
+        select(AlertRule.id, AlertRule.user_id, AlertRule.created_at, WatchlistItem.filer_id)
+        .join(AppUser, AppUser.id == AlertRule.user_id)
+        .join(WatchlistItem, WatchlistItem.user_id == AlertRule.user_id)
+        .where(
+            AlertRule.kind == AlertKind.SEASON_DIGEST.value,
+            AlertRule.is_active.is_(true()),
+            AppUser.deleted_at.is_(None),
+            WatchlistItem.filer_id.in_(sorted(filed)),
+        )
+        .order_by(AlertRule.user_id, WatchlistItem.filer_id)
+    )
+    return await _queue(
+        session,
+        [
+            {
+                "user_id": user_id,
+                "rule_id": rule_id,
+                "route": Route.DIGEST.value,
+                "kind": str(event.kind),
+                "title": event.title,
+                "body": event.body,
+                "payload": event.payload,
+                "dedupe_key": f"{AlertKind.SEASON_DIGEST}:{event.dedupe_key}",
+                "filed_at": event.filed_at,
+            }
+            for rule_id, user_id, created_at, filer_id in rows.tuples()
+            for event in filed[filer_id or 0]
+            if created_at <= event.filed_at
+        ],
+    )
+
+
+async def ring(told: Iterable[Told], *, redis: Redis) -> None:
     """After the commit: each user's kept unread count dropped, so the bell
-    counts again, and each email sent. What the courier said of each email."""
-    told = list(told)
+    counts again."""
     for user_id in sorted({one.user_id for one in told}):
         await forget_count(redis, user_id)
-    statuses = []
-    for one in told:
-        if one.email is None:
-            continue
-        statuses.append(
-            await courier.send(
-                mail.alert(
-                    settings,
-                    to=one.email,
-                    user_id=one.user_id,
-                    rule_id=one.rule_id,
-                    kind=one.kind,
-                    title=one.title,
-                    body=one.body,
-                    payload=one.payload,
-                )
-            )
-        )
-    return statuses

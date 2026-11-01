@@ -1,9 +1,9 @@
 """One email, two bodies: hand-written table HTML and its plain-text twin.
 
 A message is written once, as blocks (:data:`Block`): paragraphs of plain
-text and buttons. Both bodies are drawn from the same blocks, so the text
-alternative says everything the HTML does, links included, and every send
-carries both.
+text, buttons, and entries of a list (a batch of alerts, a digest). Both
+bodies are drawn from the same blocks, so the text alternative says
+everything the HTML does, links included, and every send carries both.
 
 The HTML is tables and inline styles, nothing else: no ``<style>`` block, no
 web font, no image, no script. That is what Outlook's Word renderer and
@@ -26,8 +26,18 @@ class Button:
     url: str
 
 
-#: A paragraph of plain text, or a button.
-type Block = str | Button
+@dataclass(frozen=True, slots=True)
+class Entry:
+    """One item of a list: a title in bold, a line under it, and a plain link
+    to open it. In the text body: the three on lines of their own."""
+
+    title: str
+    text: str = ""
+    url: str | None = None
+
+
+#: A paragraph of plain text, a button, or a list's entry.
+type Block = str | Button | Entry
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,8 +58,16 @@ _PAGE: Final = "#f3f3f1"
 _RULE: Final = "#e2e2de"
 
 
+def _text(block: Block) -> str:
+    if isinstance(block, Button):
+        return f"{block.label}: {block.url}"
+    if isinstance(block, Entry):
+        return "\n".join(line for line in (block.title, block.text, block.url) if line)
+    return block
+
+
 def text_body(blocks: Sequence[Block], footer: Sequence[FooterLine]) -> str:
-    parts = [f"{b.label}: {b.url}" if isinstance(b, Button) else b for b in blocks]
+    parts = [_text(b) for b in blocks]
     lines = [f"{f.label}: {f.url}" if isinstance(f, FooterLink) else f for f in footer]
     return "\n\n".join(parts) + "\n\n--\n" + "\n".join(lines) + "\n"
 
@@ -76,6 +94,30 @@ def _button(button: Button) -> str:
     )
 
 
+def _entry(entry: Entry) -> str:
+    text = f'<div style="padding-top:2px;">{escape(entry.text)}</div>' if entry.text else ""
+    link = (
+        f'<div style="padding-top:4px;"><a href="{escape(entry.url)}" '
+        f'style="color:{_INK};text-decoration:underline;">Open in WhaleWatch</a></div>'
+        if entry.url
+        else ""
+    )
+    return (
+        f'<tr><td style="padding:16px 32px 0;font-family:{_FONT};font-size:15px;'
+        f'line-height:1.5;color:{_BODY};">'
+        f'<div style="font-weight:600;color:{_INK};">{escape(entry.title)}</div>'
+        f"{text}{link}</td></tr>"
+    )
+
+
+def _block(block: Block) -> str:
+    if isinstance(block, Button):
+        return _button(block)
+    if isinstance(block, Entry):
+        return _entry(block)
+    return _paragraph(block)
+
+
 def _footer_line(line: FooterLine) -> str:
     if isinstance(line, FooterLink):
         content = (
@@ -95,7 +137,7 @@ def html_body(
 ) -> str:
     """:param preheader: The line an inbox shows after the subject: the first
     paragraph, usually. Hidden in the message itself."""
-    rows = "".join(_button(b) if isinstance(b, Button) else _paragraph(b) for b in blocks)
+    rows = "".join(_block(b) for b in blocks)
     footer_rows = "".join(_footer_line(line) for line in footer)
     return (
         "<!DOCTYPE html>"

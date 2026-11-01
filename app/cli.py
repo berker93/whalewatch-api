@@ -284,7 +284,7 @@ from app.ingestion.parsers.thirteen_f_list import (
 )
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
 from app.jobs.accounts import purge_accounts, run_billing, snapshot_metrics
-from app.jobs.alerts import emit_alerts
+from app.jobs.alerts import emit_alerts, send_alert_emails
 from app.jobs.cache import invalidate_cache
 from app.jobs.derived import filer_id_of, recompute_positions, refresh_matviews
 from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
@@ -1809,6 +1809,16 @@ def create_user_command(
         str,
         typer.Option("--time-zone", help="An IANA zone. Default: America/New_York."),
     ] = DEFAULT_TIME_ZONE,
+    quiet_time_zone: Annotated[
+        str | None,
+        typer.Option(
+            "--quiet-time-zone",
+            help=(
+                "The IANA zone quiet hours are kept in. Default: the one the signup "
+                "form sent, else --time-zone."
+            ),
+        ),
+    ] = None,
     password_stdin: Annotated[
         bool,
         typer.Option(
@@ -1830,13 +1840,15 @@ def create_user_command(
     else:
         password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
     try:
-        asyncio.run(_create_user(email, name, time_zone, password))
+        asyncio.run(_create_user(email, name, time_zone, quiet_time_zone, password))
     except CommandError as exc:
         typer.echo(f"create-user: {exc}", err=True)
         raise typer.Exit(1) from None
 
 
-async def _create_user(email: str, name: str, time_zone: str, password: str) -> None:
+async def _create_user(
+    email: str, name: str, time_zone: str, quiet_time_zone: str | None, password: str
+) -> None:
     settings = get_settings()
     configure_logging(settings, stream=sys.stderr)
     email, name = account_rules.normalise_email(email), account_rules.normalise_name(name)
@@ -1850,21 +1862,28 @@ async def _create_user(email: str, name: str, time_zone: str, password: str) -> 
     async with session_scope(settings) as session:
         if problem := await account_rules.time_zone_problem(session, time_zone):
             raise CommandError(f"--time-zone: {problem}")
+        if quiet_time_zone is not None and (
+            problem := await account_rules.time_zone_problem(session, quiet_time_zone)
+        ):
+            raise CommandError(f"--quiet-time-zone: {problem}")
         taken = await session.scalar(
             select(AppUser.id).where(AppUser.email == email, AppUser.deleted_at.is_(None))
         )
         if taken is not None:
             raise CommandError(f"{email} already has an account")
+        request = await privacy.forget_signup_request(session, email)
         user = AppUser(
             email=email,
             name=name,
             password_hash=await hash_password(password),
             time_zone=time_zone,
+            quiet_time_zone=quiet_time_zone
+            or (request.quiet_time_zone if request else None)
+            or time_zone,
             email_verified_at=func.now(),
         )
         session.add(user)
         await session.flush()
-        request = await privacy.forget_signup_request(session, email)
         privacy.record_signup(
             session,
             user.id,
@@ -2817,9 +2836,12 @@ def emit_alerts_command(
     alone, or with --all every one filed for in the last 30 days: the filing,
     to rules about the filer, and each position it opened, added to, trimmed
     or exited, split-adjusted, to rules about the filer and rules about the
-    stock. A notification for each rule that hears an event, then an email
-    where the rule emails. Suspect periods, splits not yet detected, filings
-    older than 30 days and filings made before a rule was are told nothing.
+    stock. A notification for each rule that hears an event, and its email
+    queued where the rule emails; and each filing made in a filing window
+    queued for the season digests that count its filer. The emails go with
+    send-alert-emails, which beat runs every minute. Suspect periods, splits
+    not yet detected, filings older than 30 days and filings made before a
+    rule was are told nothing.
 
     Every rebuild does this by itself once it commits, through the
     emit_alerts task. This is for a rebuild whose message the broker could
@@ -2859,11 +2881,48 @@ async def _emit_alerts(slug: str | None, *, period: date | None) -> None:
         emitted = await emit_alerts(settings, pairs=pairs)
         run.items_seen = len(emitted.events)
         run.items_written = len(emitted.told)
-        run.metrics["emails_sent"] = emitted.sent
+        run.metrics["queued"] = emitted.queued
     typer.echo(
         f"emit-alerts  {_count(len(emitted.events), 'event')}: "
         f"{_count(len(emitted.told), 'notification')} written, "
-        f"{_count(emitted.sent, 'email')} sent"
+        f"{_count(emitted.queued, 'email item')} queued"
+    )
+
+
+@app.command("send-alert-emails")
+def send_alert_emails_command() -> None:
+    """Email what is waiting in the alert outbox, as far as each user's rules allow now.
+
+    For each user with something waiting: nothing in their quiet hours; a
+    batch once 15 minutes have passed since the first notification waiting;
+    the digest (the season's filings, and what the day's three emails had no
+    room for) once it is 19:00 on their clock. Beat runs this every minute;
+    by hand, it is the same run, one more time. Two runs at once skip each
+    other's users, so nothing is sent twice.
+    """
+    asyncio.run(_send_alert_emails())
+
+
+async def _send_alert_emails() -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    async with track_run(settings, "send-alert-emails") as run:
+        sent = await send_alert_emails(settings)
+        decided = sent.decided
+        run.items_seen = decided.users
+        run.items_written = decided.batches + decided.digests
+        run.metrics.update(
+            batches=decided.batches,
+            digests=decided.digests,
+            overflowed=decided.overflowed,
+            dropped=decided.dropped,
+            emails_sent=sent.sent,
+        )
+    typer.echo(
+        f"send-alert-emails  {_count(decided.users, 'user')}: "
+        f"{_count(decided.batches, 'batch', 'batches')}, "
+        f"{_count(decided.digests, 'digest')}, "
+        f"{_count(sent.sent, 'email')} sent"
     )
 
 

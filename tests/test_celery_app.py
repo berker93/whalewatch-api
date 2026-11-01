@@ -101,6 +101,7 @@ def test_tasks_are_found_by_autodiscovery_not_imported() -> None:
                 "poll_13f",
                 "daily_form4",
                 "emit_alerts",
+                "send_alert_emails",
                 "ping",
             )
         }

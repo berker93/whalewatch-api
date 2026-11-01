@@ -18,10 +18,12 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.alerts.dispatch import message
+from app.alerts.outbox import Decided
+from app.db.models import EmailStatus
 from app.ingestion.edgar.client import EdgarRateLimited, EdgarServerError
 from app.ingestion.enrichment.figi import OpenFIGIRateLimited, OpenFIGIResponseError
 from app.jobs import tasks
-from app.jobs.alerts import Emitted
+from app.jobs.alerts import Emitted, Sent
 from app.jobs.celery_app import COMPUTE_QUEUE, INGESTION_QUEUE
 from app.jobs.errors import JobError
 from app.jobs.retry import (
@@ -191,7 +193,7 @@ def _emitted(calls: list[dict[str, Any]], *outcomes: BaseException | None) -> An
         outcome = remaining.pop(0)
         if outcome is not None:
             raise outcome
-        return Emitted(events=[], told=[], emails=[])
+        return Emitted(events=[], told=[], queued=0)
 
     return job
 
@@ -209,8 +211,27 @@ def test_the_alerts_task_reads_the_pairs_a_rebuild_sent(monkeypatch: pytest.Monk
         "job": "emit-alerts",
         "events": 0,
         "notifications": 0,
-        "emails": 0,
-        "emails_sent": 0,
+        "queued": 0,
+    }
+
+
+def test_the_alert_email_task_summarises_what_it_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def job(settings: object) -> Sent:
+        return Sent(
+            decided=Decided(users=2, batches=1, digests=1, overflowed=3, dropped=1),
+            emails=[EmailStatus.SENT, EmailStatus.SUPPRESSED],
+        )
+
+    monkeypatch.setattr("app.jobs.alerts.send_alert_emails", job)
+
+    assert tasks.send_alert_emails() == {
+        "job": "send-alert-emails",
+        "users": 2,
+        "batches": 1,
+        "digests": 1,
+        "overflowed": 3,
+        "dropped": 1,
+        "emails_sent": 1,
     }
 
 
@@ -466,5 +487,6 @@ def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -
         "poll_13f": COMPUTE_QUEUE,
         "daily_form4": COMPUTE_QUEUE,
         "emit_alerts": COMPUTE_QUEUE,
+        "send_alert_emails": COMPUTE_QUEUE,
         "ping": COMPUTE_QUEUE,
     }

@@ -136,8 +136,16 @@ _SECONDS_BETWEEN_SENDS = {
     "refresh-matviews": 24 * 60 * 60,
     "purge-accounts": 24 * 60 * 60,
     "billing": 60 * 60,
+    "alert-emails": 60,
     "snapshot-metrics": 24 * 60 * 60,
 }
+
+
+def test_alert_email_is_decided_every_minute() -> None:
+    """Every user's clock is different, so the entry is the clock's tick and
+    the task decides whose batch or digest is due."""
+    assert BEAT_SCHEDULE["alert-emails"]["task"] == "app.jobs.tasks.send_alert_emails"
+    assert BEAT_SCHEDULE["alert-emails"]["schedule"] == 60.0
 
 
 def test_every_entry_expires_by_the_time_the_next_is_sent() -> None:

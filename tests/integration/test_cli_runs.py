@@ -54,6 +54,7 @@ TRACKED: Final = {
     "detect-splits": ("detect-splits", ["--all"], "success"),
     # Nothing filed for recently, so nothing to tell.
     "emit-alerts": ("emit-alerts", ["--all"], "success"),
+    "send-alert-emails": ("send-alert-emails", [], "success"),
     "refresh-views": ("refresh-views", [], "success"),
     "reconcile": ("reconcile", [], "success"),
     "import-13f-list": (

@@ -5824,6 +5824,124 @@
         }
       }
     },
+    "/v1/me/alert-delivery": {
+      "get": {
+        "tags": [
+          "alert-rules"
+        ],
+        "summary": "When alert email may go",
+        "description": "The quiet hours, their zone, and the batch window, daily cap and digest\nhour every alert email goes by.",
+        "operationId": "getAlertDelivery",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertDelivery"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "alert-rules"
+        ],
+        "summary": "Change the quiet hours or their zone",
+        "description": "Fields left out, or null, stay as they are. `time_zone` must be an IANA\nzone, and the hours `HH:MM`, 24-hour; `quiet_start` equal to `quiet_end`\nturns quiet hours off. Needs no verified email, as the account's own\nsettings do not. The next alert email goes by them.",
+        "operationId": "updateAlertDelivery",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertDeliveryPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertDelivery"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in. `unauthenticated` when the request had no session cookie, `session_expired` when the session it named has ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/account": {
       "get": {
         "tags": [
@@ -9991,6 +10109,124 @@
         "title": "AdminUserRow",
         "description": "One account, as a row of the user list."
       },
+      "AlertDelivery": {
+        "properties": {
+          "time_zone": {
+            "type": "string",
+            "title": "Time Zone",
+            "description": "An IANA zone: where the user is, which quiet hours, the day the cap counts and the digest's evening are on. The browser's at signup. Not the account's `time_zone`, which is what dates are shown in.",
+            "examples": [
+              "Europe/Berlin"
+            ]
+          },
+          "quiet_start": {
+            "type": "string",
+            "title": "Quiet Start",
+            "description": "When quiet hours begin, `HH:MM`: no alert email from then.",
+            "examples": [
+              "22:00"
+            ]
+          },
+          "quiet_end": {
+            "type": "string",
+            "title": "Quiet End",
+            "description": "When they end, `HH:MM`: what waited goes then, as one email. Before `quiet_start`, they run past midnight; equal to it, there are none.",
+            "examples": [
+              "08:00"
+            ]
+          },
+          "batch_minutes": {
+            "type": "integer",
+            "title": "Batch Minutes",
+            "description": "How long an alert email waits for more, from its first alert: everything in that time is one email.",
+            "examples": [
+              15
+            ]
+          },
+          "emails_per_day": {
+            "type": "integer",
+            "title": "Emails Per Day",
+            "description": "The most alert emails in one of the user's days, the digest included. What does not fit goes in the next digest.",
+            "examples": [
+              3
+            ]
+          },
+          "digest_at": {
+            "type": "string",
+            "title": "Digest At",
+            "description": "When the digest goes, `HH:MM`: the season's filings by investors on the watchlist, during a filing window, and the day's alerts past the cap. Nothing to say, no digest.",
+            "examples": [
+              "19:00"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "time_zone",
+          "quiet_start",
+          "quiet_end",
+          "batch_minutes",
+          "emails_per_day",
+          "digest_at"
+        ],
+        "title": "AlertDelivery",
+        "description": "When the signed-in user's alert email goes, and the rules it goes by."
+      },
+      "AlertDeliveryPatch": {
+        "properties": {
+          "time_zone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Zone",
+            "description": "An IANA zone, such as `Europe/Berlin`.",
+            "examples": [
+              "Asia/Tokyo"
+            ]
+          },
+          "quiet_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quiet Start",
+            "description": "`HH:MM`, 24-hour.",
+            "examples": [
+              "23:00"
+            ]
+          },
+          "quiet_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quiet End",
+            "description": "`HH:MM`, 24-hour.",
+            "examples": [
+              "07:00"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AlertDeliveryPatch",
+        "description": "The settings to change. One left out, or null, stays as it is."
+      },
       "AlertKind": {
         "type": "string",
         "enum": [
@@ -10988,7 +11224,7 @@
           "mailing_list": {
             "type": "string",
             "title": "Mailing List",
-            "description": "The list: `alert_rule:<id>` for one alert's emails (the season digest is one), or `product_email` / `marketing_email`.",
+            "description": "The list: `alert_rule:<id>` for one alert's emails (the season digest is one), `alert_email` for every alert's (a batch or digest drawn from more than one), or `product_email` / `marketing_email`.",
             "examples": [
               "alert_rule:42"
             ]
@@ -10997,11 +11233,12 @@
             "type": "string",
             "enum": [
               "alert_rule",
+              "alert_email",
               "product_email",
               "marketing_email"
             ],
             "title": "Kind",
-            "description": "What kind of list: one alert's emails, or a kind of email from WhaleWatch.",
+            "description": "What kind of list: one alert's emails, every alert's, or a kind of email from WhaleWatch.",
             "examples": [
               "alert_rule"
             ]
@@ -11284,6 +11521,30 @@
               "Europe/London"
             ]
           },
+          "quiet_time_zone": {
+            "type": "string",
+            "title": "Quiet Time Zone",
+            "description": "The IANA zone quiet hours are kept in: the browser's at signup.",
+            "examples": [
+              "Europe/Berlin"
+            ]
+          },
+          "quiet_start": {
+            "type": "string",
+            "title": "Quiet Start",
+            "description": "When quiet hours begin, `HH:MM`.",
+            "examples": [
+              "22:00"
+            ]
+          },
+          "quiet_end": {
+            "type": "string",
+            "title": "Quiet End",
+            "description": "When they end, `HH:MM`.",
+            "examples": [
+              "08:00"
+            ]
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -11341,6 +11602,9 @@
           "email",
           "name",
           "time_zone",
+          "quiet_time_zone",
+          "quiet_start",
+          "quiet_end",
           "created_at",
           "password_changed_at",
           "email_verified_at",
@@ -18599,6 +18863,21 @@
             "description": "An IANA zone, such as the browser's. The account's zone when given, `America/New_York` when not.",
             "examples": [
               "Europe/London"
+            ]
+          },
+          "quiet_time_zone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quiet Time Zone",
+            "description": "An IANA zone: the browser's, where the user is. Quiet hours (22:00 to 08:00 to start with) and the evening digest are on its clock. `time_zone` when not given.",
+            "examples": [
+              "Europe/Berlin"
             ]
           },
           "accept_terms": {

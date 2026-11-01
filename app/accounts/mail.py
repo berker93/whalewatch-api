@@ -1,16 +1,18 @@
 """What the site emails: verify an address, tell an account someone registered with its
 address, confirm an email change, tell the old address,
 reset a password, say an account was deleted, warn that a monthly quota is 80% spent,
-each step of a failed renewal's dunning, and an alert's notification.
+each step of a failed renewal's dunning, and alerts: one notification, a
+batch of them, or the evening digest.
 
 Each builder returns a :class:`Message`, written once as blocks and drawn as
 both an HTML and a plain-text body (:mod:`app.accounts.email_layout`). Its
 :class:`~app.db.models.EmailKind` fixes its stream: everything here but
-:func:`alert` is the account's own mail, on the transactional stream, with no
-unsubscribe link, since a password reset is not something to opt out of. An
-alert is on the broadcast stream, carries its list's unsubscribe link in the
-footer and the one-click ``List-Unsubscribe`` header, and is only sent while
-the user is still on that list.
+the alerts (:func:`alert`, :func:`alert_batch`, :func:`alert_digest`) is the
+account's own mail, on the transactional stream, with no unsubscribe link,
+since a password reset is not something to opt out of. An alert is on the
+broadcast stream, carries its list's unsubscribe link in the footer and the
+one-click ``List-Unsubscribe`` header, and is only sent while the user is
+still on that list.
 
 Sending is :mod:`app.accounts.delivery`'s. The links point at whalewatch-web
 (``WEB_URL``), which posts the token back to the API; the one-click header
@@ -23,8 +25,16 @@ from datetime import date, datetime
 from typing import Any, Final
 from urllib.parse import quote, urlencode
 
-from app.accounts.email_layout import Block, Button, FooterLine, FooterLink, html_body, text_body
-from app.accounts.unsubscribe import MailingList, alert_label, token_for
+from app.accounts.email_layout import (
+    Block,
+    Button,
+    Entry,
+    FooterLine,
+    FooterLink,
+    html_body,
+    text_body,
+)
+from app.accounts.unsubscribe import ListKind, MailingList, alert_label, token_for
 from app.core.config import Settings
 from app.db.models import STREAMS, AlertKind, EmailKind, Stream
 
@@ -413,4 +423,129 @@ def alert(
         blocks=blocks,
         unsubscribe=unsubscribe_for(settings, user_id, MailingList.for_rule(rule_id)),
         why=f"you asked to be emailed about {alert_label(kind, None)}",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AlertItem:
+    """One notification, or one filing for the digest, as an email lists it."""
+
+    rule_id: int
+    """The rule it is for: whose list the email is on, when it is the only one."""
+    kind: AlertKind
+    title: str
+    body: str
+    payload: Mapping[str, Any]
+
+
+#: The most entries one email lists. The bell has them all.
+MAX_ENTRIES: Final = 25
+
+
+def _entries(settings: Settings, items: Sequence[AlertItem]) -> list[Block]:
+    blocks: list[Block] = []
+    for item in items[:MAX_ENTRIES]:
+        path = notification_path(item.kind, item.payload)
+        url = None if path is None else f"{settings.web_url}{path}"
+        blocks.append(Entry(item.title, item.body, url))
+    if len(items) > MAX_ENTRIES:
+        more = len(items) - MAX_ENTRIES
+        blocks.append(f"And {more} more: every one is in WhaleWatch, under the bell.")
+    return blocks
+
+
+def _alerts_list(
+    settings: Settings, user_id: int, items: Sequence[AlertItem]
+) -> tuple[Unsubscribe, str]:
+    """The list an email of ``items`` is on, and why the user gets it: the
+    rule's when they are all one rule's, every alert's otherwise."""
+    rules = {item.rule_id for item in items}
+    if len(rules) == 1:
+        [rule_id] = rules
+        mailing_list = MailingList.for_rule(rule_id)
+        why = f"you asked to be emailed about {alert_label(items[0].kind, None)}"
+    else:
+        mailing_list = MailingList(ListKind.ALERT_EMAIL)
+        why = "you asked to be emailed about alerts"
+    return unsubscribe_for(settings, user_id, mailing_list), why
+
+
+def alert_batch(
+    settings: Settings, *, to: str, user_id: int, items: Sequence[AlertItem]
+) -> Message:
+    """The notifications of one batch's window, newest first, in one email.
+    One is :func:`alert`'s email; more are a list, and the subject names the
+    newest and counts the rest."""
+    if not items:
+        raise ValueError("a batch of nothing")
+    if len(items) == 1:
+        [item] = items
+        return alert(
+            settings,
+            to=to,
+            user_id=user_id,
+            rule_id=item.rule_id,
+            kind=item.kind,
+            title=item.title,
+            body=item.body,
+            payload=item.payload,
+        )
+    unsubscribe, why = _alerts_list(settings, user_id, items)
+    return _message(
+        settings,
+        to=to,
+        user_id=user_id,
+        kind=EmailKind.ALERT,
+        subject=f"{items[0].title}, and {len(items) - 1} more",
+        blocks=[f"{len(items)} alerts, newest first.", *_entries(settings, items)],
+        unsubscribe=unsubscribe,
+        why=why,
+    )
+
+
+def alert_digest(
+    settings: Settings,
+    *,
+    to: str,
+    user_id: int,
+    subject: str,
+    filed: Sequence[AlertItem],
+    overflow: Sequence[AlertItem],
+    period: str | None,
+) -> Message:
+    """The evening's digest: the filings of the season, under ``subject``,
+    which counts them, and the alerts the day's emails had no room for.
+
+    :param period: The quarter most of the filings are for: where the button
+        opens the overview. None when there are no filings.
+    """
+    if not (filed or overflow):
+        raise ValueError("a digest of nothing")
+    blocks: list[Block] = []
+    if filed:
+        blocks.append(f"{subject}.")
+        blocks.extend(_entries(settings, filed))
+    if overflow:
+        count = len(overflow)
+        blocks.append(
+            f"{count} more {'alert' if count == 1 else 'alerts'} came after the day's "
+            "emails ran out. WhaleWatch sends three alert emails a day at most, and "
+            "keeps the rest for this digest."
+        )
+        blocks.extend(_entries(settings, overflow))
+    if filed:
+        path = notification_path(AlertKind.SEASON_DIGEST, {"period": period})
+        blocks.append(Button("Open the season in WhaleWatch", f"{settings.web_url}{path}"))
+    unsubscribe, why = _alerts_list(settings, user_id, [*filed, *overflow])
+    if filed and not overflow:
+        why = f"you asked to be emailed about {alert_label(AlertKind.SEASON_DIGEST, None)}"
+    return _message(
+        settings,
+        to=to,
+        user_id=user_id,
+        kind=EmailKind.ALERT,
+        subject=subject,
+        blocks=blocks,
+        unsubscribe=unsubscribe,
+        why=why,
     )

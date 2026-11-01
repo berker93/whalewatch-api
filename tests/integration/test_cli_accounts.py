@@ -113,6 +113,7 @@ def test_create_user_carries_a_signup_requests_answers_over_and_forgets_it(
             terms_version="2026-01-01",
             privacy_version="2026-01-01",
             marketing_email=True,
+            quiet_time_zone="Europe/Berlin",
         ),
     )
 
@@ -123,6 +124,10 @@ def test_create_user_carries_a_signup_requests_answers_over_and_forgets_it(
         ("account", True, "2026-01-01", "create_user"),
         ("product_email", True, None, "create_user"),
         ("marketing_email", True, None, "create_user"),
+    ]
+    # The browser's zone, for quiet hours; the account's own stays the market's.
+    assert _fetch(migrated_engine, select(AppUser.time_zone, AppUser.quiet_time_zone)) == [
+        ("America/New_York", "Europe/Berlin")
     ]
     assert _fetch(migrated_engine, select(SignupRequest.email)) == []
 

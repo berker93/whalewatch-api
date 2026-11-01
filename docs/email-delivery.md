@@ -148,6 +148,32 @@ Then check that the message's `email_log` row went `sent`, then `delivered`
 Sending stays best effort. A failure is logged, and the request that asked
 for the email still succeeds.
 
+## When alert email goes
+
+Alerts are in the bell the moment they fire; their email waits in
+`alert_outbox` for the `send_alert_emails` task, which beat sends every
+minute (`app/alerts/outbox.py`). Each user is decided on their own clock,
+`app_user.quiet_time_zone`, the browser's zone at signup:
+
+- **Batches.** 15 minutes from the first alert waiting, everything waiting is
+  one email. One alert is that alert's email, on its rule's list.
+- **Quiet hours**, 22:00–08:00 unless the user changes them
+  (`/v1/me/alert-delivery`). Nothing goes inside them; what waited goes at
+  their end as one email.
+- **Three alert emails a day**, batches and digests together. A batch with no
+  room moves to the next digest. While the day's digest is still to come and
+  will email, the day's last email is kept for it.
+- **The digest**, at 19:00: the season's filings by investors on the
+  watchlist (queued only during a filing window, so silent outside one),
+  counted in the subject ("7 of your investors filed today"), and the
+  overflow. With no room left, or in quiet hours, it goes as the next
+  morning's first email. Its rule may also ring the bell, as one
+  `season_digest` notification.
+
+A test alert goes at once and is not counted. Each send writes an
+`alert_delivery` row (what the cap counts); rows and their items are kept 35
+days. `send-alert-emails` runs the same decision by hand.
+
 ## Bounces and complaints
 
 | Event | Row | Address suppressed for |
@@ -182,6 +208,7 @@ Every broadcast email is on exactly one list:
 | List | What it stops | Leaving does |
 | --- | --- | --- |
 | `alert_rule:<id>` | one alert's email (the season digest is one) | removes `email` from the rule's channels and keeps it in the bell; a rule that only emailed is turned off (`is_active`) |
+| `alert_email` | every alert's email: what a batch or digest drawn from more than one rule is on | the same, for every rule that emails |
 | `product_email` | product news | a `consent_record` row withdrawing it, source `unsubscribe` |
 | `marketing_email` | offers | the same, for consent |
 

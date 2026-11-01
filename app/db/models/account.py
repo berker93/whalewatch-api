@@ -32,7 +32,7 @@ ending one is deleting a key.
 See :mod:`app.accounts` for the rules these are written by.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import StrEnum
 from typing import Any
 
@@ -47,6 +47,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Text,
+    Time,
     false,
     func,
     text,
@@ -80,6 +81,18 @@ class AppUser(Base):
     time_zone: Mapped[str] = mapped_column(Text)
     """An IANA zone: what the timeline's days and Form 4 times are shown in."""
 
+    quiet_time_zone: Mapped[str] = mapped_column(Text, server_default=text("'America/New_York'"))
+    """An IANA zone: the one the user sleeps in, which quiet hours, the day an
+    email cap counts and the digest's evening are read in. The browser's, sent
+    at signup. Not :attr:`time_zone`, which is the market's clock unless the
+    user changes it."""
+
+    quiet_start: Mapped[time] = mapped_column(Time, server_default=text("'22:00'"))
+    """When quiet hours begin, in :attr:`quiet_time_zone`: no alert email goes
+    from then until :attr:`quiet_end`. Equal to it, there are none."""
+
+    quiet_end: Mapped[time] = mapped_column(Time, server_default=text("'08:00'"))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     password_changed_at: Mapped[datetime] = mapped_column(
@@ -101,6 +114,11 @@ class AppUser(Base):
     __table_args__ = (
         CheckConstraint("email = btrim(email)", name="email_is_trimmed"),
         CheckConstraint("length(btrim(name)) >= 2", name="name_is_named"),
+        # To the minute: what the account page sets, and all a wall clock says.
+        CheckConstraint(
+            "extract(second FROM quiet_start) = 0 AND extract(second FROM quiet_end) = 0",
+            name="quiet_hours_are_minutes",
+        ),
         Index(
             "uq_app_user_email",
             "email",
@@ -168,6 +186,8 @@ class SignupRequest(Base):
     """The privacy policy the form showed. Null on the same terms."""
     marketing_email: Mapped[bool] = mapped_column(Boolean, server_default=false())
     """Whether the form's marketing box was ticked."""
+    quiet_time_zone: Mapped[str | None] = mapped_column(Text)
+    """The browser's zone, sent with the form. Null on a request from before it was."""
 
 
 class WatchlistItem(Base):

@@ -8,6 +8,10 @@ A list is what one unsubscribe stops (:class:`MailingList`):
     rule's channels and the bell keeps it; a rule that only emailed is turned
     off instead (``is_active``), so it does not start ringing a bell nobody
     asked for, and turning it back on brings its email back with it.
+``alert_email``
+    Every alert rule's email at once: what a batch or a digest drawn from more
+    than one rule is on. Leaving does to each rule that emails what leaving
+    its own list does.
 ``product_email``, ``marketing_email``
     A consent purpose (:mod:`app.accounts.privacy`). Leaving writes a
     ``consent_record`` row withdrawing it, from source ``unsubscribe``.
@@ -46,6 +50,7 @@ from app.db.models import FILER_KINDS, AlertKind, Purpose
 
 class ListKind(StrEnum):
     ALERT_RULE = "alert_rule"
+    ALERT_EMAIL = "alert_email"
     PRODUCT_EMAIL = "product_email"
     MARKETING_EMAIL = "marketing_email"
 
@@ -139,6 +144,9 @@ _ALERT_LABELS: Final = {
     AlertKind.INSIDER_CLUSTER: "insiders buying {} together",
     AlertKind.SEASON_DIGEST: "the 13F season digest",
 }
+
+#: What the list of every alert email sends, for a person.
+ALERT_EMAIL_LABEL: Final = "your alerts"
 
 PURPOSE_LABELS: Final = {
     ListKind.PRODUCT_EMAIL: "news about WhaleWatch",

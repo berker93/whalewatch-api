@@ -30,6 +30,8 @@ The people who sign up. Every table below is in Postgres unless it says Redis.
 | Saved screener filters (name, screener parameters) | `saved_filter` | The product | Contract | Same |
 | Alert rules (kind, the filer or stock, dollar threshold, channels, on or off) | `alert_rule` | The product | Contract | Same |
 | Notifications (kind, title, body, what it was about, when read) | `notification` | The product | Contract | Same |
+| Quiet hours and the zone they are kept in (the browser's, sent at signup: a region, such as `Europe/Berlin`) | `app_user.quiet_time_zone`, `quiet_start`, `quiet_end`; `signup_request.quiet_time_zone` while signups are closed | Not emailing at night; the user's day for the daily email cap and the evening digest | Contract | Life of the account + 30 days |
+| Alert email queue: each alert waiting to be emailed (a copy of the notification's title, body and payload) and each batch or digest sent (when, on the user's clock, how many items, whether emailed, the courier's status) | `alert_outbox`, `alert_delivery` | Batching alerts, the three-a-day cap, the digest | Contract | 35 days after sending (deleted by the sender job), or with the account |
 | Email log: each email's kind, stream (transactional or broadcast), Postmark's message id, status (sent, delivered, bounced, complained, failed, suppressed) and why. Not the address, not the text | `email_log` | Knowing a reset or a verification arrived; support | Contract (account mail); legitimate interest (deliverability) | Life of the account + 30 days |
 | Email suppression list: SHA-256 of each address that hard-bounced or reported a message as spam, the scope (everything, or broadcast only) and the reason. No account id, no address | `email_suppression` | Never sending again to an address that does not exist or does not want mail: required by the mailbox providers' sender rules, and what keeps the sending domain's reputation | Legitimate interest | **Indefinitely**, outliving the account on purpose: erasing an account must not start mailing someone who said it was spam. `email-suppression --email … --lift` removes one on request |
 | Plan and subscription (plan, status, period end, cancel date, grandfathered plan, per-account entitlements); for a paid one, Paddle's subscription and customer ids and a failed renewal's dunning dates | `subscription`, `subscription_entitlement`; a copy of the grant in the Redis session | What the account may do, and billing it | Contract | Same |
@@ -68,7 +70,9 @@ a message on either list, so an unsubscribe counts from the next send.
 Alert emails (an alert rule with the email channel, the season digest
 included) are the account's product, asked for rule by rule: contract, not
 consent. Each carries an unsubscribe link and a one-click header for its own
-rule; leaving takes email off that rule and nothing else. Account emails
+rule; leaving takes email off that rule and nothing else. A batch or digest
+drawn from several rules carries the `alert_email` list instead, and leaving
+it takes email off every rule. Account emails
 (verify, reset, email change, deletion, quota, billing) have no unsubscribe
 and go on their own Postmark stream, so nothing a user does with an alert, and
 no complaint about one, stops them. See docs/email-delivery.md.
