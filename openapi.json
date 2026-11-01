@@ -4683,7 +4683,7 @@
           "exports"
         ],
         "summary": "One investor's positions in one period, as a CSV file",
-        "description": "Every position `GET /v1/investors/{slug}/portfolio` pages through, with\nthe same parameters, in the same order, as\n`berkshire-hathaway_2026Q3_holdings.csv`. `filed_at` is the investor's\nlatest filing for the period; the `#` lines name what `meta.caveats` would.\nNeeds `export_enabled`.",
+        "description": "Every position `GET /v1/investors/{slug}/portfolio` pages through, with\nthe same parameters, in the same order, as\n`berkshire-hathaway_2026Q3_holdings.csv`. `action` and `q` narrow it as the\nholdings table's chips and search box do, and the `#` lines say so.\n`filed_at` is the investor's latest filing for the period; the `#` lines\nname what `meta.caveats` would.\nNeeds `export_enabled`.",
         "operationId": "exportInvestorPortfolio",
         "parameters": [
           {
@@ -4756,6 +4756,47 @@
               "default": "desc"
             },
             "description": "Largest first by default."
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "new,add"
+                ]
+              ],
+              "title": "Action"
+            },
+            "description": "Only the positions whose change is any of `new`, `add`, `trim`, `hold`, comma-separated or repeated. Option lines have none, so any action leaves them out. Every position by default."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the positions whose ticker (as of the period) or company name contains this, in any case.",
+              "examples": [
+                "apple"
+              ],
+              "title": "Q"
+            },
+            "description": "Only the positions whose ticker (as of the period) or company name contains this, in any case."
           }
         ],
         "responses": {
@@ -4927,6 +4968,47 @@
               "default": "desc"
             },
             "description": "Largest first by default."
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "new,add"
+                ]
+              ],
+              "title": "Action"
+            },
+            "description": "Only the positions whose change is any of `new`, `add`, `trim`, `hold`, comma-separated or repeated. Option lines have none, so any action leaves them out. Every position by default."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the positions whose ticker (as of the period) or company name contains this, in any case.",
+              "examples": [
+                "apple"
+              ],
+              "title": "Q"
+            },
+            "description": "Only the positions whose ticker (as of the period) or company name contains this, in any case."
           }
         ],
         "responses": {

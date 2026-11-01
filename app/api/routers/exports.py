@@ -14,8 +14,11 @@
 Each surface is one dependency (:func:`portfolio_export` and the rest) that
 takes its listing's parameters but the page's, runs the checks as the listing
 runs them, and opens the listing's query with no page as a cursor: every row,
-in the listing's order. An unknown investor or stock is a 404 and a period
-before the plan's window a 402, before any of the file is written. What it
+in the listing's order. The holdings take two parameters their listing
+does not: ``action`` and ``q``, the holdings table's action chips and search
+box, so the browser need not narrow the file it was sent. An unknown
+investor or stock is a 404 and a period before the plan's window a 402,
+before any of the file is written. What it
 returns, an :class:`Export`, is written as CSV by :mod:`app.api.csv_export`
 and as a workbook by :mod:`app.api.xlsx_export`, so the two files of a surface
 have the same rows, the same columns and the same provenance.
@@ -521,8 +524,11 @@ async def portfolio_export(
     include_options: portfolio.IncludeOptions = False,
     sort: portfolio.SortParam = portfolio.PortfolioSort.WEIGHT,
     order: portfolio.OrderParam = portfolio.SortOrder.DESC,
+    action: portfolio.HeldActionsParam = None,
+    q: portfolio.HoldingSearchParam = None,
 ) -> Export:
-    """``GET /v1/investors/{slug}/portfolio``'s every row, as an :class:`Export`."""
+    """``GET /v1/investors/{slug}/portfolio``'s every row, as an :class:`Export`,
+    narrowed as the holdings table's action chips and search box narrow it."""
     entitled.require_period(period)
     filer_id, period = await portfolio._portfolio_period(session, slug, period, entitled)
     meta = await period_meta(session, period, filer_id=filer_id)
@@ -536,10 +542,17 @@ async def portfolio_export(
         sort=sort,
         order=order,
         include_options=include_options,
+        actions=action,
+        search=q,
         history_from=entitled.history_from,
     )
     await allowed.take(statement)
 
+    narrowed: list[tuple[str, str]] = []
+    if action is not None:
+        narrowed.append(("Actions", "; ".join(sorted(a.value for a in action))))
+    if q is not None:
+        narrowed.append(("Matching", f"Ticker or company contains {q!r}"))
     label = quarter_label(period)
     columns = (
         *SECURITY_COLUMNS,
@@ -563,7 +576,7 @@ async def portfolio_export(
         columns=columns,
         methodology=methodology.thirteen_f(),
         coverage=_coverage(meta.coverage, label),
-        notes=tuple(("Caveat", caveat) for caveat in caveats),
+        notes=(*narrowed, *(("Caveat", caveat) for caveat in caveats)),
     )
 
 
@@ -586,8 +599,10 @@ async def export_portfolio(
 ) -> StreamingResponse:
     """Every position `GET /v1/investors/{slug}/portfolio` pages through, with
     the same parameters, in the same order, as
-    `berkshire-hathaway_2026Q3_holdings.csv`. `filed_at` is the investor's
-    latest filing for the period; the `#` lines name what `meta.caveats` would.
+    `berkshire-hathaway_2026Q3_holdings.csv`. `action` and `q` narrow it as the
+    holdings table's chips and search box do, and the `#` lines say so.
+    `filed_at` is the investor's latest filing for the period; the `#` lines
+    name what `meta.caveats` would.
     Needs `export_enabled`."""
     return export.csv()
 

@@ -210,8 +210,13 @@ def create_app(settings: Settings) -> FastAPI:
         # preflight.
         allow_headers=["If-None-Match", REQUEST_ID_HEADER, "Content-Type"],
         # What a script on the frontend may read off a response. Cache-Control
-        # is safelisted already; these are not.
+        # is safelisted already; these are not. Content-Length is safelisted
+        # by the Fetch spec, but not by every browser the site supports, and
+        # an export's download progress reads it; Content-Disposition carries
+        # the export's file name.
         expose_headers=[
+            "Content-Disposition",
+            "Content-Length",
             "ETag",
             "Retry-After",
             REQUEST_ID_HEADER,

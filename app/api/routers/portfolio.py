@@ -106,7 +106,7 @@ from app.db.models.security_split import SPLIT_RATIO
 from app.db.queries.amendments import period_concerns
 from app.db.queries.effective import EFFECTIVE_FILING
 from app.db.queries.returns import estimated_return
-from app.db.queries.tickers import ticker_labels
+from app.db.queries.tickers import ticker_at, ticker_labels
 from app.derived.views import FILER_SUMMARY, traded_usd
 
 router = APIRouter(tags=["investors"])
@@ -338,17 +338,39 @@ def portfolio_query(
     sort: PortfolioSort = PortfolioSort.WEIGHT,
     order: SortOrder = SortOrder.DESC,
     include_options: bool = False,
+    actions: frozenset[ChangeAction] | None = None,
+    search: str | None = None,
     history_from: PeriodEnd | None,
 ) -> tuple[Select[Any], Keyset]:
     """One page of the portfolio, named, with ``first_period`` and the
     estimates (:mod:`app.api.estimates`), and its keyset.
 
+    :param actions: Only the positions whose change is one of these. An
+        option line has no change, so none is kept. None for every position.
+    :param search: Only the positions whose ticker in the period or issuer
+        name contains it, in any case: the holdings table's search box, which
+        matches the Ticker and Company columns as shown. None for every position.
     :param history_from: The caller's window (:mod:`app.api.entitlements`):
         ``first_period`` is the first period held inside it. None for every period.
     """
     positions = _positions(filer_id, period, include_options=include_options)
     keyset = _portfolio_keyset(positions, sort, order)
-    page_rows = page_statement(select(positions), keyset, page).cte("page")
+    kept = select(positions)
+    if actions is not None:
+        kept = kept.where(
+            positions.c.action == any_(cast(literal(sorted(a.value for a in actions)), ARRAY(Text)))
+        )
+    if search is not None:
+        # Before the page, so a page is of the matching rows. ticker_at
+        # correlates to the Security of the EXISTS.
+        kept = kept.where(
+            exists().where(
+                Security.id == positions.c.security_id,
+                ticker_at(period).icontains(search, autoescape=True)
+                | Security.name.icontains(search, autoescape=True),
+            )
+        )
+    page_rows = page_statement(kept, keyset, page).cte("page")
 
     # See the module docstring: grouped once, not looked up per row.
     snapshot = PositionSnapshot
@@ -572,6 +594,44 @@ ActionsParam = Annotated[
             "Any of `new`, `add`, `trim`, `hold`, `exit`, comma-separated or "
             "repeated. Every action but `hold` by default."
         )
+    ),
+]
+
+
+def _held_actions(value: object) -> frozenset[ChangeAction]:
+    """:func:`_actions`, less ``exit``: an exited position is not held, so a
+    period's holdings have none."""
+    actions = _actions(value)
+    if ChangeAction.EXIT in actions:
+        raise ValueError(
+            "an exit is not a holding: the quarter's exits are its activity, "
+            "/activity?from=…&to=…&action=exit"
+        )
+    return actions
+
+
+HeldActionsParam = Annotated[
+    frozenset[ChangeAction] | None,
+    PlainValidator(_held_actions),
+    WithJsonSchema({"type": "array", "items": {"type": "string"}, "examples": [["new,add"]]}),
+    Query(
+        description=(
+            "Only the positions whose change is any of `new`, `add`, `trim`, `hold`, "
+            "comma-separated or repeated. Option lines have none, so any action leaves "
+            "them out. Every position by default."
+        )
+    ),
+]
+HoldingSearchParam = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=100,
+        description=(
+            "Only the positions whose ticker (as of the period) or company name "
+            "contains this, in any case."
+        ),
+        examples=["apple"],
     ),
 ]
 

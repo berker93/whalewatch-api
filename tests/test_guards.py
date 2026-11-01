@@ -176,7 +176,15 @@ async def test_a_known_origin_may_read_responses(http: AsyncClient) -> None:
 
     assert response.headers["access-control-allow-origin"] == FRONTEND
     exposed = response.headers["access-control-expose-headers"].lower()
-    for header in ("etag", "retry-after", REQUEST_ID_HEADER):
+    # Content-Disposition and Content-Length: an export's file name and its
+    # download's progress, which the frontend reads.
+    for header in (
+        "etag",
+        "retry-after",
+        REQUEST_ID_HEADER,
+        "content-disposition",
+        "content-length",
+    ):
         assert header in exposed
 
 

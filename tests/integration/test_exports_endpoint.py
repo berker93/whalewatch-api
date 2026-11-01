@@ -16,12 +16,12 @@ from typing import Any, Final
 import openpyxl
 import pytest
 from httpx import AsyncClient, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.exports import NO_COVERAGE
 from app.api.xlsx_export import MEDIA_TYPE as XLSX
-from app.db.models import UserActivityDay
+from app.db.models import Security, UserActivityDay
 from tests.integration.accounts import make_user, sign_in, subscribe
 from tests.integration.test_insiders_endpoint import (
     DAY_1,
@@ -198,6 +198,59 @@ async def test_holdings_are_the_portfolio_walked_to_the_end(
     assert _header(comments, "Generated").endswith("Z")
     assert _header(comments, "EDGAR").startswith("https://www.sec.gov/")
     assert _header(comments, "Coverage") == "1 of 1 investors have filed for 2024Q2."
+
+
+async def test_holdings_narrowed_as_the_table_narrows_them(
+    client: AsyncClient, db_session: AsyncSession, pro: int
+) -> None:
+    """The action chips and the search box, on the server: the browser need
+    not filter the file it was sent."""
+    filer = await _fund(db_session, "berkshire")
+    await _quarter(db_session, filer, Q1, held(ALPHA, 100), held(BRAVO, 50))
+    await _quarter(
+        db_session,
+        filer,
+        Q2,
+        held(ALPHA, 200),
+        held(CHARLIE, 30),
+        held(ALPHA, 5, put_call="Call"),
+    )
+    await db_session.execute(
+        update(Security)
+        .where(Security.cusip == ALPHA)
+        .values(ticker="ALF", resolution_source="manual")
+    )
+    await _publish(db_session)
+    path = "/v1/investors/berkshire/portfolio.csv"
+
+    async def held_rows(**params: str) -> list[tuple[str, str]]:
+        _, rows = _file(await client.get(path, params={"include_options": "true", **params}))
+        return [(row["cusip"], row["put_call"]) for row in rows]
+
+    # An option line has no change, so any action leaves it out.
+    assert await held_rows(action="add") == [(ALPHA, "")]
+    assert await held_rows(action="new,add") == [(ALPHA, ""), (CHARLIE, "")]
+    assert await held_rows(action="trim") == []
+    # The ticker as of the period, or the company, in any case.
+    assert await held_rows(q="alf") == [(ALPHA, ""), (ALPHA, "Call")]
+    assert await held_rows(q="issuer 33333c") == [(CHARLIE, "")]
+    assert await held_rows(q="alf", action="add") == [(ALPHA, "")]
+    # A wildcard is a character, not a pattern.
+    assert await held_rows(q="%") == []
+
+    response = await client.get(path, params={"action": "add", "q": "alf"})
+    comments, _ = _file(response)
+    assert _header(comments, "Actions") == "add"
+    assert _header(comments, "Matching") == "Ticker or company contains 'alf'"
+    about = _about(_workbook(await client.get(path.replace(".csv", ".xlsx"), params={"q": "alf"})))
+    assert about["Matching"] == "Ticker or company contains 'alf'"
+    assert "Actions" not in about
+
+    # No exits among the holdings: those are the quarter's activity.
+    refused = await client.get(path, params={"action": "exit"})
+    assert refused.status_code == 422, refused.text
+    assert "activity" in refused.text
+    assert (await client.get(path, params={"q": ""})).status_code == 422
 
 
 async def test_holdings_for_an_earlier_period(

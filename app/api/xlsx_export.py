@@ -25,8 +25,9 @@ The sheets
     How the numbers are made, in full, as :class:`Section`\\ s the route
     passes in (:mod:`app.api.methodology`).
 ``About``
-    What the file is: when it was made, of which period, how much of the
-    universe had filed, where the data is from, and the disclaimer.
+    The wordmark, and what the file is: when it was made, of which period,
+    how much of the universe had filed, where the data is from, and the
+    disclaimer.
 
 Written to disk, then sent
 --------------------------
@@ -64,6 +65,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import Enum
+from pathlib import Path
 from typing import IO, Any, Final
 
 import xlsxwriter
@@ -112,6 +114,12 @@ TEAL: Final = {"font_color": "#287868", "bg_color": "#E0F4F0"}
 CRIMSON: Final = {"font_color": "#A94A5D", "bg_color": "#FBE6EB"}
 #: The header row: Ledger's ink on its surface.
 HEADER: Final = {"bold": True, "font_color": "#E9E9ED", "bg_color": "#232532"}
+
+#: The About sheet's lockup: the web's Wordmark in one ink, Ledger's surface,
+#: as a PNG drawn at :data:`WORDMARK_SCALE` times the size it is shown at.
+#: ``scripts/render_wordmark.py`` draws it.
+WORDMARK: Final = Path(__file__).parent / "assets" / "wordmark.png"
+WORDMARK_SCALE: Final = 4
 
 #: Each kind's number format: as it is, and with its sign, for a change.
 NUMBER_FORMATS: Final[dict[Kind, tuple[str, str]]] = {
@@ -339,7 +347,24 @@ def _write_about(book: xlsxwriter.Workbook, sheet: Worksheet, rows: About) -> No
     sheet.set_column(0, 0, 18)
     sheet.set_column(1, 1, _LINE_CHARS + 5)
 
-    for row, (name, value) in enumerate(rows):
+    # The lockup in a row of its own, and a blank one under it. Moved with
+    # its cells but never stretched by them.
+    _, height = _png_size(WORDMARK)
+    sheet.set_row(0, (height / WORDMARK_SCALE + 2 * _WORDMARK_INSET) * 0.75)
+    sheet.insert_image(
+        0,
+        0,
+        str(WORDMARK),
+        {
+            "x_scale": 1 / WORDMARK_SCALE,
+            "y_scale": 1 / WORDMARK_SCALE,
+            "x_offset": _WORDMARK_INSET,
+            "y_offset": _WORDMARK_INSET,
+            "object_position": 2,
+            "description": "WhaleWatch",
+        },
+    )
+    for row, (name, value) in enumerate(rows, start=2):
         sheet.write_string(row, 0, name, label)
         if isinstance(value, datetime):
             sheet.write_datetime(row, 1, value.astimezone(UTC).replace(tzinfo=None), when)
@@ -348,6 +373,19 @@ def _write_about(book: xlsxwriter.Workbook, sheet: Worksheet, rows: About) -> No
         else:
             sheet.set_row(row, _height(value))
             sheet.write_string(row, 1, value, prose)
+
+
+#: Pixels between the lockup and its row's edges.
+_WORDMARK_INSET: Final = 6
+
+
+def _png_size(path: Path) -> tuple[int, int]:
+    """A PNG's width and height in pixels, from its IHDR chunk."""
+    with path.open("rb") as handle:
+        header = handle.read(24)
+    if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        raise ValueError(f"not a PNG: {path}")
+    return int.from_bytes(header[16:20]), int.from_bytes(header[20:24])
 
 
 async def _write(

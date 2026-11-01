@@ -4,6 +4,7 @@ sheet says, and that nothing is left on disk once the file is open."""
 import io
 import os
 import tempfile
+import zipfile
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -24,6 +25,7 @@ from app.api.xlsx_export import (
     MAX_WIDTH,
     MEDIA_TYPE,
     TEAL,
+    WORDMARK,
     Section,
     xlsx_response,
 )
@@ -271,8 +273,28 @@ async def test_the_about_sheet_labels_each_fact() -> None:
     assert about["Export"] == "WhaleWatch export: a test"
     assert about["Generated at"] == datetime(2026, 11, 1, 9, 30)
     assert about["Coverage"] == "62 of 100 investors have filed for 2026Q3."
-    edgar = sheet["B4"]
+    # Under the wordmark's row and a blank one.
+    assert sheet["A3"].value == "Export"
+    edgar = sheet["B6"]
     assert edgar.hyperlink.target == ABOUT[3][1]
+
+
+async def test_the_about_sheet_opens_with_the_wordmark() -> None:
+    response = await _respond(_Cursor([ROW]))
+    body = b"".join([chunk async for chunk in response.body_iterator])  # type: ignore[misc]
+    with zipfile.ZipFile(io.BytesIO(body)) as package:
+        names = package.namelist()
+        # The one picture in the workbook, as drawn, and on the About sheet.
+        assert [n for n in names if n.startswith("xl/media/")] == ["xl/media/image1.png"]
+        assert package.read("xl/media/image1.png") == WORDMARK.read_bytes()
+        about_rels = package.read("xl/worksheets/_rels/sheet3.xml.rels").decode()
+        assert "../drawings/drawing1.xml" in about_rels
+        drawing = package.read("xl/drawings/drawing1.xml").decode()
+    # Anchored in A1, moved with the cells but not sized by them, and named.
+    assert "<xdr:from><xdr:col>0</xdr:col>" in drawing
+    assert "<xdr:row>0</xdr:row>" in drawing
+    assert 'editAs="oneCell"' in drawing
+    assert 'descr="WhaleWatch"' in drawing
 
 
 async def test_the_methodology_sheet_says_it_in_full() -> None:
