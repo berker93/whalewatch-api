@@ -63,7 +63,18 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Final
 
-from sqlalchemy import func, select, text
+from sqlalchemy import (
+    BigInteger,
+    Date,
+    DateTime,
+    Numeric,
+    Subquery,
+    Text,
+    column,
+    func,
+    select,
+    text,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import InsiderCluster
@@ -125,6 +136,39 @@ _CLASSIFIED: Final = """
     JOIN filing AS f ON f.id = t.filing_id
     WHERE t.transaction_code = 'P'
 """
+
+
+def counted_purchases() -> Subquery:
+    """Every Form 4 line that counts, by the rules above, as a subquery.
+
+    The rebuild's own text, so the screener's ``insider_buyers`` counts the
+    lines a cluster would, and a rule changed here changes both. Its
+    ``transaction_date`` condition, written outside, reaches the partitions.
+    """
+    classified = (
+        text(_CLASSIFIED)
+        .bindparams(plan_pattern=PLAN_PURCHASE_PATTERN)
+        .columns(
+            column("id", BigInteger),
+            column("transaction_date", Date),
+            column("issuer_cik", Text),
+            column("issuer_name", Text),
+            column("insider_id", BigInteger),
+            column("security_id", BigInteger),
+            column("shares", Numeric),
+            column("value_usd", Numeric),
+            column("filed_at", DateTime(timezone=True)),
+            column("excluded", Text),
+        )
+        .subquery("classified")
+    )
+    # Positional: the text's columns, in its order.
+    return (
+        select(*(c for c in classified.c if c.name != "excluded"))
+        .where(classified.c.excluded.is_(None))
+        .subquery("purchase")
+    )
+
 
 # One parameter set's episodes, as insider_cluster rows. :window and :min.
 _EPISODES: Final = f"""

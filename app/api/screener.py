@@ -13,9 +13,10 @@ What a row is
 -------------
 One filer's position in one stock in one period: a row of ``position_change``.
 Each filter is about the position (``action``, ``min_value``, ``min_weight``,
-``weight_change``, ``is_new_position``), its filer (``filer_category``,
-``filer_slug``) or its stock (``min_holders``, ``net_flow``,
-``insider_cluster``, ``sector``), and all of them hold for the row. So
+``weight_change``, ``is_new_position``, ``added_quarters``), its filer
+(``filer_category``, ``filer_slug``) or its stock (``min_holders``,
+``net_flow``, ``min_exits``, ``insider_cluster``, ``insider_buyers``,
+``sector``), and all of them hold for the row. So
 "activists opening a position over 5% of their book in a stock 20 funds hold"
 is one row per activist that did, and two position filters are about the same
 position, never one each.
@@ -32,8 +33,8 @@ period's rows, or probes a view's unique index, which leads with the period.
 
 Changes need a previous period
 ------------------------------
-``action``, ``weight_change`` and ``is_new_position`` describe a change, and a
-filer's first period has none: every position in it is ``new`` only because
+``action``, ``weight_change``, ``is_new_position`` and ``added_quarters``
+describe a change, and a filer's first period has none: every position in it is ``new`` only because
 it is the first we have. Those rows never pass a change filter, as the flows
 leave them out (:mod:`app.derived.views`).
 """
@@ -56,7 +57,10 @@ from sqlalchemy import (
     Text,
     and_,
     any_,
+    case,
     cast,
+    distinct,
+    exists,
     func,
     literal,
     select,
@@ -64,6 +68,7 @@ from sqlalchemy import (
     union,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.api.estimates import estimate_columns
 from app.api.pagination import Keyset, PageParams, SortKey, page_statement
@@ -74,8 +79,8 @@ from app.db.models import Filer, FilerCategory, InsiderCluster, SecCompanyTicker
 from app.db.models.position_change import ChangeAction, PositionChange
 from app.db.queries.returns import estimated_return
 from app.db.queries.tickers import ticker_labels
-from app.derived.insider_cluster import DEFAULT_MIN_INSIDERS, DEFAULT_WINDOW
-from app.derived.views import CONSENSUS_HOLDINGS, QUARTER_FLOWS
+from app.derived.insider_cluster import DEFAULT_MIN_INSIDERS, DEFAULT_WINDOW, counted_purchases
+from app.derived.views import CONSENSUS_HOLDINGS, QUARTER_FLOWS, traded_usd
 
 #: What a screen's queries may take, at most, before Postgres cancels them.
 #: A backstop: every query the vocabulary can write is planned well under it.
@@ -87,6 +92,9 @@ MAX_SLUGS: Final = 50
 #: threshold past them is a 422, not a bigint overflow's 500.
 MAX_COUNT: Final = 1_000_000
 MAX_DOLLARS: Final = Decimal(10) ** 15
+#: The longest run of adds ``added_quarters`` asks for: two years. Each
+#: quarter of it is one more probe of ``position_change`` per row.
+MAX_ADDED_QUARTERS: Final = 8
 
 _DISPLAY_NAME: Final = func.coalesce(Filer.display_name, Filer.name)
 
@@ -157,6 +165,9 @@ class Filter:
     """Why a filter in the vocabulary has no data behind it yet: asking for it
     is a 422 saying so. None for every filter that works."""
     required: bool = False
+    insiders: bool = False
+    """Whether it reads Form 4 trades, so the quarter must be inside the
+    caller's ``insiders_from``."""
 
     @property
     def available(self) -> bool:
@@ -232,13 +243,19 @@ def _at_least(minimum: Decimal, maximum: Decimal | None = None) -> Callable[[str
     return parse
 
 
-def _count(text: str) -> int:
-    if not (text.isascii() and text.isdigit()):
-        raise ValueError(f"{text!r} is not a whole number")
-    value = int(text)
-    if not 1 <= value <= MAX_COUNT:
-        raise ValueError(f"{text} is out of range: 1 to {MAX_COUNT}")
-    return value
+def _whole(minimum: int, maximum: int) -> Callable[[str], int]:
+    def parse(text: str) -> int:
+        if not (text.isascii() and text.isdigit()):
+            raise ValueError(f"{text!r} is not a whole number")
+        value = int(text)
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{text} is out of range: {minimum} to {maximum}")
+        return value
+
+    return parse
+
+
+_count: Final = _whole(1, MAX_COUNT)
 
 
 def _points(text: str) -> Decimal:
@@ -344,6 +361,34 @@ def _new_position(value: bool, scope: Scope) -> ColumnElement[bool]:
     return and_(_change.action == new if value else _change.action != new, _A_CHANGE)
 
 
+def _added_quarters(value: int, scope: Scope) -> ColumnElement[bool]:
+    """An ``add`` this period, and in each of the ``value - 1`` before it, one
+    probe of ``position_change``'s key each, back through ``prev_period_of_report``."""
+    add = ChangeAction.ADD.value
+    later: Any = _change
+    chain: list[ColumnElement[bool]] = []
+    for n in range(1, value):
+        earlier = aliased(PositionChange, name=f"added_{n}")
+        chain += [
+            earlier.filer_id == later.filer_id,
+            earlier.period_of_report == later.prev_period_of_report,
+            earlier.security_id == later.security_id,
+            earlier.action == add,
+        ]
+        later = earlier
+    # An add has previous shares, so a previous period: no first period passes.
+    return and_(_change.action == add, exists().where(*chain))
+
+
+def _min_exits(value: int, scope: Scope) -> ColumnElement[bool]:
+    flows = QUARTER_FLOWS
+    return _change.security_id.in_(
+        select(flows.c.security_id).where(
+            flows.c.period_of_report == scope.period, flows.c.exits >= value
+        )
+    )
+
+
 def clustered_securities(scope: Scope) -> CompoundSelect[Any]:
     """Every security with an insider cluster episode in the period's quarter.
 
@@ -376,6 +421,43 @@ def clustered_securities(scope: Scope) -> CompoundSelect[Any]:
 def _insider_cluster(value: bool, scope: Scope) -> ColumnElement[bool]:
     clustered = clustered_securities(scope)
     return _change.security_id.in_(clustered) if value else _change.security_id.not_in(clustered)
+
+
+def insider_bought_securities(minimum: int, scope: Scope) -> CompoundSelect[Any]:
+    """Every security whose company had at least ``minimum`` insiders buy in the
+    period's quarter, by the lines a cluster counts (:func:`counted_purchases`).
+
+    Distinct insiders, each once however often they bought, within the
+    quarter, and from ``insiders_from`` on. Per issuer, as a cluster is: each
+    security a counted line is linked to, and each whose current ticker SEC
+    lists under the issuer's CIK.
+    """
+    line = counted_purchases()
+    in_quarter = [
+        line.c.transaction_date >= cast(func.date_trunc("quarter", scope.period), Date),
+        line.c.transaction_date <= scope.period,
+    ]
+    if scope.insiders_from is not None:
+        in_quarter.append(line.c.transaction_date >= scope.insiders_from)
+    issuers = (
+        select(line.c.issuer_cik)
+        .where(*in_quarter)
+        .group_by(line.c.issuer_cik)
+        .having(func.count(distinct(line.c.insider_id)) >= minimum)
+    )
+    linked = select(line.c.security_id).where(
+        *in_quarter, line.c.security_id.is_not(None), line.c.issuer_cik.in_(issuers)
+    )
+    by_issuer = (
+        select(Security.id)
+        .join(SecCompanyTicker, SecCompanyTicker.ticker == func.replace(Security.ticker, ".", "-"))
+        .where(SecCompanyTicker.cik.in_(issuers))
+    )
+    return union(linked, by_issuer)
+
+
+def _insider_buyers(value: int, scope: Scope) -> ColumnElement[bool]:
+    return _change.security_id.in_(insider_bought_securities(value, scope))
 
 
 #: The filters, in the order a client lists them. Nothing beyond these.
@@ -508,6 +590,19 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         options=tuple(d.value for d in Direction),
     ),
     Filter(
+        key="min_exits",
+        label="Investors who sold out",
+        type=FilterType.INTEGER,
+        description=(
+            "Only stocks at least this many investors sold their whole position in, in the quarter."
+        ),
+        source="mv_quarter_flows.exits",
+        parser=_count,
+        fragment=_min_exits,
+        minimum=Decimal(1),
+        maximum=Decimal(MAX_COUNT),
+    ),
+    Filter(
         key="is_new_position",
         label="First time holding it",
         type=FilterType.BOOLEAN,
@@ -521,6 +616,22 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         fragment=_new_position,
     ),
     Filter(
+        key="added_quarters",
+        label="Added to, quarters running",
+        type=FilterType.INTEGER,
+        description=(
+            f"Positions the investor added to this quarter and in each of its previous "
+            f"published periods before it, at least this many in a row, 2 to "
+            f"{MAX_ADDED_QUARTERS}. An add is more shares, so a stock that only rose is "
+            f"not one, nor is a split; opening a position is `new`, not an add."
+        ),
+        source="position_change.action = 'add', back through prev_period_of_report",
+        parser=_whole(2, MAX_ADDED_QUARTERS),
+        fragment=_added_quarters,
+        minimum=Decimal(2),
+        maximum=Decimal(MAX_ADDED_QUARTERS),
+    ),
+    Filter(
         key="insider_cluster",
         label="Insiders buying too",
         type=FilterType.BOOLEAN,
@@ -532,6 +643,24 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="insider_cluster, by security or by the issuer's CIK",
         parser=_boolean,
         fragment=_insider_cluster,
+        insiders=True,
+    ),
+    Filter(
+        key="insider_buyers",
+        label="Insiders who bought",
+        type=FilterType.INTEGER,
+        description=(
+            "Only stocks whose company had at least this many of its officers and "
+            "directors buy shares on the open market in the quarter, by the rules a "
+            "cluster counts purchases by: no 10b5-1 plan, employee or dividend plan "
+            "purchases. `1` is any such purchase."
+        ),
+        source="insider_transaction, by security or by the issuer's CIK",
+        parser=_count,
+        fragment=_insider_buyers,
+        minimum=Decimal(1),
+        maximum=Decimal(MAX_COUNT),
+        insiders=True,
     ),
 )
 
@@ -590,6 +719,13 @@ class ScreenSort(StrEnum):
     VALUE = "value"
     WEIGHT = "weight"
     WEIGHT_CHANGE = "weight_change"
+    TRADED = "traded"
+
+
+#: The dollars a change bought or sold at the period-end price, as the flows
+#: count them (:func:`traded_usd`), to the cent. Null in a filer's first
+#: period, which bought nothing: those positions are only the first we have.
+_TRADED: Final = case((_A_CHANGE, func.round(traded_usd(), 2)), else_=None)
 
 
 #: Beyond every real weight or move, either way: where a row with none sorts,
@@ -602,6 +738,7 @@ def screen_keyset(sort: ScreenSort, order: SortOrder) -> Keyset:
     a total order, every key one way, so a page boundary is one row comparison."""
     descending = order is SortOrder.DESC
     missing = literal(-_BEYOND if descending else _BEYOND, Numeric)
+    missing_dollars = literal(-1 if descending else MAX_DOLLARS, Numeric)
     lead = {
         ScreenSort.VALUE: [],
         ScreenSort.WEIGHT: [
@@ -614,6 +751,9 @@ def screen_keyset(sort: ScreenSort, order: SortOrder) -> Keyset:
                 Decimal,
                 descending,
             )
+        ],
+        ScreenSort.TRADED: [
+            SortKey("traded_key", func.coalesce(_TRADED, missing_dollars), Decimal, descending)
         ],
     }[sort]
     return Keyset(
@@ -653,6 +793,7 @@ def screen_query(
         _change.weight_delta,
         _change.is_split,
         _change.split_ratio,
+        _TRADED.label("traded_value_usd"),
         *lead,
     ).where(*screen.conditions(scope))
     page_rows = page_statement(rows, keyset, page).cte("page")

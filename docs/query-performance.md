@@ -1187,6 +1187,36 @@ probe at once (`min_holders`, `net_flow`, `insider_cluster`) with position
 and investor filters and a sort no index serves. Both are far inside the
 5-second `statement_timeout` the endpoint runs under.
 
+### The presets' filters
+
+SCR-2's presets added three filters that read more than the period's rows
+and a sort, `traded`, that no index serves. Measured the same way, 2022Q2,
+first page, server mean of 20 runs (`make explain a="--only NAME"`):
+
+| Query | Server mean |
+| --- | --- |
+| `screener`, the period alone, again | 2.1 ms |
+| `screener_added_quarters`, a run of 8 adds | 129 ms |
+| `screener_min_exits`, exits under `min_exits=5`, by `traded` | 7.0 ms |
+| `screener_insider_buyers`, by `traded`, Free's insider window | under 2 ms (see below) |
+
+`added_quarters` is the expensive one: one probe of `position_change` per
+quarter of the run for each of the period's adds. The planner hashes the
+earlier quarters' adds rather than probing per row, and every period's adds
+are read whether or not a page fills, since a run is rare (0 rows here, which
+is the worst case: nothing stops the scan early). The query uses 8, the
+longest run allowed. The preset asks for 3: 47 ms for 2026Q2 through the API,
+uncached. No column stores the run: it would be one more thing for
+`recompute` to keep right, for a query well inside the timeout.
+
+`insider_buyers` reads `insider_transaction` through the cluster rules' own
+SQL text for the quarter. The dev database's Form 4 lines are a few hundred
+from late 2026, so for 2022Q2 (and inside Free's window) it reads none, and
+its time says nothing yet. For 2026Q3, whose 12 purchases are the most of any
+published quarter, it is 1.4 ms, and the plan reads `insider_transaction_2026` by its
+date index and no other partition: the quarter's dates reach the partitions.
+Measure it again once a full Form 4 crawl is loaded.
+
 ## Built since: partitioning `insider_transaction`
 
 `0032` partitions `insider_transaction` by `RANGE (transaction_date)`, a

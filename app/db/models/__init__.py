@@ -128,6 +128,7 @@ from app.db.models.privacy import (
     DeletionRequester,
     Purpose,
 )
+from app.db.models.screener_preset import ScreenerPreset
 from app.db.models.sec_13f_security import STATUS_CHECK, ListStatus, Sec13FSecurity
 from app.db.models.sec_company_ticker import SecCompanyTicker
 from app.db.models.security import RESOLUTION_SOURCE_CHECK, ResolutionSource, Security
@@ -262,6 +263,7 @@ __all__ = [
     "Route",
     "RunStatus",
     "SavedFilter",
+    "ScreenerPreset",
     "Sec13FSecurity",
     "SecCompanyTicker",
     "Security",

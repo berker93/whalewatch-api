@@ -108,6 +108,13 @@ from app.db.session import create_engine
 from app.derived.views import QUARTER_FLOWS, YEAR_FLOWS
 
 
+def _preset_screen(*filters: tuple[str, str], sort: ScreenSort = ScreenSort.VALUE) -> Select[Any]:
+    """The first page of a screen of ``filters``, as Free would ask it."""
+    screen = Screen(tuple(Applied(key, FILTERS[key].parse([raw])) for key, raw in filters))
+    scope = Scope(bindparam("period"), insiders_from=_FREE.insiders_from)
+    return screen_query(screen, scope, PageParams(), sort=sort)[0]
+
+
 @dataclass(frozen=True, slots=True)
 class Query:
     """One query an endpoint issues, with ``:name`` parameters."""
@@ -477,6 +484,25 @@ QUERIES: Final = (
             PageParams(),
             sort=ScreenSort.WEIGHT_CHANGE,
         )[0],
+    ),
+    # The presets' filters that read more than the period's rows: a run of
+    # adds, a probe per quarter of it (the longest run asked, not the preset's
+    # three), the period's purchases by insiders, and a view's exit counts. As
+    # their presets sort them, by traded dollars, which no index reads.
+    Query.from_app(
+        "screener_added_quarters",
+        "GET /v1/screener?added_quarters=8",
+        _preset_screen(("added_quarters", "8")),
+    ),
+    Query.from_app(
+        "screener_insider_buyers",
+        "GET /v1/screener/presets/insiders-buying-what-funds-are-buying",
+        _preset_screen(("action", "new,add"), ("insider_buyers", "1"), sort=ScreenSort.TRADED),
+    ),
+    Query.from_app(
+        "screener_min_exits",
+        "GET /v1/screener/presets/everyone-sold-out",
+        _preset_screen(("action", "exit"), ("min_exits", "5"), sort=ScreenSort.TRADED),
     ),
     # The search's terms are in its SQL, as patterns and a regular expression,
     # so they are fixed here rather than taken from --q. Each is the worst

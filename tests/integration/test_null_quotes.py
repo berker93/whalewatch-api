@@ -38,6 +38,7 @@ ACCESSION: Final = "0000000042-24-000002"
 PARAMETERS: Final = {
     "accession_no": ACCESSION,
     "slug": "whale",
+    "preset": "big-bets",
     "ticker": "NVDA",
     "q": "nvidia",
     # The screener's: the only period that is required.

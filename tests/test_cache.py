@@ -508,6 +508,9 @@ def test_every_read_of_filing_data_is_gated() -> None:
         "/v1/meta/data-sources",
         # The screener's filters: names and types, read from no table.
         "/v1/screener/filters",
+        # The presets: names, sentences and filters, no rows. Each one's
+        # screen, /v1/screener/presets/{preset}, is gated as the screener is.
+        "/v1/screener/presets",
         # The caller's own account, watchlist, filters, keys, billing, export,
         # notifications (as they were sent, whatever the plan reads now),
         # alert rules (their targets' names, no period) and quiet hours.

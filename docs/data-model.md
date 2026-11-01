@@ -1149,6 +1149,29 @@ parser collapses them before they reach the unique constraint; see
 chosen. Not foreign-keyed to `security`, for `figi_response_log`'s reason, and
 most of its CUSIPs are held by no one we track. In no layer above.
 
+### `screener_preset`
+
+```
+slug         text      pk                -- the URL: /v1/screener/presets/{preset}; never renamed
+position     smallint  not null unique   -- listed smallest first
+name         text      not null          -- 1-80 characters, trimmed
+explanation  text      not null          -- one sentence, 1-300 characters, trimmed
+query        jsonb     not null          -- {filter key: [value, ...]}; an object, never 'period'
+sort         text      not null          -- a ScreenSort value, checked by the API
+sort_order   text      not null          -- desc | asc
+created_at   timestamptz not null
+```
+
+The screener's presets (`0049_screener_presets`): screens chosen by hand, each
+a set of the screener's named filters, a sort and the sentence shown above its
+results. Configuration rather than data, kept as rows so that adding a preset
+is a migration and not a change to the code. The API reads `query` and `sort`
+through the screener's vocabulary ([`screener_presets`](../app/api/screener_presets.py)),
+as it reads a request, so a key or value the database cannot check is checked
+there, and `tests/integration/test_screener_presets.py` runs every preset the
+migrations write. In no layer: nothing derives from it, and nothing it names
+is a row.
+
 ## Partitioning
 
 `insider_transaction` is partitioned by `RANGE (transaction_date)` (`0032`):

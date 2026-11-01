@@ -23,6 +23,7 @@ from app.api.errors import ApiError
 from app.api.routers.screener import statement_timeout
 from app.api.screener import VOCABULARY
 from app.db.models import Filer, InsiderCluster, SecCompanyTicker, Security
+from tests.integration.test_insiders_endpoint import _form4, _insider, _line
 from tests.integration.test_market_endpoint import _fund, _get, _publish, _quarter, _walk
 
 Q1 = date(2024, 3, 31)
@@ -294,10 +295,102 @@ async def test_an_insider_cluster_is_the_securitys_or_its_issuers_in_the_quarter
     ]
 
 
+async def test_added_quarters_is_a_run_of_adds_back_through_the_previous_periods(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Steady adds to Alpha three quarters running. Bravo is held, then added to
+    twice; Charlie is opened, then added to twice: an opening is not an add.
+    In Q3, Alpha's run is two, since Q1 is the first period we have."""
+    steady = await _fund(db_session, "steady")
+    q3, q4 = date(2024, 9, 30), date(2024, 12, 31)
+    await _quarter(db_session, steady, Q1, {ALPHA: 100, BRAVO: 100})
+    await _quarter(db_session, steady, Q2, {ALPHA: 200, BRAVO: 100, CHARLIE: 100})
+    await _quarter(db_session, steady, q3, {ALPHA: 300, BRAVO: 200, CHARLIE: 200})
+    await _quarter(db_session, steady, q4, {ALPHA: 400, BRAVO: 300, CHARLIE: 300})
+    await _publish(db_session)
+
+    async def run(period: str, quarters: str) -> set[str]:
+        body = await _get(client, "/v1/screener", period=period, added_quarters=quarters)
+        return {row["cusip"] for row in body["data"]}
+
+    assert await run("2024Q4", "3") == {ALPHA}
+    assert await run("2024Q4", "2") == {ALPHA, BRAVO, CHARLIE}
+    assert await run("2024Q3", "2") == {ALPHA}
+    assert await run("2024Q3", "3") == set()
+
+
+async def test_min_exits_is_the_stocks_that_many_investors_sold_out_of(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Activist-b alone sold out of Delta, and nobody holds it after."""
+    await _two_quarters(db_session)
+
+    assert await _screen(client, action="exit", min_exits="1") == [("activist-b", DELTA)]
+    assert await _screen(client, action="exit", min_exits="2") == []
+    assert await _screen(client, min_exits="1") == []
+
+
+async def test_insider_buyers_counts_the_officers_and_directors_buying_in_the_quarter(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Two directors buy Charlie, linked to it, in Q2. One officer buys Bravo,
+    found by its issuer's CIK. Alpha's buys don't count: one under a 10b5-1
+    plan, one by a 10% owner, one in Q1, and one director buying twice is one."""
+    await _two_quarters(db_session)
+    await db_session.execute(
+        update(Security)
+        .where(Security.cusip == BRAVO)
+        .values(ticker="BRV.A", resolution_source="manual")
+    )
+    await db_session.execute(
+        insert(SecCompanyTicker).values(
+            ticker="BRV-A", cik=BRAVO_CIK, name="BRAVO CORP", seen_at=datetime.now(UTC)
+        )
+    )
+    ids: dict[str, int] = {
+        cusip: id_ for cusip, id_ in await db_session.execute(select(Security.cusip, Security.id))
+    }
+    alpha_cik, charlie_cik = "0000000111", "0000000333"
+
+    async def buy(
+        cik: str, cusip: str | None, *days: date, plan: bool = False, **roles: Any
+    ) -> None:
+        await _form4(
+            db_session,
+            await _insider(db_session, f"INSIDER {next(names)}"),
+            *(_line("P", day, plan=plan) for day in days),
+            issuer_cik=cik,
+            security_id=None if cusip is None else ids[cusip],
+            **(roles or {"is_director": True}),
+        )
+
+    names = iter(range(100))
+    await buy(charlie_cik, CHARLIE, date(2024, 4, 2))
+    await buy(charlie_cik, CHARLIE, date(2024, 6, 30))
+    await buy(BRAVO_CIK, None, date(2024, 5, 15), is_officer=True)
+    await buy(alpha_cik, ALPHA, date(2024, 5, 1), plan=True)
+    await buy(alpha_cik, ALPHA, date(2024, 5, 1), is_ten_percent_owner=True)
+    await buy(alpha_cik, ALPHA, date(2024, 3, 29))
+    await buy(alpha_cik, ALPHA, date(2024, 5, 1), date(2024, 5, 2))
+
+    assert await _screen(client, insider_buyers="1") == [
+        ("value-a", CHARLIE),
+        ("value-a", BRAVO),
+        ("newcomer", CHARLIE),
+        ("activist-b", ALPHA),
+        ("value-a", ALPHA),
+    ]
+    assert await _screen(client, insider_buyers="2") == [
+        ("value-a", CHARLIE),
+        ("newcomer", CHARLIE),
+    ]
+    assert await _screen(client, insider_buyers="2", action="new,add") == [("value-a", CHARLIE)]
+
+
 # --- paging and sorting ---------------------------------------------------------
 
 
-@pytest.mark.parametrize("sort", ["value", "weight", "weight_change"])
+@pytest.mark.parametrize("sort", ["value", "weight", "weight_change", "traded"])
 @pytest.mark.parametrize("order", ["desc", "asc"])
 async def test_a_walk_of_pages_is_the_whole_screen_once_in_order(
     client: AsyncClient, db_session: AsyncSession, sort: str, order: str
@@ -327,6 +420,36 @@ async def test_weight_change_sorts_the_biggest_move_first_either_way(
         ("value-a", ALPHA),
     ]
     assert down == list(reversed(up))
+
+
+async def test_traded_sorts_the_dollars_bought_or_sold_first(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """At $10: Charlie opened with 600 shares, Bravo added 200, Delta's 100
+    sold out, and the holds traded nothing. Newcomer's first period bought
+    nothing we can say, and is last."""
+    await _two_quarters(db_session)
+
+    body = await _get(
+        client,
+        "/v1/screener",
+        period="2024Q2",
+        action="new,add,hold,exit",
+        sort="traded",
+    )
+    every = await _get(client, "/v1/screener", period="2024Q2", sort="traded")
+
+    assert [(row["cusip"], row["traded_value_usd"]) for row in body["data"]] == [
+        (CHARLIE, "6000.00"),
+        (BRAVO, "2000.00"),
+        (DELTA, "1000.00"),
+        (ALPHA, "0.00"),
+        (ALPHA, "0.00"),
+    ]
+    assert [(row["slug"], row["traded_value_usd"]) for row in every["data"]][-1] == (
+        "newcomer",
+        None,
+    )
 
 
 # --- refusals -------------------------------------------------------------------
@@ -365,6 +488,10 @@ async def test_a_parameter_that_is_not_a_filter_is_refused_not_ignored(
         ("period=2024Q2&net_flow=up", "net_flow", "unknown direction"),
         ("period=2024Q2&filer_slug=No%20Such", "filer_slug", "not an investor's slug"),
         ("period=2024Q2&action=", "action", "no value given"),
+        ("period=2024Q2&added_quarters=1", "added_quarters", "out of range: 2 to 8"),
+        ("period=2024Q2&added_quarters=9", "added_quarters", "out of range: 2 to 8"),
+        ("period=2024Q2&min_exits=0", "min_exits", "out of range"),
+        ("period=2024Q2&insider_buyers=two", "insider_buyers", "not a whole number"),
     ],
 )
 async def test_a_malformed_value_is_refused_by_name(
@@ -412,13 +539,16 @@ async def test_the_plans_window_holds_for_the_period_and_the_insiders(
 
     assert (await client.get("/v1/screener", params={"period": "2024Q2"})).status_code == 200
     before = await client.get("/v1/screener", params={"period": "2024Q1"})
-    insiders = await client.get(
-        "/v1/screener", params={"period": "2024Q2", "insider_cluster": "true"}
-    )
+    insiders = [
+        await client.get("/v1/screener", params={"period": "2024Q2", key: value})
+        for key, value in (("insider_cluster", "true"), ("insider_buyers", "1"))
+    ]
 
-    assert before.status_code == insiders.status_code == 402
+    assert before.status_code == 402
     assert before.json()["error"]["detail"]["limit"] == "history_quarters"
-    assert insiders.json()["error"]["detail"]["limit"] == "insider_months"
+    for response in insiders:
+        assert response.status_code == 402
+        assert response.json()["error"]["detail"]["limit"] == "insider_months"
 
 
 async def test_a_query_past_the_timeout_is_cancelled_and_a_504(db_session: AsyncSession) -> None:

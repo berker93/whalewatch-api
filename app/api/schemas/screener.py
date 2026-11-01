@@ -1,21 +1,24 @@
-"""Models for ``/v1/screener``: positions that pass a set of named filters, and the filters.
+"""Models for ``/v1/screener``: positions that pass a set of named filters, the filters,
+and the presets.
 
 A row is one investor's position in one stock in the period ``meta`` names,
 with what the investor did to it since its previous period, the stock's
 holders and net flow across every investor, and the price estimate with its
 confidence (:mod:`app.api.schemas.estimate`). ``meta.filters`` echoes what the
-rows passed, so a page read on its own still says what it is a screen of.
+rows passed, so a page read on its own still says what it is a screen of. A
+preset's page says which preset in ``meta.preset`` too.
 """
 
 from datetime import date
 
 from pydantic import BaseModel, Field
 
+from app.api.routers.portfolio import SortOrder
 from app.api.schemas.envelope import Envelope, Meta
 from app.api.schemas.estimate import Estimates
 from app.api.schemas.stock import StockRef
 from app.api.schemas.types import Money, Percent, Quantity
-from app.api.screener import FilterType
+from app.api.screener import FilterType, ScreenSort
 from app.db.models.filer import FilerCategory
 from app.db.models.position_change import ChangeAction
 
@@ -77,6 +80,15 @@ class _Position(StockRef):
             "`weight_pct` less the weight at `prev_period`, in points. Moves with the price."
         ),
         examples=["6.250000"],
+    )
+    traded_value_usd: Money | None = Field(
+        default=None,
+        description=(
+            "Dollars the change bought or sold, at the period-end price, as the flows count "
+            "them: the whole value of a `new` position, the whole previous value of an "
+            "`exit`, nothing for a `hold`. Null in the investor's first period."
+        ),
+        examples=["2000000.00"],
     )
     holder_count: int = Field(
         description="Investors holding the stock at the period end, this one included.",
@@ -165,3 +177,54 @@ class ScreenerFilter(BaseModel):
 
 class ScreenerFilterEnvelope(Envelope[ScreenerFilter]):
     pass
+
+
+class ScreenerPreset(BaseModel):
+    """A screen chosen by hand: its name, what it shows, and the filters it is."""
+
+    slug: str = Field(
+        description=(
+            "Its stable identifier: `/v1/screener/presets/{preset}`. Never renamed, so a "
+            "shared link keeps working."
+        ),
+        examples=["quiet-accumulation"],
+    )
+    name: str = Field(description="What it is called.", examples=["Quiet accumulation"])
+    explanation: str = Field(
+        description="One sentence saying what the results are, to show above them.",
+        examples=[
+            "Positions an investor has added shares to three quarters running, a stake "
+            "built steadily rather than bought all at once."
+        ],
+    )
+    filters: list[AppliedFilter] = Field(
+        description=(
+            "Its filters, in the order `GET /v1/screener/filters` lists them: what the "
+            "builder opens with."
+        ),
+    )
+    sort: ScreenSort = Field(description="`GET /v1/screener`'s `sort`.", examples=["value"])
+    order: SortOrder = Field(description="`GET /v1/screener`'s `order`.", examples=["desc"])
+    query: str = Field(
+        description=(
+            "`filters`, `sort` and `order` as `GET /v1/screener`'s query string, without "
+            "`period`: add the quarter, and it is the same screen."
+        ),
+        examples=["added_quarters=3&sort=value&order=desc"],
+    )
+
+
+class ScreenerPresetEnvelope(Envelope[ScreenerPreset]):
+    pass
+
+
+class ScreenerPresetMeta(ScreenerMeta):
+    """A screen's ``meta``, with the preset it is."""
+
+    preset: ScreenerPreset = Field(description="The preset the rows are the screen of.")
+
+
+class ScreenerPresetResultEnvelope(Envelope[ScreenerRow]):
+    meta: ScreenerPresetMeta = Field(
+        description="What the rows describe: the preset, its filters and the period."
+    )

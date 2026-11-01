@@ -3815,6 +3815,16 @@
             "description": "**Bought or sold overall.** `buy`: stocks the investors bought more of than they sold in the quarter, in traded dollars. `sell`: sold more than bought."
           },
           {
+            "name": "min_exits",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "title": "Min Exits"
+            },
+            "description": "**Investors who sold out.** Only stocks at least this many investors sold their whole position in, in the quarter."
+          },
+          {
             "name": "is_new_position",
             "in": "query",
             "required": false,
@@ -3825,6 +3835,16 @@
             "description": "**First time holding it.** `true`: opened this quarter, not held in the investor's previous published period (one sold out of and bought back is new again). `false`: held then too. Never a position in an investor's first period, either way."
           },
           {
+            "name": "added_quarters",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "title": "Added Quarters"
+            },
+            "description": "**Added to, quarters running.** Positions the investor added to this quarter and in each of its previous published periods before it, at least this many in a row, 2 to 8. An add is more shares, so a stock that only rose is not one, nor is a split; opening a position is `new`, not an add."
+          },
+          {
             "name": "insider_cluster",
             "in": "query",
             "required": false,
@@ -3833,6 +3853,16 @@
               "title": "Insider Cluster"
             },
             "description": "**Insiders buying too.** `true`: stocks whose company had a cluster buy in the quarter: at least 3 officers and directors buying on the open market within 30 days (`GET /v1/insiders/clusters`). `false`: none."
+          },
+          {
+            "name": "insider_buyers",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "title": "Insider Buyers"
+            },
+            "description": "**Insiders who bought.** Only stocks whose company had at least this many of its officers and directors buy shares on the open market in the quarter, by the rules a cluster counts purchases by: no 10b5-1 plan, employee or dividend plan purchases. `1` is any such purchase."
           }
         ],
         "responses": {
@@ -4016,6 +4046,271 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/screener/presets": {
+      "get": {
+        "tags": [
+          "screener"
+        ],
+        "summary": "The presets: screens chosen by hand, each with what it shows",
+        "description": "Every preset, in the order to show them, the first ones first. Each is a\nname, the sentence to show above its results, and the filters, sort and\norder it is: `GET /v1/screener/presets/{preset}` for its results, or its\n`query` to open it in a builder. Free for everyone. Not paginated.",
+        "operationId": "listScreenerPresets",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScreenerPresetEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/screener/presets/{preset}": {
+      "get": {
+        "tags": [
+          "screener"
+        ],
+        "summary": "One preset's screen, of the latest quarter or another",
+        "description": "The positions `GET /v1/screener` gives for the preset's filters, sort and\norder, in `period`: the same rows, and the same page for the same cursor.\n`meta.preset` is the preset, its `explanation` the sentence to show above\nthe rows, and `meta.period` the quarter they are of.",
+        "operationId": "screenPreset",
+        "parameters": [
+          {
+            "name": "preset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "The preset's slug.",
+              "title": "Preset"
+            },
+            "description": "The preset's slug."
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`. The latest with positions inside the plan's window when left out.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`. The latest with positions inside the plan's window when left out."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScreenerPresetResultEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No preset has the slug, or nothing is published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`period` is malformed, or a parameter other than `period`, `limit` and `cursor` was given. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "`timeout`: the screen's query ran past 5 seconds and was cancelled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -21746,7 +22041,8 @@
         "enum": [
           "value",
           "weight",
-          "weight_change"
+          "weight_change",
+          "traded"
         ],
         "title": "ScreenSort",
         "description": "What the screen is ordered by."
@@ -22071,6 +22367,285 @@
         "title": "ScreenerMeta",
         "description": "``meta``, with the filters the rows passed besides the period."
       },
+      "ScreenerPreset": {
+        "properties": {
+          "slug": {
+            "type": "string",
+            "title": "Slug",
+            "description": "Its stable identifier: `/v1/screener/presets/{preset}`. Never renamed, so a shared link keeps working.",
+            "examples": [
+              "quiet-accumulation"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "What it is called.",
+            "examples": [
+              "Quiet accumulation"
+            ]
+          },
+          "explanation": {
+            "type": "string",
+            "title": "Explanation",
+            "description": "One sentence saying what the results are, to show above them.",
+            "examples": [
+              "Positions an investor has added shares to three quarters running, a stake built steadily rather than bought all at once."
+            ]
+          },
+          "filters": {
+            "items": {
+              "$ref": "#/components/schemas/AppliedFilter"
+            },
+            "type": "array",
+            "title": "Filters",
+            "description": "Its filters, in the order `GET /v1/screener/filters` lists them: what the builder opens with."
+          },
+          "sort": {
+            "$ref": "#/components/schemas/ScreenSort",
+            "description": "`GET /v1/screener`'s `sort`.",
+            "examples": [
+              "value"
+            ]
+          },
+          "order": {
+            "$ref": "#/components/schemas/SortOrder",
+            "description": "`GET /v1/screener`'s `order`.",
+            "examples": [
+              "desc"
+            ]
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "`filters`, `sort` and `order` as `GET /v1/screener`'s query string, without `period`: add the quarter, and it is the same screen.",
+            "examples": [
+              "added_quarters=3&sort=value&order=desc"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "slug",
+          "name",
+          "explanation",
+          "filters",
+          "sort",
+          "order",
+          "query"
+        ],
+        "title": "ScreenerPreset",
+        "description": "A screen chosen by hand: its name, what it shows, and the filters it is."
+      },
+      "ScreenerPresetEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ScreenerPreset"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "ScreenerPresetEnvelope"
+      },
+      "ScreenerPresetMeta": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the data belongs to. Null only for a collection that is not about a period, such as a list of filers.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "quarters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarters",
+            "description": "For figures over more than one quarter, such as a year's flows, every quarter they cover, oldest first, ending with `period`. Null for one quarter.",
+            "examples": [
+              [
+                "2025Q3",
+                "2025Q4",
+                "2026Q1",
+                "2026Q2"
+              ]
+            ]
+          },
+          "latest_filing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing At",
+            "description": "When the most recently filed of this period's published filings reached EDGAR. Null when nothing for the period has been published.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `period` is."
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats",
+            "description": "Why the rows may be wrong although every rule for reading the filings was followed: an amendment left out because its cover page does not say whether it restates or adds to the period, additions counting with no original loaded, two originals filed for one period, or an amendment number missing from those loaded. One sentence each, for a person to read. Empty when nothing is known to be wrong, and on endpoints that do not check.",
+            "examples": [
+              [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is left out: if it restates or adds to the period, the period is wrong"
+              ]
+            ]
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At",
+            "description": "For a response read from the materialised aggregates, when they were last refreshed: the rows are as of then, and a filing published since is not in them yet. Null for a response read live, and when the refresh is unrecorded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At",
+            "description": "When this response was built.",
+            "examples": [
+              "2026-10-03T09:41:27Z"
+            ]
+          },
+          "filters": {
+            "items": {
+              "$ref": "#/components/schemas/AppliedFilter"
+            },
+            "type": "array",
+            "title": "Filters",
+            "description": "Every filter but `period`, which is `meta.period`, in the order `GET /v1/screener/filters` lists them. Empty when only the period was given."
+          },
+          "preset": {
+            "$ref": "#/components/schemas/ScreenerPreset",
+            "description": "The preset the rows are the screen of."
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "filters",
+          "preset"
+        ],
+        "title": "ScreenerPresetMeta",
+        "description": "A screen's ``meta``, with the preset it is."
+      },
+      "ScreenerPresetResultEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ScreenerRow"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ScreenerPresetMeta",
+            "description": "What the rows describe: the preset, its filters and the period."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "ScreenerPresetResultEnvelope"
+      },
       "ScreenerQuery": {
         "properties": {
           "period": {
@@ -22382,6 +22957,22 @@
             "description": "`weight_pct` less the weight at `prev_period`, in points. Moves with the price.",
             "examples": [
               "6.250000"
+            ]
+          },
+          "traded_value_usd": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traded Value Usd",
+            "description": "Dollars the change bought or sold, at the period-end price, as the flows count them: the whole value of a `new` position, the whole previous value of an `exit`, nothing for a `hold`. Null in the investor's first period.",
+            "examples": [
+              "2000000.00"
             ]
           },
           "holder_count": {

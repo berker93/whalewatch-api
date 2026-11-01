@@ -9,6 +9,14 @@
 ``GET /v1/screener/filters``
     That vocabulary, for a client to build its controls from: each filter's
     key, label, type and options.
+``GET /v1/screener/presets``
+    The presets: screens chosen by hand, each a name, one sentence and the
+    filters it is (:mod:`app.api.screener_presets`). Free for everyone.
+``GET /v1/screener/presets/{preset}``
+    One preset's screen: the same rows ``GET /v1/screener`` gives for its
+    filters, of the latest quarter unless ``?period=`` says otherwise, with
+    the preset in ``meta``. A URL to share; its filters are fixed, and any
+    filter given beside them is a 422.
 
 The parameters are the vocabulary's
 ------------------------------------
@@ -29,16 +37,19 @@ transaction, so nothing outlives it. A query cancelled by it is a 504
 The plan's window
 -----------------
 The period is inside the caller's ``history_from`` or it is a 402, as on every
-read of 13F data. ``insider_cluster`` reads Form 4 trades too, so the quarter
-must start inside ``insiders_from``, and no episode begun before it counts.
+read of 13F data. ``insider_cluster`` and ``insider_buyers`` read Form 4
+trades too, so the quarter must start inside ``insiders_from``, and no trade
+before it counts. A preset is free, not unlimited: its quarter is held to the
+same window, and its default, the latest quarter, is inside every plan's.
 """
 
 import inspect
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Annotated, Any, Final
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import WithJsonSchema
 from sqlalchemy import text
@@ -47,14 +58,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cache import Lifetime, cached
 from app.api.deps import PageParamsDep, SessionDep
-from app.api.entitlements import PLAN_LIMITED, EntitlementContextDep
+from app.api.entitlements import PLAN_LIMITED, EntitlementContext, EntitlementContextDep
 from app.api.errors import INVALID, INVALID_CURSOR, ApiError, Responses, invalid, not_found
 from app.api.estimates import estimates
 from app.api.meta import unscoped_meta
-from app.api.pagination import page_of
+from app.api.pagination import PageParams, page_of
 from app.api.routers.market import _meta, _period
 from app.api.routers.portfolio import SortOrder
-from app.api.schemas.envelope import Envelope
+from app.api.schemas.envelope import Envelope, Page
 from app.api.schemas.error import ErrorCode, Problem
 from app.api.schemas.screener import (
     AppliedFilter,
@@ -62,6 +73,10 @@ from app.api.schemas.screener import (
     ScreenerFilter,
     ScreenerFilterEnvelope,
     ScreenerMeta,
+    ScreenerPreset,
+    ScreenerPresetEnvelope,
+    ScreenerPresetMeta,
+    ScreenerPresetResultEnvelope,
     ScreenerRow,
 )
 from app.api.schemas.types import Period
@@ -78,6 +93,7 @@ from app.api.screener import (
     screen_query,
     unknown_slugs,
 )
+from app.api.screener_presets import Preset, get_preset, list_presets
 from app.derived.views import CONSENSUS_HOLDINGS, FILER_SUMMARY, QUARTER_FLOWS
 
 router = APIRouter(tags=["screener"])
@@ -85,6 +101,8 @@ router = APIRouter(tags=["screener"])
 #: The query parameters that are not filters.
 _NOT_FILTERS: Final = frozenset({"sort", "order", "limit", "cursor"})
 _KNOWN: Final = frozenset(FILTERS) | _NOT_FILTERS
+#: What a preset's screen takes: its filters are its own.
+_PRESET_PARAMETERS: Final = frozenset({"period", "limit", "cursor"})
 
 #: Postgres's ``query_canceled``: what ``statement_timeout`` raises.
 _QUERY_CANCELED: Final = "57014"
@@ -188,6 +206,46 @@ async def statement_timeout(session: AsyncSession, seconds: float) -> AsyncItera
         ) from None
 
 
+async def _screen(
+    session: AsyncSession,
+    page: PageParams,
+    entitled: EntitlementContext,
+    period: date | None,
+    screen: Screen,
+    sort: ScreenSort,
+    order: SortOrder,
+) -> tuple[list[ScreenerRow], ScreenerMeta, Page]:
+    """One page of ``screen`` in ``period``, or the latest quarter inside the
+    caller's window for None: the rows, ``meta`` and the page."""
+    async with statement_timeout(session, STATEMENT_TIMEOUT_SECONDS):
+        resolved = await _period(
+            session, FILER_SUMMARY, period, what="positions", entitled=entitled
+        )
+        scope = Scope(period=resolved, insiders_from=entitled.insiders_from)
+        if any(a.filter.insiders for a in screen.applied):
+            # The whole quarter's trades, or "no cluster" would be a guess.
+            entitled.require_day(quarter_start(resolved))
+        if (slugs := screen.value("filer_slug")) and (
+            unknown := await unknown_slugs(session, slugs)
+        ):
+            raise invalid("filer_slug", f"no investor has the slug {', '.join(map(repr, unknown))}")
+
+        statement, keyset = screen_query(screen, scope, page, sort=sort, order=order)
+        rows, page_info = page_of(list(await session.execute(statement)), keyset, page)
+        meta = await _meta(session, resolved, CONSENSUS_HOLDINGS, QUARTER_FLOWS)
+    return (
+        [_row(row, resolved) for row in rows],
+        ScreenerMeta(**meta.model_dump(), filters=_applied(screen)),
+        page_info,
+    )
+
+
+def _applied(screen: Screen) -> list[AppliedFilter]:
+    return [
+        AppliedFilter(key=a.key, label=a.filter.label, values=a.display()) for a in screen.applied
+    ]
+
+
 # --- the routes -----------------------------------------------------------------
 
 
@@ -227,31 +285,8 @@ async def read_screener(
     hold for each row. Without `action`, the positions held at the period end.
     Largest position first. `meta.filters` echoes the filters; the rows are
     live, and their `holder_count` and `net_value_usd` as of `meta.refreshed_at`."""
-    async with statement_timeout(session, STATEMENT_TIMEOUT_SECONDS):
-        period = await _period(session, FILER_SUMMARY, period, what="positions", entitled=entitled)
-        scope = Scope(period=period, insiders_from=entitled.insiders_from)
-        if screen.value("insider_cluster") is not None:
-            # The whole quarter's trades, or "no cluster" would be a guess.
-            entitled.require_day(quarter_start(period))
-        if (slugs := screen.value("filer_slug")) and (
-            unknown := await unknown_slugs(session, slugs)
-        ):
-            raise invalid("filer_slug", f"no investor has the slug {', '.join(map(repr, unknown))}")
-
-        statement, keyset = screen_query(screen, scope, page, sort=sort, order=order)
-        rows, page_info = page_of(list(await session.execute(statement)), keyset, page)
-        meta = await _meta(session, period, CONSENSUS_HOLDINGS, QUARTER_FLOWS)
-    return ScreenerEnvelope(
-        data=[_row(row, period) for row in rows],
-        meta=ScreenerMeta(
-            **meta.model_dump(),
-            filters=[
-                AppliedFilter(key=a.key, label=a.filter.label, values=a.display())
-                for a in screen.applied
-            ],
-        ),
-        page=page_info,
-    )
+    rows, meta, page_info = await _screen(session, page, entitled, period, screen, sort, order)
+    return ScreenerEnvelope(data=rows, meta=meta, page=page_info)
 
 
 @router.get(
@@ -283,6 +318,109 @@ async def read_screener_filters() -> Envelope[ScreenerFilter]:
     )
 
 
+def _preset(preset: Preset) -> ScreenerPreset:
+    return ScreenerPreset(
+        slug=preset.slug,
+        name=preset.name,
+        explanation=preset.explanation,
+        filters=_applied(preset.screen),
+        sort=preset.sort,
+        order=preset.order,
+        query=preset.query(),
+    )
+
+
+@router.get(
+    "/screener/presets",
+    operation_id="listScreenerPresets",
+    response_model=ScreenerPresetEnvelope,
+    summary="The presets: screens chosen by hand, each with what it shows",
+)
+@cached(Lifetime.METADATA)
+async def read_screener_presets(session: SessionDep) -> ScreenerPresetEnvelope:
+    """Every preset, in the order to show them, the first ones first. Each is a
+    name, the sentence to show above its results, and the filters, sort and
+    order it is: `GET /v1/screener/presets/{preset}` for its results, or its
+    `query` to open it in a builder. Free for everyone. Not paginated."""
+    presets = await list_presets(session)
+    return ScreenerPresetEnvelope(data=[_preset(p) for p in presets], meta=unscoped_meta())
+
+
+async def preset_parameters(request: Request) -> None:
+    """A 422 naming every parameter a preset's screen does not take: its
+    filters are fixed, and one more would be silently ignored otherwise."""
+    if unknown := sorted(set(request.query_params) - _PRESET_PARAMETERS):
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("query", key),
+                    "msg": (
+                        f"{key!r} is not taken here: a preset's filters are its own. Open "
+                        "its query in GET /v1/screener to change them"
+                    ),
+                }
+                for key in unknown
+            ]
+        )
+
+
+@router.get(
+    "/screener/presets/{preset}",
+    operation_id="screenPreset",
+    response_model=ScreenerPresetResultEnvelope,
+    summary="One preset's screen, of the latest quarter or another",
+    dependencies=[Depends(preset_parameters)],
+    responses={
+        **not_found("No preset has the slug, or nothing is published for the period."),
+        **PLAN_LIMITED,
+        **INVALID_CURSOR,
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            **INVALID[status.HTTP_422_UNPROCESSABLE_CONTENT],
+            "description": (
+                "`period` is malformed, or a parameter other than `period`, `limit` and "
+                "`cursor` was given. `detail.errors` says which."
+            ),
+        },
+        **TIMED_OUT,
+    },
+)
+@cached(period="period")
+async def read_screener_preset(
+    session: SessionDep,
+    page: PageParamsDep,
+    entitled: EntitlementContextDep,
+    preset: Annotated[str, Path(description="The preset's slug.", max_length=100)],
+    period: Annotated[
+        Period | None,
+        Query(
+            description=(
+                "The quarter, as `2026Q1` or `2026-03-31`. The latest with positions "
+                "inside the plan's window when left out."
+            )
+        ),
+    ] = None,
+) -> ScreenerPresetResultEnvelope:
+    """The positions `GET /v1/screener` gives for the preset's filters, sort and
+    order, in `period`: the same rows, and the same page for the same cursor.
+    `meta.preset` is the preset, its `explanation` the sentence to show above
+    the rows, and `meta.period` the quarter they are of."""
+    found = await get_preset(session, preset)
+    if found is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No preset has the slug {preset!r}. GET /v1/screener/presets lists them.",
+        )
+    rows, meta, page_info = await _screen(
+        session, page, entitled, period, found.screen, found.sort, found.order
+    )
+    return ScreenerPresetResultEnvelope(
+        data=rows,
+        meta=ScreenerPresetMeta(**meta.model_dump(), preset=_preset(found)),
+        page=page_info,
+    )
+
+
 def _row(row: Any, period: Any) -> ScreenerRow:
     return ScreenerRow(
         slug=row.slug,
@@ -303,5 +441,6 @@ def _row(row: Any, period: Any) -> ScreenerRow:
         weight_delta=row.weight_delta,
         holder_count=row.holder_count,
         net_value_usd=row.net_value_usd,
+        traded_value_usd=row.traded_value_usd,
         **estimates(row, period),
     )
