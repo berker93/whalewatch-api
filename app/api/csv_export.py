@@ -81,16 +81,49 @@ CSV_FILE: Final[Responses] = {
 }
 
 
+class Kind(Enum):
+    """What a column's numbers are, for a spreadsheet to show them as.
+
+    A CSV cell is the same digits whatever the kind: only the ``.xlsx``
+    (:mod:`app.api.xlsx_export`) formats by it. A kind says nothing about a
+    text, date or flag cell, which is written as what it is.
+    """
+
+    TEXT = "text"
+    """Words, or a number with no unit."""
+    CODE = "code"
+    """An identifier: a CUSIP, a ticker, a CIK, an accession number. Text,
+    whatever it looks like, so ``037833100`` keeps its leading zero."""
+    USD = "usd"
+    """Dollars, shown to the dollar."""
+    USD_CENTS = "usd_cents"
+    """Dollars, shown to the cent: a trade's value."""
+    PRICE = "price"
+    """Dollars a share, to between two and four places."""
+    QUANTITY = "quantity"
+    """Shares, or a count of something."""
+    PCT = "pct"
+    """A percentage, as the API writes it: 12.5 is 12.5%."""
+    POINTS = "points"
+    """A difference between two percentages, in percentage points."""
+    RATIO = "ratio"
+    """A plain multiple: a split's 10 for 10-for-1."""
+
+
 @dataclass(frozen=True, slots=True)
 class Column:
     """One column of an export: its name in the header row, and its cell in each row.
 
     ``value`` reads the cell's value off a row; left out, it is the row's
-    attribute of the column's name.
+    attribute of the column's name. ``kind`` and ``delta`` are for a
+    spreadsheet: what the numbers are, and whether the column is a change, which
+    is shown in the colour of its sign.
     """
 
     name: str
     value: Callable[[Row[Any]], object] | None = None
+    kind: Kind = Kind.TEXT
+    delta: bool = False
 
     def of(self, row: Row[Any]) -> object:
         return getattr(row, self.name) if self.value is None else self.value(row)
@@ -170,7 +203,7 @@ def comment_block(lines: Iterable[str]) -> str:
     return "".join(f"# {' '.join(line.splitlines())}\r\n" for line in lines)
 
 
-def filename(*parts: str) -> str:
+def filename(*parts: str, extension: str = "csv") -> str:
     """``berkshire-hathaway_2026Q3_holdings.csv``: the parts, lowercased but for
     the quarter labels, anything but letters, digits, dots and hyphens a
     hyphen, joined by underscores."""
@@ -178,7 +211,7 @@ def filename(*parts: str) -> str:
     for part in parts:
         lowered = re.sub(r"(\d{4})q([1-4])", r"\1Q\2", _UNSAFE_IN_FILENAME.sub("-", part.lower()))
         cleaned.append(lowered.strip("-") or "export")
-    return "_".join(cleaned) + ".csv"
+    return f"{'_'.join(cleaned)}.{extension}"
 
 
 def csv_response(

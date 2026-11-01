@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Final, get_args, get_origin
 
-from fastapi import Depends, Request, status
+from fastapi import Depends, Request, params, status
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -349,11 +349,20 @@ EntitlementContextDep = Annotated[EntitlementContext, Depends(entitlement_contex
 
 
 def takes_entitlements(endpoint: Callable[..., Any]) -> bool:
-    """Whether ``endpoint`` declares an :class:`EntitlementContext` parameter."""
+    """Whether ``endpoint`` declares an :class:`EntitlementContext` parameter,
+    itself or in a dependency it declares: an export's route takes the export,
+    whose dependency takes the entitlements."""
     for parameter in inspect.signature(endpoint).parameters.values():
         annotation = parameter.annotation
         if get_origin(annotation) is Annotated:
-            annotation = get_args(annotation)[0]
+            annotation, *metadata = get_args(annotation)
+            if any(
+                isinstance(extra, params.Depends)
+                and extra.dependency is not None
+                and takes_entitlements(extra.dependency)
+                for extra in metadata
+            ):
+                return True
         if annotation is EntitlementContext:
             return True
     return False

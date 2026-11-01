@@ -1,21 +1,26 @@
-"""The ``.csv`` exports, against a real Postgres.
+"""The ``.csv`` and ``.xlsx`` exports, against a real Postgres.
 
 Each file must be its listing: the same rows a walk of every page returns, in
 the same order. Beyond that, what matters is what a spreadsheet would get
 wrong or hide: a filing date from the wrong filing, a number Excel reads as a
 date or a formula, a header with no period, an export on a plan without it.
+A workbook must have the CSV's rows, and say on its own sheets what the CSV's
+``#`` lines say.
 """
 
 import csv
 import io
-from datetime import date
-from typing import Any
+from datetime import UTC, date, datetime
+from typing import Any, Final
 
+import openpyxl
 import pytest
 from httpx import AsyncClient, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.routers.exports import NO_COVERAGE
+from app.api.xlsx_export import MEDIA_TYPE as XLSX
 from app.db.models import UserActivityDay
 from tests.integration.accounts import make_user, sign_in, subscribe
 from tests.integration.test_insiders_endpoint import (
@@ -114,16 +119,16 @@ async def test_signed_out_is_refused_before_anything_is_read(client: AsyncClient
     assert error["detail"]["plan"]["slug"] == "pro"
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/v1/investors/berkshire/portfolio.csv",
-        "/v1/investors/berkshire/activity.csv",
-        f"/v1/stocks/{ALPHA}/owners.csv",
-        "/v1/flows.csv",
-        "/v1/insiders/transactions.csv",
-    ],
-)
+EXPORTS: Final = [
+    "/v1/investors/berkshire/portfolio",
+    "/v1/investors/berkshire/activity",
+    f"/v1/stocks/{ALPHA}/owners",
+    "/v1/flows",
+    "/v1/insiders/transactions",
+]
+
+
+@pytest.mark.parametrize("path", [f"{p}.{ext}" for p in EXPORTS for ext in ("csv", "xlsx")])
 async def test_free_is_refused_every_export(
     client: AsyncClient, db_session: AsyncSession, free: int, path: str
 ) -> None:
@@ -191,6 +196,8 @@ async def test_holdings_are_the_portfolio_walked_to_the_end(
     assert _header(comments, "Source").startswith("SEC EDGAR Form 13F-HR")
     assert _header(comments, "Page").endswith("/investors/berkshire?period=2024Q2")
     assert _header(comments, "Generated").endswith("Z")
+    assert _header(comments, "EDGAR").startswith("https://www.sec.gov/")
+    assert _header(comments, "Coverage") == "1 of 1 investors have filed for 2024Q2."
 
 
 async def test_holdings_for_an_earlier_period(
@@ -368,3 +375,136 @@ async def test_an_empty_listing_is_a_file_with_only_its_header(
         await client.get("/v1/insiders/transactions.csv", params={"min_value": str(10**12)})
     )
     assert rows == []
+
+
+# --- workbooks ------------------------------------------------------------------
+
+
+def _workbook(response: Response) -> openpyxl.Workbook:
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == XLSX
+    assert response.headers["cache-control"] == "no-store"
+    assert int(response.headers["content-length"]) == len(response.content)
+    return openpyxl.load_workbook(io.BytesIO(response.content))
+
+
+def _data(book: openpyxl.Workbook) -> list[dict[str, Any]]:
+    header, *rows = book["Data"].iter_rows(values_only=True)
+    return [dict(zip(header, row, strict=True)) for row in rows]
+
+
+def _about(book: openpyxl.Workbook) -> dict[str, Any]:
+    return {label: value for label, value in book["About"].iter_rows(values_only=True)}
+
+
+def _methodology(book: openpyxl.Workbook) -> list[str]:
+    """The sheet's headings: the bold first-column cells with nothing beside them."""
+    return [a for a, b in book["Methodology"].iter_rows(values_only=True, max_col=2) if a and not b]
+
+
+async def test_the_holdings_workbook_is_the_csv_with_its_caveats_on_board(
+    client: AsyncClient, db_session: AsyncSession, pro: int
+) -> None:
+    filed = await _two_quarters(db_session)
+    params = {"sort": "shares"}
+
+    response = await client.get("/v1/investors/berkshire/portfolio.xlsx", params=params)
+    book = _workbook(response)
+    _, csv_rows = _file(await client.get("/v1/investors/berkshire/portfolio.csv", params=params))
+
+    assert _named(response) == "berkshire_2024Q2_holdings.xlsx"
+    assert book.sheetnames == ["Data", "Methodology", "About"]
+    rows = _data(book)
+    assert [r["cusip"] for r in rows] == [r["cusip"] for r in csv_rows] == [ALPHA, CHARLIE]
+    assert list(rows[0]) == list(csv_rows[0])
+
+    alpha = rows[0]
+    assert alpha["value_usd"] == 1234567000
+    assert alpha["shares"] == 1234567
+    assert alpha["is_split_adjusted"] is False
+    assert alpha["implied_price"] == 1000
+    assert alpha["filed_at"] == filed[Q2].astimezone(UTC).replace(tzinfo=None)
+    assert book["Data"]["A2"].data_type == "s"
+
+    about = _about(book)
+    assert about["Export"] == (
+        "WhaleWatch export: BERKSHIRE holdings in 2024Q2 (the quarter ended 2024-06-30)"
+    )
+    assert about["Period"] == "2024Q2 (the quarter ended 2024-06-30)"
+    assert about["Coverage"] == "1 of 1 investors have filed for 2024Q2."
+    assert about["EDGAR"].startswith("https://www.sec.gov/")
+    assert about["Page"].endswith("/investors/berkshire?period=2024Q2")
+    assert "45 days" in about["Disclaimer"]
+    assert isinstance(about["Generated at"], datetime)
+    assert {"Implied price", "Confidence scale", "Split adjustment"} <= set(_methodology(book))
+
+    exports = await db_session.scalar(
+        select(UserActivityDay.data_exports).where(UserActivityDay.user_id == pro)
+    )
+    assert exports == 2
+
+
+async def test_each_workbook_matches_its_csv(
+    client: AsyncClient, db_session: AsyncSession, pro: int
+) -> None:
+    filed = await _two_quarters(db_session)
+    await _quarter(db_session, filed["filer"], Q3, held(CHARLIE, 60), days_later=30)
+    await _publish(db_session)
+
+    for path, key in (
+        ("/v1/investors/berkshire/activity", ("cusip", "period")),
+        (f"/v1/stocks/{ALPHA}/owners", ("slug",)),
+        ("/v1/flows", ("cusip",)),
+    ):
+        response = await client.get(f"{path}.xlsx")
+        book = _workbook(response)
+        _, csv_rows = _file(await client.get(f"{path}.csv"))
+        rows = _data(book)
+        assert [tuple(str(r[k])[:10] for k in key) for r in rows] == [
+            tuple(r[k] for k in key) for r in csv_rows
+        ], path
+        assert _named(response).endswith(".xlsx")
+
+    flows = _workbook(await client.get("/v1/flows.xlsx"))
+    assert "Screener figures" in _methodology(flows)
+    assert _about(flows)["Aggregates as of"] != "unrecorded"
+    activity = _about(_workbook(await client.get("/v1/investors/berkshire/activity.xlsx")))
+    # The newest quarter in the file's.
+    assert activity["Coverage"] == "1 of 1 investors have filed for 2024Q3."
+    assert activity["Actions"] == "add; exit; new; trim"
+
+
+async def test_the_insider_workbook_shows_a_formula_as_text(
+    client: AsyncClient, db_session: AsyncSession, pro: int
+) -> None:
+    nvda = await _security(db_session, NVDA_CUSIP, "NVDA")
+    mischief = await _insider(db_session, '=HYPERLINK("http://evil.example","x")')
+    await _form4(db_session, mischief, _line("P", DAY_1), security_id=nvda, is_director=True)
+
+    response = await client.get("/v1/insiders/transactions.xlsx", params={"ticker": "NVDA"})
+    book = _workbook(response)
+
+    assert _named(response) == f"nvda_to-{date.today()}_trades.xlsx"
+    [line] = _data(book)
+    # Text, not a formula, and not quoted as the CSV must.
+    assert line["insider_name"] == '=HYPERLINK("http://evil.example","x")'
+    assert line["cusip"] == NVDA_CUSIP
+    assert (line["confidence"], line["observation_count"]) == (None, None)
+    about = _about(book)
+    assert about["Coverage"] == NO_COVERAGE
+    assert about["Codes"].endswith("(the default)")
+    assert "two business days" in about["Disclaimer"]
+    headings = _methodology(book)
+    assert "Transaction codes" in headings
+    assert "Implied price" not in headings
+
+
+async def test_an_empty_workbook_has_its_header_and_its_sheets(
+    client: AsyncClient, db_session: AsyncSession, pro: int
+) -> None:
+    book = _workbook(
+        await client.get("/v1/insiders/transactions.xlsx", params={"min_value": str(10**12)})
+    )
+    assert _data(book) == []
+    assert book["Data"]["A1"].value == "accession_no"
+    assert book.sheetnames == ["Data", "Methodology", "About"]

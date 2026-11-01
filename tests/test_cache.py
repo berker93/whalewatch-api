@@ -476,6 +476,11 @@ def test_every_public_read_is_cached() -> None:
         "/v1/stocks/{ticker}/owners.csv",
         "/v1/flows.csv",
         "/v1/insiders/transactions.csv",
+        "/v1/investors/{slug}/portfolio.xlsx",
+        "/v1/investors/{slug}/activity.xlsx",
+        "/v1/stocks/{ticker}/owners.xlsx",
+        "/v1/flows.xlsx",
+        "/v1/insiders/transactions.xlsx",
     }
     reads = {
         path: route
