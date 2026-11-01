@@ -248,4 +248,12 @@ class PositionChange(Base):
             "security_id",
             postgresql_where=text("action <> 'hold'"),
         ),
+        # A period's positions, largest first: the screener's default (0048).
+        Index(
+            "ix_position_change_period_of_report_value_usd",
+            "period_of_report",
+            text("value_usd DESC"),
+            text("filer_id DESC"),
+            text("security_id DESC"),
+        ),
     )

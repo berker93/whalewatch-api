@@ -490,6 +490,7 @@ suspect                boolean   not null          -- either end of the change i
 computed_at            timestamptz  not null default now()
 primary key (filer_id, period_of_report, security_id)
 index (period_of_report, security_id) where action <> 'hold'   -- who traded a stock (0017)
+index (period_of_report, value_usd desc, filer_id desc, security_id desc)  -- the screener (0048)
 ```
 
 The previous shares, value, weight and period come from `LAG` over one window,

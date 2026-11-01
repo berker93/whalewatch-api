@@ -8,7 +8,8 @@ and how to capture them again after the data or an index changes::
     make explain a="--filer renaissance --period 2025-06-30"
 
 ``GET /filings/{accession_no}``, the ``/v1/investors``, ``/v1/stocks``,
-``/v1/market``, ``/v1/flows``, ``/v1/search`` and ``/v1/insiders`` endpoints
+``/v1/market``, ``/v1/flows``, ``/v1/screener``, ``/v1/search`` and ``/v1/insiders``
+endpoints
 are built, and the queries of all but the first are read from the app. The
 rest are the queries the endpoints sketched in docs/product-spec.md ("API
 surface") will issue: their ``WHERE`` and ``ORDER BY`` are what the indexes are
@@ -99,6 +100,7 @@ from app.api.routers.stocks import (
     top_holders_query,
     totals_query,
 )
+from app.api.screener import FILTERS, Applied, Scope, Screen, ScreenSort, screen_query
 from app.core.config import get_settings
 from app.db.queries.tickers import lookup_query
 from app.db.queries.top_holding import top_holdings, top_holdings_ranked
@@ -443,6 +445,37 @@ QUERIES: Final = (
             sort=FlowSort.BUYERS,
             direction=Direction.BUY,
             min_investors=5,
+        )[0],
+    ),
+    # The screener's every filter but the period is its own fragment, so these
+    # are the extremes: the period alone, which sorts all of its positions, and
+    # every stock-level probe at once, with a sort that reads no index.
+    Query.from_app(
+        "screener",
+        "GET /v1/screener?period=",
+        screen_query(Screen(), Scope(bindparam("period")), PageParams())[0],
+    ),
+    Query.from_app(
+        "screener_filtered",
+        "GET /v1/screener?action=new,add&min_holders=5&min_weight=1&net_flow=buy"
+        "&filer_category=value,growth&insider_cluster=false&sort=weight_change",
+        screen_query(
+            Screen(
+                tuple(
+                    Applied(key, FILTERS[key].parse(raw))
+                    for key, raw in (
+                        ("action", ["new,add"]),
+                        ("min_holders", ["5"]),
+                        ("min_weight", ["1"]),
+                        ("filer_category", ["value,growth"]),
+                        ("net_flow", ["buy"]),
+                        ("insider_cluster", ["false"]),
+                    )
+                )
+            ),
+            Scope(bindparam("period"), insiders_from=_FREE.insiders_from),
+            PageParams(),
+            sort=ScreenSort.WEIGHT_CHANGE,
         )[0],
     ),
     # The search's terms are in its SQL, as patterns and a regular expression,

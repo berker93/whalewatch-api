@@ -40,6 +40,8 @@ PARAMETERS: Final = {
     "slug": "whale",
     "ticker": "NVDA",
     "q": "nvidia",
+    # The screener's: the only period that is required.
+    "period": "2024Q2",
     "from": "2024-07-01",
     "to": "2024-08-31",
 }

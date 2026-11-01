@@ -185,6 +185,18 @@ export const fromWireRef = <R extends WireRef>(ref: R) =>
 - `POST /v1/saved-filters` `{ name, query }` → `201` with the `SavedFilter`. `query` takes `period`, `period_type`, `min_investors`, `min_value`, `direction`, `sort`, `order`; anything else (`sector`, paging) is a `422`. The plan's `screener_saved_filters` (3 on Free) more is a `402 plan_limit`. Verified email only, as for the watchlist.
 - `DELETE /v1/saved-filters/{id}` → `204`, idempotent.
 
+### Screener by named filters
+
+A second screener beside `/v1/flows`: rows are **positions**, one investor's holding of one stock in one quarter, not stocks.
+
+- `GET /v1/screener/filters` → `{ data: ScreenerFilter[] }`: the whole vocabulary, in the order to show it. Each has `key` (the query parameter), `label` (the control's label: "Share of their portfolio"), `type` (`period`, `choice`, `choices`, `integer`, `dollars`, `percent`, `points`, `boolean`, `slugs`), `description`, `required`, `available`, `options` for the choice types, and `minimum` / `maximum` as decimal strings. Build the controls from it; don't hard-code the list.
+- `GET /v1/screener?period=2026Q2&action=new&min_weight=5&filer_category=activist,value` → `{ data: ScreenerRow[], meta, page }`. `period` is required (`422` without it). Every other filter is optional, and they are ANDed, all about the same row: no OR, no nesting. A list takes comma-separated or repeated values. `sort` is `value` (default), `weight` or `weight_change`, with `order`; keyset-paged like every listing.
+- A row is the investor (`slug`, `display_name`, `category`), the stock (`cusip`, `ticker`, `current_ticker`, `delisted_by`, `issuer_name`), the change (`prev_period`, `action`, `shares`, `shares_delta`, `shares_delta_pct`, `value_usd`, `weight_pct`, `weight_delta`), the stock's `holder_count` and `net_value_usd` across every investor, and the estimates every position row has (`price_estimate` with its `confidence`, `is_split`, …). `meta` is the period's (coverage, `refreshed_at`), plus `meta.filters`: what the rows passed, `{key, label, values}`, to show as chips.
+- Without `action`, the rows are positions held at the period end: an exit is a row only under `action=exit`. A row with `prev_period: null` is the investor's first period. It is never returned under `action`, `weight_change` or `is_new_position`, because it isn't a change.
+- `weight_change` is signed percentage points: `2` is up 2 or more, `-2` is down 2 or more.
+- Refusals are loud: a parameter that isn't a filter (`min_wieght`), `sector` (no sector data yet, `available: false`), or a slug that names no investor is a `422`, with every mistake in `detail.errors` by parameter. A period before the plan's window is a `402`, and so is `insider_cluster` for a quarter starting before the plan's insider window. A screen whose query runs past 5 seconds is a `504 timeout`.
+- Saved filters still store `/v1/flows` parameters, not these.
+
 ### Alert rules (ALR-4)
 
 What reaches the bell and the inbox, under `/v1/me/alert-rules`. Session only; every write needs a verified email (`403 email_unverified`), reading does not.

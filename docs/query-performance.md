@@ -1153,6 +1153,40 @@ estimate, joined per row all the same, which is one query rather than two for
 a few hundred microseconds at most. `/v1/meta/data-sources` reads one row of
 `security_quote` and is not measured.
 
+## Built since: the screener
+
+`GET /v1/screener` reads one period of `position_change` live, ANDs one
+condition per filter (each a column comparison, or a semi-join probing a
+view's unique index, which leads with the period), cuts the page, and joins
+the names, the stock's holders and net flow, and the estimates to the page's
+rows. Measured for 2022Q2, the period with the most positions (51,830 change
+rows), on the five-year backfill, first page of 50, server mean of 50 runs:
+
+| Query | Before 0048 | After 0048 |
+| --- | --- | --- |
+| `screener`, the period alone, by value | 34.7 ms | 1.35 ms |
+| `screener_filtered`, six filters, by `weight_change` | 17.8 ms | ~25 ms (noisy) |
+
+**The period alone was a scan of the whole table.** No index led with the
+period for every action (0017's leaves out holds), so the default screen was
+a parallel sequential scan of 575,000 rows and a top-N sort, and it grows
+with every quarter loaded. `0048` indexes `(period_of_report, value_usd DESC,
+filer_id DESC, security_id DESC)`, the default keyset, and the screen is an
+index scan that stops after 51 rows. 26 MB.
+
+**The cost is a few milliseconds on a filtered screen.** With filters, the
+planner reads the period's entries from the new index rather than from 0017's
+partial one, which leaves out holds, so it visits about 6,000 more entries. The
+same statement, prepared and warm, run directly against the database: 12.3 ms
+with 0048, 9.6 ms without. That costs 3 ms on a screen with filters to save 23 ms
+on the one without, which is the screen every visit starts from.
+
+Every filter is a fragment written in `app/api/screener.py`, and there is no
+OR, so these two are the extremes: the unfiltered sort, and every stock-level
+probe at once (`min_holders`, `net_flow`, `insider_cluster`) with position
+and investor filters and a sort no index serves. Both are far inside the
+5-second `statement_timeout` the endpoint runs under.
+
 ## Built since: partitioning `insider_transaction`
 
 `0032` partitions `insider_transaction` by `RANGE (transaction_date)`, a
