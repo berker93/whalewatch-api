@@ -711,7 +711,9 @@ async def test_a_users_page_has_their_usage(
 ) -> None:
     ada = await make_user(db_session)
     await subscribe(db_session, ada, "api_hobbyist")
-    db_session.add(SavedFilter(user_id=ada, name="big buys", query={"direction": "buy"}))
+    db_session.add(
+        SavedFilter(user_id=ada, name="big buys", params={"filters": {"net_flow": ["buy"]}})
+    )
     db_session.add(
         UsageCounter(user_id=ada, key="api_calls_month", period=date(2026, 9, 1), count=812)
     )

@@ -109,7 +109,7 @@ async def test_a_presets_filters_are_its_own(client: AsyncClient, db_session: As
     assert response.status_code == 422, response.text
     errors = {e["loc"][-1]: e["msg"] for e in response.json()["error"]["detail"]["errors"]}
     assert set(errors) == {"min_value", "sort"}
-    assert "a preset's filters are its own" in errors["min_value"]
+    assert "this screen's filters are its own" in errors["min_value"]
 
 
 async def test_a_slug_no_preset_has_is_a_404(client: AsyncClient) -> None:
@@ -141,7 +141,7 @@ async def test_a_preset_that_does_not_read_is_left_out_of_the_listing(
     body = await _get(client, "/v1/screener/presets")
 
     message = str(raised.value)
-    for part in ("'min_wieght' is not a filter", "bought", "min_value: a list", "'biggest'"):
+    for part in ("min_wieght: not a filter", "bought", "min_value: a list", "'biggest'"):
         assert part in message
     assert "misspelt" not in [p["slug"] for p in body["data"]]
 

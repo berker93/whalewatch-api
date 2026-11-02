@@ -21,7 +21,7 @@ from app.accounts.unsubscribe import ListKind, MailingList, token_for
 from app.admin.auth import admin_store
 from app.api.deps import get_redis
 from app.core.config import Settings
-from app.db.models import Filer, FilerCik, Filing, Holding, Security, SecurityQuote
+from app.db.models import Filer, FilerCik, Filing, Holding, SavedFilter, Security, SecurityQuote
 from app.derived.recompute import recompute
 from app.derived.scope import EVERYTHING
 from app.derived.views import refresh_views
@@ -127,7 +127,12 @@ async def test_every_endpoint_answers_200(
     await make_admin(db_session)
     assert (await admin_in(client)).status_code == 200
     token = token_for(settings, user_id, MailingList(ListKind.PRODUCT_EMAIL))
-    calls = _gets(app, user_id=user_id, token=token)
+    filter_id = await db_session.scalar(
+        insert(SavedFilter)
+        .values(user_id=user_id, name="Everything", params={"filters": {}})
+        .returning(SavedFilter.id)
+    )
+    calls = _gets(app, user_id=user_id, token=token, filter_id=filter_id)
 
     responses = {path: await client.get(path, params=query) for path, query in calls}
 

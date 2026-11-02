@@ -22,8 +22,8 @@ ending one is deleting a key.
 ``watchlist_item``
     One thing one user follows: a stock, an investor or an insider.
 ``saved_filter``
-    One screener filter one user saved: a name, and ``GET /v1/flows``'s
-    parameters.
+    One screener filter one user saved: a name, ``GET /v1/screener``'s
+    filters, sort and order, and when it was last run.
 ``user_activity_day``
     One UTC day one user was active, signed in or with an API key, and how
     many data exports they took that day: what the admin console counts
@@ -265,18 +265,23 @@ class SavedFilter(Base):
     name: Mapped[str] = mapped_column(Text)
     """What the user called it, trimmed."""
 
-    query: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    """``GET /v1/flows``'s parameters, as :class:`app.api.schemas.saved_filter.ScreenerQuery`
-    validated them, without the ones left at their defaults."""
+    params: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    """``{"filters": {key: [value, ...]}, "sort": ..., "order": ...}``: the
+    screener's, as the vocabulary read them when saved. Read through it again
+    every time (:mod:`app.api.routers.saved_filters`), since it may have changed
+    since; a row saved before 0050 holds ``GET /v1/flows``'s parameters."""
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When its screen was last read through the API. Null until it is."""
 
     __table_args__ = (
         CheckConstraint(
             f"name = btrim(name) AND length(name) BETWEEN 1 AND {MAX_FILTER_NAME}",
             name="name_is_named",
         ),
-        CheckConstraint("jsonb_typeof(query) = 'object'", name="query_is_an_object"),
+        CheckConstraint("jsonb_typeof(params) = 'object'", name="params_is_an_object"),
         Index("ix_saved_filter_user_id", "user_id", "id"),
     )
 

@@ -27,7 +27,7 @@ The people who sign up. Every table below is in Postgres unless it says Redis.
 | Password hash (argon2id) | `app_user.password_hash` | Login | Contract | Same |
 | Created, password changed, email verified, last seen (to 5 min) | `app_user` | Security, account page | Contract | Same |
 | Watchlist (stocks, investors, insiders followed) | `watchlist_item` | The product | Contract | Same |
-| Saved screener filters (name, screener parameters) | `saved_filter` | The product | Contract | Same |
+| Saved screener filters (name, screener parameters, when last run) | `saved_filter` | The product | Contract | Same |
 | Alert rules (kind, the filer or stock, dollar threshold, channels, on or off) | `alert_rule` | The product | Contract | Same |
 | Notifications (kind, title, body, what it was about, when read) | `notification` | The product | Contract | Same |
 | Quiet hours and the zone they are kept in (the browser's, sent at signup: a region, such as `Europe/Berlin`) | `app_user.quiet_time_zone`, `quiet_start`, `quiet_end`; `signup_request.quiet_time_zone` while signups are closed | Not emailing at night; the user's day for the daily email cap and the evening digest | Contract | Life of the account + 30 days |

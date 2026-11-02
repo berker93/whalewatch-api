@@ -458,6 +458,7 @@ def test_every_public_read_is_cached() -> None:
         "/v1/me/privacy",
         "/v1/watchlist",
         "/v1/saved-filters",
+        "/v1/saved-filters/{filter_id}/screen",
         "/v1/api-keys",
         "/v1/billing",
         "/v1/me/notifications",

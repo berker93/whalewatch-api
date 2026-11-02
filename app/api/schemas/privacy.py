@@ -188,10 +188,14 @@ class ExportSavedFilter(BaseModel):
     """A saved screener filter."""
 
     name: str = Field(description="What the user called it.", examples=["Crowded buys"])
-    query: dict[str, Any] = Field(
-        description="`GET /v1/flows`'s parameters, as saved.", examples=[{"direction": "buy"}]
+    params: dict[str, Any] = Field(
+        description="`GET /v1/screener`'s filters, sort and order, as saved.",
+        examples=[{"filters": {"action": ["new"]}, "sort": "value", "order": "desc"}],
     )
     created_at: datetime = Field(description="When it was saved.", examples=[_AT])
+    last_run_at: datetime | None = Field(
+        description="When it was last run. Null if never.", examples=[_AT]
+    )
 
 
 class ExportAlertRule(BaseModel):

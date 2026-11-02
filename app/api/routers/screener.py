@@ -19,6 +19,9 @@
     the preset in ``meta``. A URL to share; its filters are fixed, and any
     filter given beside them is a 422.
 
+A saved filter's screen, ``GET /v1/saved-filters/{id}/screen``, is
+:func:`run_screen` too (:mod:`app.api.routers.saved_filters`).
+
 The parameters are the vocabulary's
 ------------------------------------
 Each filter is a query parameter, declared from :data:`~app.api.screener.VOCABULARY`
@@ -252,7 +255,7 @@ async def _matches(
     return ScreenerMatches.model_validate_json(await remember(redis, key, seconds, count))
 
 
-async def _screen(
+async def run_screen(
     session: AsyncSession,
     redis: Redis,
     settings: Settings,
@@ -339,7 +342,7 @@ async def read_screener(
     is how many rows pass on every page, `meta.filters` echoes the filters; the
     rows are live, and their `holder_count` and `net_value_usd` as of
     `meta.refreshed_at`."""
-    rows, meta, page_info = await _screen(
+    rows, meta, page_info = await run_screen(
         session, redis, settings, page, entitled, period, screen, sort, order
     )
     return ScreenerEnvelope(data=rows, meta=meta, page=page_info)
@@ -414,9 +417,10 @@ async def read_screener_presets(session: SessionDep) -> ScreenerPresetEnvelope:
     return ScreenerPresetEnvelope(data=[_preset(p) for p in presets], meta=unscoped_meta())
 
 
-async def preset_parameters(request: Request) -> None:
-    """A 422 naming every parameter a preset's screen does not take: its
-    filters are fixed, and one more would be silently ignored otherwise."""
+async def fixed_screen_parameters(request: Request) -> None:
+    """A 422 naming every parameter a preset's screen, or a saved filter's,
+    does not take: its filters are fixed, and one more would be silently
+    ignored otherwise."""
     if unknown := sorted(set(request.query_params) - _PRESET_PARAMETERS):
         raise RequestValidationError(
             [
@@ -424,8 +428,8 @@ async def preset_parameters(request: Request) -> None:
                     "type": "value_error",
                     "loc": ("query", key),
                     "msg": (
-                        f"{key!r} is not taken here: a preset's filters are its own. Open "
-                        "its query in GET /v1/screener to change them"
+                        f"{key!r} is not taken here: this screen's filters are its own. "
+                        "Open its query in GET /v1/screener to change them"
                     ),
                 }
                 for key in unknown
@@ -438,7 +442,7 @@ async def preset_parameters(request: Request) -> None:
     operation_id="screenPreset",
     response_model=ScreenerPresetResultEnvelope,
     summary="One preset's screen, of the latest quarter or another",
-    dependencies=[Depends(preset_parameters)],
+    dependencies=[Depends(fixed_screen_parameters)],
     responses={
         **not_found("No preset has the slug, or nothing is published for the period."),
         **PLAN_LIMITED,
@@ -481,7 +485,7 @@ async def read_screener_preset(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No preset has the slug {preset!r}. GET /v1/screener/presets lists them.",
         )
-    rows, meta, page_info = await _screen(
+    rows, meta, page_info = await run_screen(
         session, redis, settings, page, entitled, period, found.screen, found.sort, found.order
     )
     return ScreenerPresetResultEnvelope(

@@ -438,7 +438,7 @@ async def test_free_saves_three_filters_and_the_fourth_is_a_402(
     def save(browser: AsyncClient, n: int) -> Any:
         return browser.post(
             "/v1/saved-filters",
-            json={"name": f" Filter {n} ", "query": {"direction": "buy", "period": "2024-12-31"}},
+            json={"name": f" Filter {n} ", "params": {"filters": {"net_flow": ["buy"]}}},
             headers=FRONTEND,
         )
 
@@ -454,7 +454,19 @@ async def test_free_saves_three_filters_and_the_fourth_is_a_402(
 
     saved = (await client.get("/v1/saved-filters")).json()["data"]
     assert [f["name"] for f in saved] == ["Filter 0", "Filter 1", "Filter 2"]
-    assert saved[0]["query"] == {"direction": "buy", "period": "2024Q4"}
+    assert saved[0]["params"]["filters"] == {"net_flow": ["buy"]}
+    # A copy is one more, as a new one is; renaming one is not.
+    copy = await client.post(f"/v1/saved-filters/{saved[0]['id']}/duplicate", headers=FRONTEND)
+    assert copy.status_code == 402
+    assert copy.json()["error"]["detail"]["limit"] == "screener_saved_filters"
+    renamed = await client.patch(
+        f"/v1/saved-filters/{saved[0]['id']}", json={"name": "Renamed"}, headers=FRONTEND
+    )
+    assert renamed.status_code == 200
+    # Running one is held to the plan's window, as the screener is.
+    early = await client.get(f"/v1/saved-filters/{saved[0]['id']}/screen?period=2023Q1")
+    assert early.status_code == 402
+    assert early.json()["error"]["detail"]["limit"] == "history_quarters"
 
     deleted = await client.delete(f"/v1/saved-filters/{saved[0]['id']}", headers=FRONTEND)
     assert deleted.status_code == 204
@@ -465,18 +477,6 @@ async def test_free_saves_three_filters_and_the_fourth_is_a_402(
     assert len((await pro.get("/v1/saved-filters")).json()["data"]) == 4
 
 
-async def test_a_filter_the_screener_could_not_apply_is_a_422(
-    client: AsyncClient, db_session: AsyncSession
-) -> None:
-    await make_user(db_session)
-    await sign_in(client)
-    for query in ({"sector": "Energy"}, {"sort": "loudest"}, {"period": "2024-12-30"}):
-        response = await client.post(
-            "/v1/saved-filters", json={"name": "x", "query": query}, headers=FRONTEND
-        )
-        assert response.status_code == 422, query
-
-
 async def test_an_unverified_account_saves_no_filter(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -484,7 +484,7 @@ async def test_an_unverified_account_saves_no_filter(
     await sign_in(client)
 
     response = await client.post(
-        "/v1/saved-filters", json={"name": "x", "query": {}}, headers=FRONTEND
+        "/v1/saved-filters", json={"name": "x", "params": {}}, headers=FRONTEND
     )
 
     assert response.status_code == 403

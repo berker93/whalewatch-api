@@ -39,12 +39,13 @@ it is the first we have. Those rows never pass a change filter, as the flows
 leave them out (:mod:`app.derived.views`).
 """
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Final
+from urllib.parse import urlencode
 
 from sqlalchemy import (
     ARRAY,
@@ -785,6 +786,37 @@ async def unknown_slugs(session: AsyncSession, slugs: frozenset[str]) -> list[st
     return sorted(slugs - known)
 
 
+@dataclass(frozen=True, slots=True)
+class Unread:
+    """One kept filter the vocabulary does not read, and why: a key it has not
+    got (or no longer has), or a value it does not take."""
+
+    key: str
+    reason: str
+
+
+def read_filters(kept: Mapping[str, Any]) -> tuple[Screen, list[Unread]]:
+    """Filters kept as ``{key: [value, ...]}``, a preset's or a saved filter's,
+    read through the vocabulary as a request's are: the screen of every one
+    that reads, and why each other does not, unknown keys first."""
+    unread = [Unread(key, "not a filter") for key in sorted(set(kept) - set(FILTERS))]
+    applied: list[Applied] = []
+    for filter_ in VOCABULARY:
+        if (values := kept.get(filter_.key)) is None:
+            continue
+        if filter_.required:
+            unread.append(Unread(filter_.key, "chosen when the screen is run, not kept with it"))
+            continue
+        if not (isinstance(values, list) and values and all(isinstance(v, str) for v in values)):
+            unread.append(Unread(filter_.key, "a list of strings, as a client would send it"))
+            continue
+        try:
+            applied.append(Applied(filter_.key, filter_.parse(values)))
+        except ValueError as error:
+            unread.append(Unread(filter_.key, str(error)))
+    return Screen(tuple(applied)), unread
+
+
 # --- the query ------------------------------------------------------------------
 
 
@@ -821,6 +853,13 @@ class ScreenSort(StrEnum):
     LAST_QUARTER = "last_quarter_period"
     IS_SPLIT = "is_split"
     SPLIT_RATIO = "split_ratio"
+
+
+def query_string(screen: Screen, sort: ScreenSort, order: SortOrder) -> str:
+    """``screen``, ``sort`` and ``order`` as ``GET /v1/screener``'s query
+    string, without the period: what the builder opens with."""
+    pairs = [(a.key, ",".join(a.display())) for a in screen.applied]
+    return urlencode([*pairs, ("sort", sort.value), ("order", order.value)])
 
 
 class Joined(StrEnum):

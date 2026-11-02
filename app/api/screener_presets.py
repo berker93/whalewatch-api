@@ -15,14 +15,12 @@ why, and reading it is a 500: never a screen of fewer filters than it names.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
-from urllib.parse import urlencode
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routers.portfolio import SortOrder
-from app.api.screener import FILTERS, VOCABULARY, Applied, Screen, ScreenSort
+from app.api.screener import Screen, ScreenSort, query_string, read_filters
 from app.core.logging import get_logger
 from app.db.models import ScreenerPreset
 
@@ -47,8 +45,7 @@ class Preset:
     def query(self) -> str:
         """Its filters, sort and order as ``GET /v1/screener``'s query string,
         without the period: what the builder opens with."""
-        pairs = [(a.key, ",".join(a.display())) for a in self.screen.applied]
-        return urlencode([*pairs, ("sort", self.sort.value), ("order", self.order.value)])
+        return query_string(self.screen, self.sort, self.order)
 
 
 def parse_preset(row: ScreenerPreset) -> Preset:
@@ -56,24 +53,8 @@ def parse_preset(row: ScreenerPreset) -> Preset:
 
     :raises InvalidPresetError: Naming everything wrong with it at once.
     """
-    errors: list[str] = []
-    query: dict[str, Any] = row.query
-    for key in sorted(set(query) - set(FILTERS)):
-        errors.append(f"{key!r} is not a filter")
-    applied: list[Applied] = []
-    for filter_ in VOCABULARY:
-        if (values := query.get(filter_.key)) is None:
-            continue
-        if filter_.required:
-            errors.append(f"{filter_.key!r} is every request's, not a preset's")
-            continue
-        if not _strings(values):
-            errors.append(f"{filter_.key}: a list of strings, as a client would send it")
-            continue
-        try:
-            applied.append(Applied(filter_.key, filter_.parse(values)))
-        except ValueError as error:
-            errors.append(f"{filter_.key}: {error}")
+    screen, unread = read_filters(row.query)
+    errors = [f"{u.key}: {u.reason}" for u in unread]
     try:
         sort = ScreenSort(row.sort)
     except ValueError:
@@ -84,14 +65,10 @@ def parse_preset(row: ScreenerPreset) -> Preset:
         slug=row.slug,
         name=row.name,
         explanation=row.explanation,
-        screen=Screen(tuple(applied)),
+        screen=screen,
         sort=sort,
         order=SortOrder(row.sort_order),
     )
-
-
-def _strings(values: Any) -> bool:
-    return isinstance(values, list) and bool(values) and all(isinstance(v, str) for v in values)
 
 
 async def list_presets(session: AsyncSession) -> list[Preset]:
