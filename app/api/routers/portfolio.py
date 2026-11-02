@@ -7,6 +7,11 @@
     universe's latest period, which a filer that has not filed for yet would
     answer with nothing. Keyset-paged: an index fund holds thousands of
     positions.
+``GET /v1/investors/{slug}/composition``
+    The same period's stock positions as treemap blocks, the largest first,
+    with those under ``?min_weight=`` summed into one ``other``. Not paged:
+    at the default 0.25% there are at most 400 blocks, however many
+    positions, since the weights add up to 100.
 ``GET /v1/investors/{slug}/activity``
     ``position_change`` over a range of periods: what was opened, added to,
     trimmed and exited. Holds are left out unless asked for, and so is the
@@ -42,6 +47,17 @@ Every query here is cut at the caller's ``history_from``
 inside it, ``first_period`` is the first inside it, and the activity and the
 history start at it. A period asked for before it is a 402.
 
+Composition by sector
+---------------------
+TRM-1 asks for sector → security, and for one level, by security alone, while
+too little of the value has a sector to group by: under about 90%, a treemap
+with a large "Unknown" block is worse than one without sectors. Today none
+has one. ``security`` has no sector column, as SEC-3's enrichment has not
+added one, so the composition is flat. Sectors, when they come, are a
+``kind: "sector"`` block with the securities as its children, served only
+for a period with the coverage to fill it; a client that draws by ``kind``
+already handles the flat answer as the other case.
+
 Estimates
 ---------
 The portfolio's and the activity's rows carry the price estimate and the
@@ -58,6 +74,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import PlainValidator, WithJsonSchema
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     BindParameter,
     Boolean,
     Numeric,
@@ -91,6 +108,8 @@ from app.api.schemas.envelope import Envelope
 from app.api.schemas.portfolio import (
     Activity,
     ActivityEnvelope,
+    CompositionNode,
+    CompositionNodeEnvelope,
     HistoryPoint,
     HistoryPointEnvelope,
     PortfolioPosition,
@@ -100,6 +119,7 @@ from app.api.schemas.types import Period
 from app.core.periods import quarter_label, quarters_between
 from app.db.models import Filer, Holding, Security
 from app.db.models.holding import QUANTITY
+from app.db.models.implied_price import ImpliedPrice
 from app.db.models.position_change import CHANGE_PCT, ChangeAction, PositionChange
 from app.db.models.position_snapshot import WEIGHT_PCT, PositionSnapshot
 from app.db.models.security_split import SPLIT_RATIO
@@ -410,6 +430,82 @@ def portfolio_query(
     return statement, keyset
 
 
+#: The weight, in percent, under which ``/composition`` sums a position into
+#: ``other`` unless asked otherwise. A 200-position portfolio otherwise draws
+#: 150 slivers no one can read.
+DEFAULT_MIN_WEIGHT: Final = Decimal("0.25")
+
+
+def composition_query(
+    filer_id: FilerId, period: PeriodEnd, *, min_weight: Decimal | BindParameter[Decimal]
+) -> Select[Any]:
+    """The period's stock positions of ``min_weight`` or more, named, with their
+    price confidence, largest first; then one row summing the rest, with a null
+    ``security_id``, when two or more are under it.
+
+    Every row has ``position_count``: 1, or how many the last row sums.
+    """
+    positions = _positions(filer_id, period, include_options=False)
+    p = positions.c
+    # A weight is null only when the whole period is worth nothing: then
+    # every position is under any weight.
+    small = func.coalesce(p.weight_pct, 0) < min_weight
+    classified = select(
+        p.security_id,
+        p.value_usd,
+        p.weight_pct,
+        p.weight_delta,
+        p.action,
+        # A lone small position is shown as itself: summing one hides it for nothing.
+        and_(small, func.count().filter(small).over() > 1).label("rolled"),
+    ).cte("classified")
+    c = classified.c
+    shown = select(
+        c.security_id,
+        literal(1).label("position_count"),
+        c.value_usd,
+        c.weight_pct,
+        c.weight_delta,
+        c.action,
+    ).where(~c.rolled)
+    # No GROUP BY: one row, or none for want of a rolled position.
+    other = (
+        select(
+            null().cast(BigInteger),
+            func.count(),
+            func.sum(c.value_usd),
+            func.sum(c.weight_pct),
+            null().cast(WEIGHT_PCT),
+            null().cast(Text),
+        )
+        .where(c.rolled)
+        .having(func.count() > 0)
+    )
+    blocks = union_all(shown, other).subquery("blocks")
+
+    return (
+        select(
+            blocks,
+            Security.cusip,
+            ticker_at(period).label("ticker"),
+            Security.ticker.label("current_ticker"),
+            Security.name.label("issuer_name"),
+            ImpliedPrice.confidence,
+        )
+        .select_from(blocks)
+        # Outer: other has no security, and so no ticker, name or price.
+        .outerjoin(Security, Security.id == blocks.c.security_id)
+        .outerjoin(
+            ImpliedPrice,
+            and_(
+                ImpliedPrice.security_id == blocks.c.security_id,
+                ImpliedPrice.period_of_report == period,
+            ),
+        )
+        .order_by(blocks.c.security_id.is_(None), blocks.c.value_usd.desc(), blocks.c.security_id)
+    )
+
+
 #: Latest period first, then the largest trade, then the security.
 ACTIVITY_KEYSET: Final = Keyset(
     "investor-activity",
@@ -683,6 +779,70 @@ async def read_portfolio(
     meta.caveats = list(await period_concerns(session, slug=slug, period=period))
 
     return Envelope(data=[_position(row, period) for row in rows], meta=meta, page=page_info)
+
+
+MinWeightParam = Annotated[
+    Decimal,
+    Query(
+        ge=Decimal("0.05"),
+        le=Decimal("10"),
+        description=(
+            "The weight, in percent, a position needs to be its own block. Two or more "
+            "under it are summed into one `other`. From 0.05, at most 2,000 blocks, to 10."
+        ),
+        examples=["0.25"],
+    ),
+]
+
+
+@router.get(
+    "/investors/{slug}/composition",
+    operation_id="getInvestorComposition",
+    response_model=CompositionNodeEnvelope,
+    summary="One investor's portfolio in one period, as treemap blocks",
+    responses={
+        **not_found("No investor with that slug, or nothing published for the period."),
+        **PLAN_LIMITED,
+        **INVALID,
+    },
+)
+@cached(period="period")
+async def read_composition(
+    slug: SlugParam,
+    session: SessionDep,
+    entitled: EntitlementContextDep,
+    period: PeriodParam = None,
+    min_weight: MinWeightParam = DEFAULT_MIN_WEIGHT,
+) -> Envelope[CompositionNode]:
+    """Every common-stock position of `min_weight` or more, largest first, then
+    `other` summing the rest. One level, by security: no sectors yet.
+
+    The period is chosen and refused as the portfolio's is, and ``meta`` is the
+    portfolio's, caveats included. Not paginated.
+    """
+    entitled.require_period(period)
+    filer_id, period = await _portfolio_period(session, slug, period, entitled)
+    rows = await session.execute(composition_query(filer_id, period, min_weight=min_weight))
+    data = [
+        CompositionNode(
+            kind="security" if row.security_id is not None else "other",
+            cusip=row.cusip,
+            ticker=row.ticker,
+            current_ticker=row.current_ticker,
+            issuer_name=row.issuer_name,
+            value_usd=row.value_usd,
+            weight_pct=row.weight_pct,
+            weight_delta=row.weight_delta,
+            action=row.action,
+            confidence=row.confidence,
+            position_count=row.position_count,
+        )
+        for row in rows
+    ]
+
+    meta = await period_meta(session, period, filer_id=filer_id)
+    meta.caveats = list(await period_concerns(session, slug=slug, period=period))
+    return Envelope(data=data, meta=meta, page=None)
 
 
 @router.get(

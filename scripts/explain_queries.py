@@ -76,7 +76,13 @@ from app.api.routers.market import (
     top_sells_query,
 )
 from app.api.routers.meta import periods_query
-from app.api.routers.portfolio import activity_query, history_query, portfolio_query
+from app.api.routers.portfolio import (
+    DEFAULT_MIN_WEIGHT,
+    activity_query,
+    composition_query,
+    history_query,
+    portfolio_query,
+)
 from app.api.routers.search import (
     DEFAULT_LIMIT as SEARCH_LIMIT,
 )
@@ -340,6 +346,14 @@ QUERIES: Final = (
             include_options=True,
             history_from=_HISTORY_FROM,
         )[0],
+    ),
+    # Every position of the period, a few hundred named; the rest summed.
+    Query.from_app(
+        "investor_composition",
+        "GET /v1/investors/{slug}/composition",
+        composition_query(
+            bindparam("filer_id"), bindparam("period"), min_weight=DEFAULT_MIN_WEIGHT
+        ),
     ),
     # Every period, every action but hold: the default.
     Query.from_app(

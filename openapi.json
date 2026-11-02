@@ -696,6 +696,168 @@
         }
       }
     },
+    "/v1/investors/{slug}/composition": {
+      "get": {
+        "tags": [
+          "investors"
+        ],
+        "summary": "One investor's portfolio in one period, as treemap blocks",
+        "description": "Every common-stock position of `min_weight` or more, largest first, then\n`other` summing the rest. One level, by security: no sectors yet.\n\nThe period is chosen and refused as the portfolio's is, and ``meta`` is the\nportfolio's, caveats included. Not paginated.",
+        "operationId": "getInvestorComposition",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`.",
+              "examples": [
+                "berkshire-hathaway"
+              ],
+              "title": "Slug"
+            },
+            "description": "The investor's slug, as `slug` on its row of `GET /v1/investors`."
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}([Qq]\\d|-\\d{2}-\\d{2})$",
+                  "examples": [
+                    "2026Q1",
+                    "2026-03-31"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for this investor, which `meta.period` states.",
+              "title": "Period"
+            },
+            "description": "The quarter, as `2026Q1` or `2026-03-31`. Defaults to the latest one published for this investor, which `meta.period` states."
+          },
+          {
+            "name": "min_weight",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "maximum": 10.0,
+                  "minimum": 0.05
+                },
+                {
+                  "type": "string",
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                }
+              ],
+              "description": "The weight, in percent, a position needs to be its own block. Two or more under it are summed into one `other`. From 0.05, at most 2,000 blocks, to 10.",
+              "examples": [
+                "0.25"
+              ],
+              "default": "0.25",
+              "title": "Min Weight"
+            },
+            "description": "The weight, in percent, a position needs to be its own block. Two or more under it are summed into one `other`. From 0.05, at most 2,000 blocks, to 10."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompositionNodeEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No investor with that slug, or nothing published for the period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/investors/{slug}/activity": {
       "get": {
         "tags": [
@@ -14296,6 +14458,201 @@
         ],
         "title": "ClusterSort",
         "description": "What the clusters are ordered by."
+      },
+      "CompositionNode": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "security",
+              "other"
+            ],
+            "title": "Kind",
+            "description": "`security` for one position. `other` for the positions under `min_weight`, summed: at most one, always last, and only when two or more positions are under it. A lone small position is shown as itself.",
+            "examples": [
+              "security"
+            ]
+          },
+          "cusip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cusip",
+            "description": "The security's nine-character CUSIP. Null on `other`.",
+            "examples": [
+              "037833100"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "The ticker it traded under in the period this row is for: FB for Meta in 2021. Where there is no period, the current one. Null while the CUSIP is unresolved, and for good for some.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "AAPL"
+            ]
+          },
+          "issuer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Name",
+            "description": "The issuer, as on the portfolio: what to label a block with no ticker. Null on `other`.",
+            "examples": [
+              "APPLE INC"
+            ]
+          },
+          "value_usd": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Value Usd",
+            "description": "Whole dollars at the period end; on `other`, the positions' sum.",
+            "examples": [
+              "174346048472.00"
+            ]
+          },
+          "weight_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Pct",
+            "description": "Its share of the common-stock portfolio's value, in percent; on `other`, the positions' sum. The blocks' weights add up to 100. Null when every position of the period is worth nothing.",
+            "examples": [
+              "44.682510"
+            ]
+          },
+          "weight_delta": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weight Delta",
+            "description": "`weight_pct` less the previous period's, in percentage points: the whole weight for a `new` position. Null on `other`, whose positions are not the previous period's.",
+            "examples": [
+              "2.311400"
+            ]
+          },
+          "action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`new`, `add`, `trim` or `hold` against the filer's previous published period, as on the portfolio. Null on `other`.",
+            "examples": [
+              "trim"
+            ]
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceConfidence"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How far the holders' filings agree on the stock's price at the period end (the portfolio's `price_estimate.confidence`): `high`, `medium` or `low`. Null when no filing priced it, and on `other`.",
+            "examples": [
+              "high"
+            ]
+          },
+          "position_count": {
+            "type": "integer",
+            "title": "Position Count",
+            "description": "Positions in the block: 1 for a `security`, and how many `other` sums, for a label such as \"Other (147 positions)\". The blocks' counts add up to the portfolio's.",
+            "examples": [
+              1
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "value_usd",
+          "position_count"
+        ],
+        "title": "CompositionNode",
+        "description": "One block of a portfolio treemap: a position, or every position too small to show.\n\nFlat, one level: no sector yet (see :mod:`app.api.routers.portfolio`).\nCommon stock only, with no option to add option lines: their value is a\nnotional, not a share of the portfolio, so it has no area to draw."
+      },
+      "CompositionNodeEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/CompositionNode"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta",
+            "description": "What the rows describe, and when this answer was built."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "CompositionNodeEnvelope",
+        "description": "One investor's portfolio in one period, as treemap blocks, largest first."
       },
       "Coverage": {
         "properties": {

@@ -297,6 +297,20 @@ async def test_a_portfolio_wholly_before_the_window_is_a_402_not_a_404(
     assert response.json()["error"]["detail"]["limit"] == "history_quarters"
 
 
+async def test_the_composition_is_the_portfolios_window(
+    client: AsyncClient, pro: AsyncClient, cache: FakeRedis, world: dict[str, Any]
+) -> None:
+    url = "/v1/investors/alpha/composition"
+    params = {"period": "2023Q4"}
+
+    assert (await pro.get(url, params=params)).status_code == 200
+    refused = await client.get(url, params=params)
+    assert refused.status_code == 402
+    assert refused.json()["error"]["detail"]["limit"] == "history_quarters"
+    assert (await client.get("/v1/investors/bravo/composition")).status_code == 402
+    assert (await client.get(url)).json()["meta"]["period_end"] == "2024-12-31"
+
+
 async def test_a_stocks_history_prices_and_owners_stop_at_the_window(
     client: AsyncClient, pro: AsyncClient, world: dict[str, Any]
 ) -> None:

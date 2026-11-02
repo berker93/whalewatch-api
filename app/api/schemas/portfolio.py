@@ -1,4 +1,4 @@
-"""Response models for one investor's portfolio, activity and history.
+"""Response models for one investor's portfolio, composition, activity and history.
 
 Every row is a position or a change *in a period*, never "now": the portfolio
 states its period in ``meta``, and activity and history name one on each row.
@@ -17,7 +17,15 @@ from pydantic import BaseModel, Field
 
 from app.api.schemas.envelope import Envelope
 from app.api.schemas.estimate import Estimates
-from app.api.schemas.types import CURRENT_TICKER, DELISTED_BY, TICKER_THEN, Money, Percent, Quantity
+from app.api.schemas.types import (
+    CURRENT_TICKER,
+    DELISTED_BY,
+    TICKER_THEN,
+    Money,
+    Percent,
+    Quantity,
+)
+from app.db.models.implied_price import PriceConfidence
 from app.db.models.position_change import ChangeAction
 
 
@@ -208,6 +216,86 @@ class HistoryPoint(BaseModel):
     )
 
 
+class CompositionNode(BaseModel):
+    """One block of a portfolio treemap: a position, or every position too small to show.
+
+    Flat, one level: no sector yet (see :mod:`app.api.routers.portfolio`).
+    Common stock only, with no option to add option lines: their value is a
+    notional, not a share of the portfolio, so it has no area to draw.
+    """
+
+    kind: Literal["security", "other"] = Field(
+        description=(
+            "`security` for one position. `other` for the positions under `min_weight`, "
+            "summed: at most one, always last, and only when two or more positions are "
+            "under it. A lone small position is shown as itself."
+        ),
+        examples=["security"],
+    )
+    cusip: str | None = Field(
+        default=None,
+        description="The security's nine-character CUSIP. Null on `other`.",
+        examples=["037833100"],
+    )
+    ticker: str | None = Field(default=None, description=TICKER_THEN, examples=["AAPL"])
+    current_ticker: str | None = Field(default=None, description=CURRENT_TICKER, examples=["AAPL"])
+    issuer_name: str | None = Field(
+        default=None,
+        description=(
+            "The issuer, as on the portfolio: what to label a block with no ticker. "
+            "Null on `other`."
+        ),
+        examples=["APPLE INC"],
+    )
+    value_usd: Money = Field(
+        description="Whole dollars at the period end; on `other`, the positions' sum.",
+        examples=["174346048472.00"],
+    )
+    weight_pct: Percent | None = Field(
+        default=None,
+        description=(
+            "Its share of the common-stock portfolio's value, in percent; on `other`, "
+            "the positions' sum. The blocks' weights add up to 100. Null when every "
+            "position of the period is worth nothing."
+        ),
+        examples=["44.682510"],
+    )
+    weight_delta: Percent | None = Field(
+        default=None,
+        description=(
+            "`weight_pct` less the previous period's, in percentage points: the whole "
+            "weight for a `new` position. Null on `other`, whose positions are not the "
+            "previous period's."
+        ),
+        examples=["2.311400"],
+    )
+    action: ChangeAction | None = Field(
+        default=None,
+        description=(
+            "`new`, `add`, `trim` or `hold` against the filer's previous published "
+            "period, as on the portfolio. Null on `other`."
+        ),
+        examples=["trim"],
+    )
+    confidence: PriceConfidence | None = Field(
+        default=None,
+        description=(
+            "How far the holders' filings agree on the stock's price at the period end "
+            "(the portfolio's `price_estimate.confidence`): `high`, `medium` or `low`. "
+            "Null when no filing priced it, and on `other`."
+        ),
+        examples=["high"],
+    )
+    position_count: int = Field(
+        description=(
+            "Positions in the block: 1 for a `security`, and how many `other` sums, for a "
+            'label such as "Other (147 positions)". The blocks\' counts add up to the '
+            "portfolio's."
+        ),
+        examples=[1],
+    )
+
+
 class PortfolioPositionEnvelope(Envelope[PortfolioPosition]):
     """One investor's positions in one period."""
 
@@ -218,3 +306,7 @@ class ActivityEnvelope(Envelope[Activity]):
 
 class HistoryPointEnvelope(Envelope[HistoryPoint]):
     """One investor's portfolio, a quarter a row."""
+
+
+class CompositionNodeEnvelope(Envelope[CompositionNode]):
+    """One investor's portfolio in one period, as treemap blocks, largest first."""
