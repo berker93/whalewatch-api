@@ -2,7 +2,7 @@
 
 ``alert_rule``
     One thing one user wants to hear about: a kind of event (:class:`AlertKind`)
-    and, for most kinds, the filer or stock it is about. Turned off with
+    and, for most kinds, the filer, stock or saved filter it is about. Turned off with
     ``is_active`` rather than deleted, so turning it back on keeps its
     settings.
 ``notification``
@@ -44,6 +44,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Text,
@@ -74,6 +75,9 @@ class AlertKind(StrEnum):
     """Several insiders of a followed stock bought together. Targets a stock."""
     SEASON_DIGEST = "season_digest"
     """A 13F season's summary. Targets nothing."""
+    SAVED_FILTER_MATCH = "saved_filter_match"
+    """A 13F arrived with positions that pass one of the user's saved
+    screener filters. Targets the saved filter."""
 
 
 #: The kinds about one filer: their rule names it in ``filer_id``.
@@ -81,6 +85,9 @@ FILER_KINDS: Final = (AlertKind.FILER_FILED, AlertKind.FILER_POSITION_CHANGE)
 
 #: The kinds about one stock: their rule names it in ``security_id``.
 SECURITY_KINDS: Final = (AlertKind.STOCK_OWNERSHIP_CHANGE, AlertKind.INSIDER_CLUSTER)
+
+#: The kinds about one of the user's saved filters: their rule names it in ``saved_filter_id``.
+SAVED_FILTER_KINDS: Final = (AlertKind.SAVED_FILTER_MATCH,)
 
 #: The kinds whose events are a number of dollars, and so can be too small to
 #: tell: their rule may have a ``min_value``. A filing, and a season, are not.
@@ -140,8 +147,8 @@ class AlertRule(Base):
     kind: Mapped[str] = mapped_column(Text)
     """One :class:`AlertKind` value."""
 
-    # The target. Which of the two is set is the kind's: FILER_KINDS name a
-    # filer, SECURITY_KINDS a stock, the digest neither. CASCADE, as on the
+    # The target. Which one is set is the kind's: FILER_KINDS name a filer,
+    # SECURITY_KINDS a stock, SAVED_FILTER_KINDS a saved filter, the digest none. CASCADE, as on the
     # watchlist: a deleted filer or stock is no longer followed.
     filer_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("filer.id", ondelete="CASCADE")
@@ -149,6 +156,9 @@ class AlertRule(Base):
     security_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("security.id", ondelete="CASCADE")
     )
+    saved_filter_id: Mapped[int | None] = mapped_column(BigInteger)
+    """The saved filter, for :data:`SAVED_FILTER_KINDS`: the rule's owner's own,
+    by a foreign key on both columns, and deleted with it."""
 
     min_value: Mapped[Decimal | None] = mapped_column(MONEY)
     """Dollars below which an event is not worth telling: a trade's, a
@@ -174,6 +184,18 @@ class AlertRule(Base):
             f"(security_id IS NOT NULL) = (kind IN ({_quoted(SECURITY_KINDS)}))",
             name="security_kinds_name_a_security",
         ),
+        CheckConstraint(
+            f"(saved_filter_id IS NOT NULL) = (kind IN ({_quoted(SAVED_FILTER_KINDS)}))",
+            name="saved_filter_kinds_name_a_saved_filter",
+        ),
+        # The filter and the rule are one user's: a rule cannot name another
+        # account's filter, and goes with the filter.
+        ForeignKeyConstraint(
+            ["saved_filter_id", "user_id"],
+            ["saved_filter.id", "saved_filter.user_id"],
+            name="fk_alert_rule_saved_filter_id_saved_filter",
+            ondelete="CASCADE",
+        ),
         CheckConstraint("min_value > 0", name="min_value_is_positive"),
         CheckConstraint(
             f"min_value IS NULL OR kind IN ({_quoted(THRESHOLD_KINDS)})",
@@ -192,6 +214,7 @@ class AlertRule(Base):
             "kind",
             "filer_id",
             "security_id",
+            "saved_filter_id",
             unique=True,
             postgresql_nulls_not_distinct=True,
         ),
@@ -208,6 +231,12 @@ class AlertRule(Base):
             "security_id",
             "kind",
             postgresql_where=text("security_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_alert_rule_saved_filter_id",
+            "saved_filter_id",
+            "user_id",
+            postgresql_where=text("saved_filter_id IS NOT NULL"),
         ),
     )
 

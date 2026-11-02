@@ -148,6 +148,15 @@ class SavedFilter(BaseModel):
     created_at: datetime = Field(
         description="When it was saved.", examples=["2026-10-25T09:30:00Z"]
     )
+    alert_rule_id: str | None = Field(
+        description=(
+            "The `saved_filter_match` alert rule about it, on or off "
+            "(`GET /v1/me/alert-rules`): told when a 13F arrives with positions it passes. "
+            "Null when there is none: `POST /v1/me/alert-rules` with `kind: "
+            "saved_filter_match` and this filter's `id` as `saved_filter_id` makes one."
+        ),
+        examples=["31"],
+    )
     last_run_at: datetime | None = Field(
         description=(
             "When `GET /v1/saved-filters/{id}/screen` last read it. Null if never: opening "

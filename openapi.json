@@ -8280,7 +8280,7 @@
             }
           },
           "404": {
-            "description": "No stock with that CUSIP, or investor with that slug.",
+            "description": "No stock with that CUSIP, investor with that slug, or saved filter of the user's with that id.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13509,7 +13509,8 @@
           "filer_position_change",
           "stock_ownership_change",
           "insider_cluster",
-          "season_digest"
+          "season_digest",
+          "saved_filter_match"
         ],
         "title": "AlertKind",
         "description": "What an alert is about. Text with a ``CHECK``, by the rule in\n:mod:`app.db.models.enums`: the set is ours and will grow."
@@ -13568,6 +13569,17 @@
               }
             ],
             "description": "The stock, for `stock_ownership_change` and `insider_cluster`; else null."
+          },
+          "saved_filter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuleSavedFilter"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The saved filter, for `saved_filter_match`; else null."
           },
           "min_value": {
             "anyOf": [
@@ -13634,6 +13646,7 @@
           "kind",
           "investor",
           "stock",
+          "saved_filter",
           "min_value",
           "channels",
           "is_active",
@@ -14997,6 +15010,21 @@
               "037833100"
             ]
           },
+          "saved_filter_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Filter Name",
+            "description": "The saved filter it is about, by name. Null for a kind about none.",
+            "examples": [
+              null
+            ]
+          },
           "min_value": {
             "anyOf": [
               {
@@ -15049,6 +15077,7 @@
           "kind",
           "filer_slug",
           "cusip",
+          "saved_filter_name",
           "min_value",
           "channels",
           "is_active",
@@ -20260,7 +20289,27 @@
                 "type": "null"
               }
             ],
-            "description": "What it is about: an investor for `filer_filed` and `filer_position_change`, a stock for `stock_ownership_change` and `insider_cluster`, nothing for `season_digest`."
+            "description": "What it is about: an investor for `filer_filed` and `filer_position_change`, a stock for `stock_ownership_change` and `insider_cluster`, nothing for `season_digest` and `saved_filter_match`."
+          },
+          "saved_filter_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[1-9][0-9]{0,17}$",
+                "description": "A rule's `id`.",
+                "examples": [
+                  "31"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Filter Id",
+            "description": "For `saved_filter_match` only, and required for it: the `id` of one of the user's saved filters (`GET /v1/saved-filters`). Deleting the filter deletes the rule.",
+            "examples": [
+              "12"
+            ]
           },
           "min_value": {
             "anyOf": [
@@ -22395,6 +22444,33 @@
         "title": "RuleInvestor",
         "description": "The investor a rule is about."
       },
+      "RuleSavedFilter": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "As `/v1/saved-filters/{id}` takes it.",
+            "examples": [
+              "12"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "What the user called it.",
+            "examples": [
+              "Activist stakes"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "RuleSavedFilter",
+        "description": "The saved filter a rule is about."
+      },
       "RuleStock": {
         "properties": {
           "cusip": {
@@ -22493,6 +22569,21 @@
               "2026-10-25T09:30:00Z"
             ]
           },
+          "alert_rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Rule Id",
+            "description": "The `saved_filter_match` alert rule about it, on or off (`GET /v1/me/alert-rules`): told when a 13F arrives with positions it passes. Null when there is none: `POST /v1/me/alert-rules` with `kind: saved_filter_match` and this filter's `id` as `saved_filter_id` makes one.",
+            "examples": [
+              "31"
+            ]
+          },
           "last_run_at": {
             "anyOf": [
               {
@@ -22519,6 +22610,7 @@
           "query",
           "ignored",
           "created_at",
+          "alert_rule_id",
           "last_run_at"
         ],
         "title": "SavedFilter",

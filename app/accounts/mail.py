@@ -390,6 +390,9 @@ def notification_path(kind: AlertKind, payload: Mapping[str, Any]) -> str | None
             return f"/insiders?{urlencode({'ticker': ticker})}" if ticker else "/insiders"
         case AlertKind.SEASON_DIGEST:
             return at_period("/overview")
+        case AlertKind.SAVED_FILTER_MATCH:
+            # The investor's filing the matches are in, at the quarter.
+            return at_period(f"/investors/{quote(slug, safe='')}") if slug else None
 
 
 def alert(

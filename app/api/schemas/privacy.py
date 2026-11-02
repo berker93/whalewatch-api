@@ -209,6 +209,10 @@ class ExportAlertRule(BaseModel):
     cusip: str | None = Field(
         description="The stock it is about. Null for a kind about none.", examples=["037833100"]
     )
+    saved_filter_name: str | None = Field(
+        description="The saved filter it is about, by name. Null for a kind about none.",
+        examples=[None],
+    )
     min_value: Money | None = Field(
         description="Dollars below which an event is not told. Null: every event.",
         examples=[None],

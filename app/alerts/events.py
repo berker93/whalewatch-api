@@ -13,6 +13,15 @@ may have run in between. Two kinds of event come out of a pair:
     the same change, told to those following the filer and those following
     the stock. A ``hold`` is not news, and nor is a filer's first period, in
     which every position is ``new`` because it is the first we have.
+``saved_filter_match``
+    The pair's positions that pass a saved screener filter some rule that is
+    on is about: one event per filter and pair, however many positions pass,
+    naming the largest. The filter is read through the vocabulary as it is
+    now (:mod:`app.api.saved_filters`), and run as ``GET /v1/screener`` runs
+    it, for the pair's filer and quarter: so its stock filters (holders, net
+    flow, exits, insiders) are as the views and trades stand when the task
+    runs. A position that comes to pass only because other investors filed
+    later is not told: the event is the filer's filing, as every event here is.
 
 What is never an event
 ----------------------
@@ -79,16 +88,20 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.saved_filters import SavedRead, read_saved
+from app.api.screener import Scope as ScreenScope
 from app.core.periods import quarter_label
 from app.db.models import (
     PAYLOAD_KEYS,
     AlertKind,
     AlertRule,
+    AppUser,
     Filer,
     Filing,
     ImpliedPrice,
     PositionChange,
     PositionSnapshot,
+    SavedFilter,
     Security,
     WatchlistItem,
 )
@@ -115,6 +128,18 @@ _VERBS: Final = {
     ChangeAction.ADD: "added to",
     ChangeAction.TRIM: "trimmed",
     ChangeAction.EXIT: "exited",
+}
+
+#: How many of a filing's positions a saved filter passes are named, the largest.
+MATCHES_NAMED: Final = 5
+
+#: How a position a saved filter passes is said: "AAPL (opened, $1.2B)".
+_MATCHED: Final = {
+    ChangeAction.NEW: "opened",
+    ChangeAction.ADD: "added to",
+    ChangeAction.TRIM: "trimmed",
+    ChangeAction.HOLD: "held",
+    ChangeAction.EXIT: "sold out",
 }
 
 #: How the filing's summary counts each action: "opened 3, added to 5".
@@ -148,6 +173,8 @@ class Event:
     title: str
     body: str
     payload: dict[str, Any]
+    saved_filter_id: int | None = None
+    """The saved filter, for ``saved_filter_match``: its one rule's target."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,25 +197,30 @@ async def read_events(
     if pairs is not None and not pairs:
         return []
     filers, securities = await _followed(session)
-    if not filers and not securities:
+    screens = await _screens(session)
+    if not filers and not securities and not screens:
         return []
     published = await _published(session, pairs, since=now - FRESH_FOR)
     if not published:
         return []
-    rows = (await session.execute(_changes(published, filers, securities))).all()
-    changes = [row for row in rows if not _split_unadjusted(row)]
+    events: list[Event] = []
+    if filers or securities:
+        rows = (await session.execute(_changes(published, filers, securities))).all()
+        changes = [row for row in rows if not _split_unadjusted(row)]
 
-    # Every change of a followed filer is read, so its filing counts them all.
-    counted: dict[Pair, Counter[str]] = {key: Counter() for key in published}
-    for row in changes:
-        counted[(row.filer_id, row.period_of_report)][row.action] += 1
-    events = [
-        _filed(pair, counted[key])
-        for key, pair in sorted(published.items())
-        if pair.filer_id in filers
-    ]
-    for row in changes:
-        events.extend(_changed(published[(row.filer_id, row.period_of_report)], row))
+        # Every change of a followed filer is read, so its filing counts them all.
+        counted: dict[Pair, Counter[str]] = {key: Counter() for key in published}
+        for row in changes:
+            counted[(row.filer_id, row.period_of_report)][row.action] += 1
+        events = [
+            _filed(pair, counted[key])
+            for key, pair in sorted(published.items())
+            if pair.filer_id in filers
+        ]
+        for row in changes:
+            events.extend(_changed(published[(row.filer_id, row.period_of_report)], row))
+    for screen in screens:
+        events.extend(await _matched(session, published, screen))
     return events
 
 
@@ -321,6 +353,140 @@ def _changes(
             ~withheld_between,
         )
         .order_by(change.filer_id, change.period_of_report, change.security_id)
+    )
+
+
+# --- saved filters ----------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Screen:
+    """A saved filter some rule that is on is about, read as it reads now."""
+
+    saved_filter_id: int
+    name: str
+    read: SavedRead
+
+
+async def _screens(session: AsyncSession) -> list[_Screen]:
+    """Every saved filter a ``saved_filter_match`` rule that is on is about,
+    of an account not deleted. Whether its plan sends the kind is the
+    firing's to check, as for every kind."""
+    rows = (
+        await session.execute(
+            select(SavedFilter.id, SavedFilter.name, SavedFilter.params)
+            .join(AlertRule, AlertRule.saved_filter_id == SavedFilter.id)
+            .join(AppUser, AppUser.id == AlertRule.user_id)
+            .where(
+                AlertRule.kind == AlertKind.SAVED_FILTER_MATCH.value,
+                AlertRule.is_active.is_(true()),
+                AppUser.deleted_at.is_(None),
+            )
+            .order_by(SavedFilter.id)
+        )
+    ).all()
+    reads = await read_saved(session, [row.params for row in rows])
+    return [_Screen(row.id, row.name, read) for row, read in zip(rows, reads, strict=True)]
+
+
+def _matching(screen: _Screen, period: date, filer_ids: list[int]) -> Select[Any]:
+    """The positions of ``filer_ids`` in ``period`` that pass the filter: the
+    screener's ``WHERE``, narrowed to the filers, largest first."""
+    change = PositionChange
+    return (
+        select(
+            change.filer_id,
+            change.security_id,
+            change.action,
+            change.shares,
+            change.value_usd,
+            change.prev_shares,
+            change.prev_value_usd,
+            change.is_split,
+            Security.cusip,
+            Security.name.label("issuer"),
+            ticker_at(change.period_of_report).label("ticker"),
+        )
+        .join(Security, Security.id == change.security_id)
+        .where(
+            *screen.read.screen.conditions(ScreenScope(period=period)),
+            change.filer_id.in_(filer_ids),
+        )
+        .order_by(change.filer_id, change.value_usd.desc(), Security.cusip)
+    )
+
+
+async def _matched(
+    session: AsyncSession, published: dict[Pair, _Published], screen: _Screen
+) -> list[Event]:
+    """One event per published pair with a position the filter passes."""
+    by_period: dict[date, list[_Published]] = {}
+    for _, pair in sorted(published.items()):
+        by_period.setdefault(pair.period, []).append(pair)
+    events: list[Event] = []
+    for period, pairs in sorted(by_period.items()):
+        rows = await session.execute(_matching(screen, period, [p.filer_id for p in pairs]))
+        by_filer: dict[int, list[Any]] = {}
+        for row in rows:
+            # A split not yet detected passes "added to" filters as a 900% add.
+            if not _split_unadjusted(row):
+                by_filer.setdefault(row.filer_id, []).append(row)
+        events.extend(
+            _match(pair, screen, by_filer[pair.filer_id])
+            for pair in pairs
+            if pair.filer_id in by_filer
+        )
+    return events
+
+
+def _match(pair: _Published, screen: _Screen, rows: list[Any]) -> Event:
+    period = quarter_label(pair.period)
+    count = len(rows)
+    shown = rows[:MATCHES_NAMED]
+    stocks = [row.ticker or row.issuer or row.cusip for row in shown]
+    named = [
+        f"{stock} ({_MATCHED[ChangeAction(row.action)]}"
+        + (f", {dollars(row.value_usd)})" if row.value_usd > 0 else ")")
+        for stock, row in zip(stocks, shown, strict=True)
+    ]
+    body = f"In its 13F for {period}: {', '.join(named)}"
+    if count > len(shown):
+        body += f", and {_number(count - len(shown))} more"
+    body += "."
+    if ignored := len(screen.read.ignored):
+        body += (
+            f" {ignored} of the filter's settings no longer "
+            f"{'applies' if ignored == 1 else 'apply'}, so it passes more than when it was "
+            "saved: open it to review."
+        )
+    passes = "passes" if count == 1 else "pass"
+    return Event(
+        kind=AlertKind.SAVED_FILTER_MATCH,
+        filer_id=pair.filer_id,
+        period=pair.period,
+        security_id=None,
+        filed_at=pair.filed_at,
+        dollars=None,
+        change=None,
+        dedupe_key=f"{AlertKind.SAVED_FILTER_MATCH}:{screen.saved_filter_id}:{pair.slug}:{period}",
+        title=(
+            f"{pair.filer_name}: {_number(count)} {_plural(count, 'position')} {passes} "
+            f"\u201c{screen.name}\u201d"
+        ),
+        body=body,
+        payload=_payload(
+            filer_slug=pair.slug,
+            period=period,
+            as_of=_filed_on(pair.filed_at),
+            filer_name=pair.filer_name,
+            saved_filter_id=str(screen.saved_filter_id),
+            saved_filter_name=screen.name,
+            query=screen.read.query,
+            matches=count,
+            tickers=stocks,
+            ignored=len(screen.read.ignored),
+        ),
+        saved_filter_id=screen.saved_filter_id,
     )
 
 

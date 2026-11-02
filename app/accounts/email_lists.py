@@ -20,8 +20,18 @@ from app.accounts.unsubscribe import (
     ListKind,
     MailingList,
     alert_label,
+    quoted_name,
 )
-from app.db.models import AlertKind, AlertRule, AppUser, Channel, ConsentSource, Filer, Security
+from app.db.models import (
+    AlertKind,
+    AlertRule,
+    AppUser,
+    Channel,
+    ConsentSource,
+    Filer,
+    SavedFilter,
+    Security,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,16 +55,19 @@ async def standing(session: AsyncSession, user_id: int, mailing_list: MailingLis
     if mailing_list.kind is ListKind.ALERT_RULE:
         row = (
             await session.execute(
-                select(AlertRule, Filer.name, Security.ticker, Security.name)
+                select(AlertRule, Filer.name, Security.ticker, Security.name, SavedFilter.name)
                 .outerjoin(Filer, Filer.id == AlertRule.filer_id)
                 .outerjoin(Security, Security.id == AlertRule.security_id)
+                .outerjoin(SavedFilter, SavedFilter.id == AlertRule.saved_filter_id)
                 .where(AlertRule.id == mailing_list.rule_id, AlertRule.user_id == user_id)
             )
         ).first()
         if row is None:
             return Standing(mailing_list, "an alert that has since been deleted", False)
-        rule, filer, ticker, security = row
-        label = alert_label(AlertKind(rule.kind), filer or ticker or security)
+        rule, filer, ticker, security, saved_filter = row
+        label = alert_label(
+            AlertKind(rule.kind), filer or ticker or security or quoted_name(saved_filter)
+        )
         subscribed = user is not None and rule.is_active and Channel.EMAIL in rule.channels
         return Standing(mailing_list, label, subscribed)
     if mailing_list.kind is ListKind.ALERT_EMAIL:

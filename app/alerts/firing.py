@@ -3,8 +3,8 @@
 A rule hears an event when all of these hold, each checked here, at the time
 the task runs, not when the rule was made:
 
-* it is on, its kind is the event's and its target is the event's filer or
-  stock;
+* it is on, its kind is the event's and its target is the event's filer,
+  stock or saved filter;
 * its owner's account is not deleted, and its plan sends the kind
   (:func:`app.accounts.alert_rules.sent_kinds`): a rule kept from a plan
   since left stays quiet;
@@ -54,6 +54,7 @@ from app.api.routers.notifications import forget_count
 from app.core.periods import in_filing_window
 from app.db.models import (
     FILER_KINDS,
+    SAVED_FILTER_KINDS,
     AlertKind,
     AlertOutbox,
     AlertRule,
@@ -129,6 +130,7 @@ async def _rules(session: AsyncSession, events: list[Event]) -> dict[tuple[str, 
     """The rules on about the events' filers and stocks, by kind and target."""
     filers = sorted({event.filer_id for event in events})
     securities = sorted({event.security_id for event in events if event.security_id is not None})
+    screens = sorted({e.saved_filter_id for e in events if e.saved_filter_id is not None})
     rows = await session.execute(
         select(
             AlertRule.id,
@@ -136,6 +138,7 @@ async def _rules(session: AsyncSession, events: list[Event]) -> dict[tuple[str, 
             AlertRule.kind,
             AlertRule.filer_id,
             AlertRule.security_id,
+            AlertRule.saved_filter_id,
             AlertRule.min_value,
             AlertRule.channels,
             AlertRule.created_at,
@@ -155,13 +158,17 @@ async def _rules(session: AsyncSession, events: list[Event]) -> dict[tuple[str, 
                     AlertRule.kind == AlertKind.STOCK_OWNERSHIP_CHANGE.value,
                     AlertRule.security_id.in_(securities),
                 ),
+                and_(
+                    AlertRule.kind == AlertKind.SAVED_FILTER_MATCH.value,
+                    AlertRule.saved_filter_id.in_(screens),
+                ),
             ),
         )
     )
     found: defaultdict[tuple[str, int], list[_Rule]] = defaultdict(list)
     for row in rows:
         kind = AlertKind(row.kind)
-        target = row.filer_id if kind in FILER_KINDS else row.security_id
+        target = _target(kind, row)
         found[(kind, target)].append(
             _Rule(
                 id=row.id,
@@ -178,6 +185,15 @@ async def _rules(session: AsyncSession, events: list[Event]) -> dict[tuple[str, 
     return found
 
 
+def _target(kind: AlertKind, row: Any) -> Any:
+    """What a rule, or an event, of ``kind`` is about: a filer, a saved filter or a stock."""
+    if kind in FILER_KINDS:
+        return row.filer_id
+    if kind in SAVED_FILTER_KINDS:
+        return row.saved_filter_id
+    return row.security_id
+
+
 async def _heard(
     session: AsyncSession, events: list[Event], rules: dict[tuple[str, int], list[_Rule]]
 ) -> list[tuple[_Rule, Event]]:
@@ -185,7 +201,7 @@ async def _heard(
     kinds: dict[int, frozenset[AlertKind]] = {}
     heard: list[tuple[_Rule, Event]] = []
     for event in events:
-        target = event.filer_id if event.kind in FILER_KINDS else event.security_id
+        target = _target(event.kind, event)
         if target is None:
             continue
         for rule in rules.get((event.kind, target), ()):

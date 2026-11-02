@@ -255,6 +255,7 @@ async def _alert_rules(session: AsyncSession, user_id: int) -> list[ExportAlertR
             AlertRule.kind,
             Filer.slug.label("filer_slug"),
             Security.cusip,
+            SavedFilter.name.label("saved_filter_name"),
             AlertRule.min_value,
             AlertRule.channels,
             AlertRule.is_active,
@@ -262,6 +263,7 @@ async def _alert_rules(session: AsyncSession, user_id: int) -> list[ExportAlertR
         )
         .outerjoin(Filer, Filer.id == AlertRule.filer_id)
         .outerjoin(Security, Security.id == AlertRule.security_id)
+        .outerjoin(SavedFilter, SavedFilter.id == AlertRule.saved_filter_id)
         .where(AlertRule.user_id == user_id)
         .order_by(AlertRule.id)
     )

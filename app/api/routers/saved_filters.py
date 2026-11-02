@@ -21,6 +21,11 @@
     latest quarter unless ``?period=`` says otherwise, and ``last_run_at``
     set to now.
 
+To be told when a 13F arrives with positions a filter passes, make an alert
+rule of it: ``POST /v1/me/alert-rules`` with ``kind: saved_filter_match`` and
+its id (:mod:`app.api.routers.alert_rules`). Each filter answers with the
+rule about it, ``alert_rule_id``. Deleting the filter deletes the rule.
+
 Read again, every time
 ----------------------
 A filter is checked against the vocabulary when it is saved, and anything it
@@ -36,7 +41,6 @@ Saving, changing and deleting need a verified email, as the watchlist does;
 reading and running do not.
 """
 
-from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Annotated, Any, Final
 
@@ -50,8 +54,8 @@ from app.api.auth import UNAUTHORIZED, UNVERIFIED, NoStoreDep, VerifiedViewerDep
 from app.api.deps import PageParamsDep, RedisDep, SessionDep, SettingsDep
 from app.api.entitlements import PLAN_LIMITED, EntitlementContext, EntitlementContextDep
 from app.api.errors import INVALID, INVALID_CURSOR, invalid, not_found
-from app.api.routers.portfolio import SortOrder
 from app.api.routers.screener import TIMED_OUT, fixed_screen_parameters, run_screen
+from app.api.saved_filters import SavedRead, read_saved
 from app.api.schemas.saved_filter import (
     IgnoredParam,
     NewSavedFilter,
@@ -65,24 +69,13 @@ from app.api.schemas.saved_filter import (
 )
 from app.api.schemas.screener import AppliedFilter
 from app.api.schemas.types import Period
-from app.api.screener import (
-    Applied,
-    Screen,
-    ScreenSort,
-    Unread,
-    query_string,
-    read_filters,
-    unknown_slugs,
-)
-from app.db.models import AppUser, Filer
+from app.api.screener import read_filters, unknown_slugs
+from app.db.models import AlertKind, AlertRule, AppUser
 from app.db.models import SavedFilter as SavedFilterRow
 from app.db.models.account import MAX_FILTER_NAME
 
 router = APIRouter(prefix="/saved-filters", tags=["saved-filters"], dependencies=[NoStoreDep])
 
-#: The keys of a row's ``params``. Anything else, a row saved before 0050
-#: with ``GET /v1/flows``'s, is ignored.
-_PARAMS: Final = frozenset({"filters", "sort", "order"})
 _COPY: Final = " (copy)"
 
 _NO_FILTER: Final = not_found("No saved filter with that id is the signed-in user's.")
@@ -91,78 +84,20 @@ _NO_FILTER: Final = not_found("No saved filter with that id is the signed-in use
 # --- reading a row --------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class _Read:
-    """A row's params, as the vocabulary reads them now."""
-
-    screen: Screen
-    sort: ScreenSort
-    order: SortOrder
-    ignored: tuple[Unread, ...]
-
-
-def _read(params: dict[str, Any]) -> _Read:
-    """What of ``params`` reads, and what does not: every filter's own
-    reading, the sort's and order's, without the investors' slugs checked."""
-    ignored = [Unread(key, "not part of a saved filter") for key in sorted(set(params) - _PARAMS)]
-    kept = params.get("filters", {})
-    if not isinstance(kept, dict):
-        ignored.append(Unread("filters", "not an object of filters"))
-        kept = {}
-    screen, unread = read_filters(kept)
-    ignored += unread
-    sort, order = ScreenSort.VALUE, SortOrder.DESC
-    try:
-        sort = ScreenSort(params.get("sort", sort))
-    except ValueError:
-        ignored.append(Unread("sort", f"unknown sort {params['sort']!r}: sorted by value"))
-    try:
-        order = SortOrder(params.get("order", order))
-    except ValueError:
-        ignored.append(Unread("order", f"unknown order {params['order']!r}: largest first"))
-    return _Read(screen, sort, order, tuple(ignored))
-
-
-def _slugs(read: _Read) -> frozenset[str]:
-    slugs: frozenset[str] | None = read.screen.value("filer_slug")
-    return slugs or frozenset()
-
-
-def _without_gone(read: _Read, gone: set[str]) -> _Read:
-    """``read`` without the investors whose slugs name no one now. One with
-    none left is no filter at all, and said so: an empty "any of" would be
-    every investor, or none, and neither is what was saved."""
-    slugs = _slugs(read)
-    if not slugs & gone:
-        return read
-    left = slugs - gone
-    applied = tuple(
-        Applied(a.key, left) if a.key == "filer_slug" else a
-        for a in read.screen.applied
-        if a.key != "filer_slug" or left
+async def _rule_ids(session: AsyncSession, filter_ids: list[int]) -> dict[int, int]:
+    """The ``saved_filter_match`` rule about each filter that has one."""
+    if not filter_ids:
+        return {}
+    rows = await session.execute(
+        select(AlertRule.saved_filter_id, AlertRule.id).where(
+            AlertRule.kind == AlertKind.SAVED_FILTER_MATCH.value,
+            AlertRule.saved_filter_id.in_(filter_ids),
+        )
     )
-    names = ", ".join(map(repr, sorted(slugs & gone)))
-    reason = f"no investor has the slug {names} now"
-    if not left:
-        reason += ", and no other was named: the filter is left out"
-    return replace(
-        read,
-        screen=Screen(applied),
-        ignored=(*read.ignored, Unread("filer_slug", reason)),
-    )
+    return {filter_id: rule_id for filter_id, rule_id in rows.tuples() if filter_id is not None}
 
 
-async def _read_all(session: AsyncSession, rows: list[SavedFilterRow]) -> list[_Read]:
-    """Every row read, the slugs of all of them looked up in one query."""
-    reads = [_read(row.params) for row in rows]
-    slugs = frozenset().union(*map(_slugs, reads))
-    if not slugs:
-        return reads
-    known = set(await session.scalars(select(Filer.slug).where(Filer.slug.in_(sorted(slugs)))))
-    return [_without_gone(read, set(slugs - known)) for read in reads]
-
-
-def _saved(row: SavedFilterRow, read: _Read) -> SavedFilter:
+def _saved(row: SavedFilterRow, read: SavedRead, rule_id: int | None) -> SavedFilter:
     return SavedFilter(
         id=str(row.id),
         name=row.name,
@@ -175,16 +110,17 @@ def _saved(row: SavedFilterRow, read: _Read) -> SavedFilter:
             AppliedFilter(key=a.key, label=a.filter.label, values=a.display())
             for a in read.screen.applied
         ],
-        query=query_string(read.screen, read.sort, read.order),
+        query=read.query,
         ignored=[IgnoredParam(key=u.key, reason=u.reason) for u in read.ignored],
         created_at=row.created_at,
+        alert_rule_id=None if rule_id is None else str(rule_id),
         last_run_at=row.last_run_at,
     )
 
 
 async def _one(session: AsyncSession, row: SavedFilterRow) -> SavedFilter:
-    [read] = await _read_all(session, [row])
-    return _saved(row, read)
+    [read] = await read_saved(session, [row.params])
+    return _saved(row, read, (await _rule_ids(session, [row.id])).get(row.id))
 
 
 async def _mine(session: AsyncSession, user_id: int, filter_id: int) -> SavedFilterRow:
@@ -277,8 +213,13 @@ async def read_saved_filters(viewer: ViewerDep, session: SessionDep) -> SavedFil
             .order_by(SavedFilterRow.id)
         )
     )
-    reads = await _read_all(session, rows)
-    return SavedFilters(data=[_saved(row, read) for row, read in zip(rows, reads, strict=True)])
+    reads = await read_saved(session, [row.params for row in rows])
+    rule_ids = await _rule_ids(session, [row.id for row in rows])
+    return SavedFilters(
+        data=[
+            _saved(row, read, rule_ids.get(row.id)) for row, read in zip(rows, reads, strict=True)
+        ]
+    )
 
 
 @router.post(
@@ -424,7 +365,7 @@ async def screen_saved_filter(
     it set. Held to the plan's window as the screener is: a 402 for a quarter
     before it. Another user's is a 404."""
     row = await _mine(session, viewer.user.id, filter_id)
-    [read] = await _read_all(session, [row])
+    [read] = await read_saved(session, [row.params])
     rows, meta, page_info = await run_screen(
         session, redis, settings, page, entitled, period, read.screen, read.sort, read.order
     )
@@ -432,6 +373,9 @@ async def screen_saved_filter(
     await session.commit()
     return SavedFilterScreenEnvelope(
         data=rows,
-        meta=SavedFilterScreenMeta(**meta.model_dump(), saved_filter=_saved(row, read)),
+        meta=SavedFilterScreenMeta(
+            **meta.model_dump(),
+            saved_filter=_saved(row, read, (await _rule_ids(session, [row.id])).get(row.id)),
+        ),
         page=page_info,
     )

@@ -45,7 +45,7 @@ from enum import StrEnum
 from typing import Final
 
 from app.core.config import Settings
-from app.db.models import FILER_KINDS, AlertKind, Purpose
+from app.db.models import FILER_KINDS, SAVED_FILTER_KINDS, AlertKind, Purpose
 
 
 class ListKind(StrEnum):
@@ -143,6 +143,7 @@ _ALERT_LABELS: Final = {
     AlertKind.STOCK_OWNERSHIP_CHANGE: "changes in who owns {}",
     AlertKind.INSIDER_CLUSTER: "insiders buying {} together",
     AlertKind.SEASON_DIGEST: "the 13F season digest",
+    AlertKind.SAVED_FILTER_MATCH: "new 13F positions matching {}",
 }
 
 #: What the list of every alert email sends, for a person.
@@ -159,5 +160,13 @@ def alert_label(kind: AlertKind, target: str | None) -> str:
     if kind is AlertKind.SEASON_DIGEST:
         return _ALERT_LABELS[kind]
     if target is None:
-        target = "an investor you follow" if kind in FILER_KINDS else "a stock you follow"
+        if kind in SAVED_FILTER_KINDS:
+            target = "one of your saved filters"
+        else:
+            target = "an investor you follow" if kind in FILER_KINDS else "a stock you follow"
     return _ALERT_LABELS[kind].format(target)
+
+
+def quoted_name(name: str | None) -> str | None:
+    """A saved filter's name as a label says it: “Activist stakes”."""
+    return None if name is None else f"\u201c{name}\u201d"

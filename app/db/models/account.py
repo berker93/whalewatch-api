@@ -48,6 +48,7 @@ from sqlalchemy import (
     Integer,
     Text,
     Time,
+    UniqueConstraint,
     false,
     func,
     text,
@@ -283,6 +284,8 @@ class SavedFilter(Base):
         ),
         CheckConstraint("jsonb_typeof(params) = 'object'", name="params_is_an_object"),
         Index("ix_saved_filter_user_id", "user_id", "id"),
+        # What an alert rule's foreign key names, so a rule is of its owner's filter.
+        UniqueConstraint("id", "user_id", name="uq_saved_filter_id_user_id"),
     )
 
 

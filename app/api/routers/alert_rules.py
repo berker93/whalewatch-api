@@ -45,6 +45,7 @@ from app.accounts import mail
 from app.accounts.alert_rules import INVESTOR_PRESETS, MAX_ALERT_RULES, STOCK_PRESETS, Target
 from app.accounts.entitlements import Entitled
 from app.accounts.unsubscribe import alert_label
+from app.accounts.unsubscribe import quoted_name as _quoted
 from app.api.auth import UNAUTHORIZED, UNVERIFIED, NoStoreDep, VerifiedViewerDep, ViewerDep
 from app.api.deps import CourierDep, RedisDep, SessionDep, SettingsDep
 from app.api.entitlements import (
@@ -64,20 +65,23 @@ from app.api.schemas.alert_rule import (
     AlertTest,
     NewAlertRule,
     RuleInvestor,
+    RuleSavedFilter,
     RuleStock,
 )
 from app.api.schemas.error import ErrorCode
 from app.api.schemas.notification import Notification as NotificationOut
-from app.api.schemas.watchlist import WatchInsider, WatchInvestor, WatchRef, WatchStock
+from app.api.schemas.watchlist import WatchInsider, WatchInvestor, WatchStock
 from app.db.models import (
     FILER_KINDS,
     PAYLOAD_KEYS,
+    SAVED_FILTER_KINDS,
     SECURITY_KINDS,
     THRESHOLD_KINDS,
     AlertKind,
     Channel,
     Filer,
     Notification,
+    SavedFilter,
     Security,
 )
 from app.db.models import AlertRule as AlertRuleRow
@@ -120,9 +124,11 @@ def _rules_query(user_id: int) -> Select[Any]:
             Security.cusip,
             Security.ticker,
             Security.name.label("issuer_name"),
+            SavedFilter.name.label("saved_filter_name"),
         )
         .outerjoin(Filer, Filer.id == AlertRuleRow.filer_id)
         .outerjoin(Security, Security.id == AlertRuleRow.security_id)
+        .outerjoin(SavedFilter, SavedFilter.id == AlertRuleRow.saved_filter_id)
         .where(AlertRuleRow.user_id == user_id)
         .order_by(AlertRuleRow.id)
         # A rule this session loaded before an upsert changed it is read
@@ -141,6 +147,9 @@ def _rule(row: Any, sent: frozenset[AlertKind]) -> AlertRule:
         else None,
         stock=RuleStock(cusip=row.cusip, ticker=row.ticker, issuer_name=row.issuer_name)
         if rule.security_id is not None
+        else None,
+        saved_filter=RuleSavedFilter(id=str(rule.saved_filter_id), name=row.saved_filter_name)
+        if rule.saved_filter_id is not None
         else None,
         min_value=rule.min_value,
         channels=[Channel(channel) for channel in rule.channels],
@@ -221,13 +230,37 @@ def _require_threshold_kind(kind: AlertKind, min_value: object) -> None:
         )
 
 
-async def _target(session: AsyncSession, kind: AlertKind, ref: WatchRef | None) -> Target:
-    """The rule's target for ``kind``, from ``ref``.
+async def _target(
+    session: AsyncSession, user_id: int, kind: AlertKind, body: NewAlertRule
+) -> Target:
+    """The rule's target for ``kind``, from ``body``'s ``ref`` or ``saved_filter_id``.
 
     :raises RequestValidationError: A ref of the wrong kind, or one missing.
-    :raises HTTPException: 404, a ref that names nothing.
+    :raises HTTPException: 404, a ref that names nothing, or a saved filter
+        that is not the user's.
     """
-    named = None if ref is None else ref.root
+    named = None if body.ref is None else body.ref.root
+    if kind in SAVED_FILTER_KINDS:
+        if named is not None:
+            raise invalid(
+                "ref", f"{kind} is about a saved filter: send saved_filter_id", where="body"
+            )
+        if body.saved_filter_id is None:
+            raise invalid(
+                "saved_filter_id", f"{kind} is about a saved filter: send its id", where="body"
+            )
+        filter_id = await session.scalar(
+            select(SavedFilter.id).where(
+                SavedFilter.id == int(body.saved_filter_id), SavedFilter.user_id == user_id
+            )
+        )
+        if filter_id is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No saved filter with that id is yours.")
+        return {"saved_filter_id": filter_id}
+    if body.saved_filter_id is not None:
+        raise invalid(
+            "saved_filter_id", f"{kind} is not about a saved filter: send no id", where="body"
+        )
     if kind in FILER_KINDS:
         if not isinstance(named, WatchInvestor):
             raise invalid("ref", f"{kind} is about an investor: send one", where="body")
@@ -268,7 +301,10 @@ async def read_alert_rules(viewer: ViewerDep, session: SessionDep) -> AlertRules
         **UNAUTHORIZED,
         **PLAN_LIMITED,
         **UNVERIFIED,
-        **not_found("No stock with that CUSIP, or investor with that slug."),
+        **not_found(
+            "No stock with that CUSIP, investor with that slug, or saved filter of the "
+            "user's with that id."
+        ),
         **INVALID,
     },
 )
@@ -286,10 +322,10 @@ async def save_alert_rule(
     one rule on past the plan's `alert_rules`, a 402 on that; a ref of the
     wrong kind, or a threshold on a kind not about dollars, a 422."""
     kind = body.kind
-    _require_threshold_kind(kind, body.min_value)
-    target = await _target(session, kind, body.ref)
-    _require_sent(entitled, kind)
     user_id = viewer.user.id
+    _require_threshold_kind(kind, body.min_value)
+    target = await _target(session, user_id, kind, body)
+    _require_sent(entitled, kind)
     await rules.lock(session, user_id)
     existing = await session.scalar(
         select(AlertRuleRow).where(
@@ -310,12 +346,11 @@ async def save_alert_rule(
         .values(
             user_id=user_id,
             kind=str(kind),
-            filer_id=target.get("filer_id"),
-            security_id=target.get("security_id"),
+            **{name: target.get(name) for name in rules.TARGET_COLUMNS},
             **settings,
         )
         .on_conflict_do_update(
-            index_elements=["user_id", "kind", "filer_id", "security_id"], set_=settings
+            index_elements=["user_id", "kind", *rules.TARGET_COLUMNS], set_=settings
         )
         .returning(AlertRuleRow.id)
     )
@@ -474,7 +509,10 @@ async def send_test_alert(
         raise invalid("rule_id", "the rule is off: turn it on to test it", where="path")
     _require_sent(entitled, kind)
 
-    label = alert_label(kind, found.display_name or found.ticker or found.issuer_name)
+    label = alert_label(
+        kind,
+        found.display_name or found.ticker or found.issuer_name or _quoted(found.saved_filter_name),
+    )
     title = f"Test alert: {label[0].upper()}{label[1:]}"
     body = f"This is how an alert of {label} will look. Nothing has happened: it is a test."
     now = utc_now()
@@ -484,6 +522,11 @@ async def send_test_alert(
         "as_of": now.date().isoformat(),
         "test": True,
     }
+    if rule.saved_filter_id is not None:
+        payload |= {
+            "saved_filter_id": str(rule.saved_filter_id),
+            "saved_filter_name": found.saved_filter_name,
+        }
     # One a minute per rule, by the key's idempotency: a second test within
     # the minute names the same event, and is nothing.
     minute = now.replace(second=0, microsecond=0)

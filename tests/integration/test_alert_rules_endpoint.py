@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.accounts.alert_rules import LARGE_CHANGE
 from app.api.deps import get_redis
 from app.api.routers.notifications import count_key
-from app.db.models import AlertRule, Filer, Insider, Notification, Security
+from app.db.models import AlertRule, Filer, Insider, Notification, SavedFilter, Security
 from tests.fake_redis import FakeRedis
 from tests.integration.accounts import FRONTEND, Outbox, make_user, sign_in, subscribe
 
@@ -634,3 +634,107 @@ async def test_a_rule_turned_off_by_unsubscribe_reads_off(
 
     [listed] = await _rules(client)
     assert (listed["is_active"], listed["channels"]) == (False, ["email"])
+
+
+# --- a saved filter as an alert ---------------------------------------------------
+
+
+async def _saved_filter(client: AsyncClient, name: str = "New buys") -> dict[str, Any]:
+    response = await client.post(
+        "/v1/saved-filters",
+        json={"name": name, "params": {"filters": {"action": ["new"]}}},
+        headers=FRONTEND,
+    )
+    assert response.status_code == 201, response.text
+    saved: dict[str, Any] = response.json()
+    return saved
+
+
+async def test_a_saved_filter_becomes_an_alert_rule(client: AsyncClient, pro: int) -> None:
+    saved = await _saved_filter(client)
+    assert saved["alert_rule_id"] is None
+
+    made = await _save(client, "saved_filter_match", saved_filter_id=saved["id"])
+    again = await _save(
+        client, "saved_filter_match", saved_filter_id=saved["id"], channels=["in_app", "email"]
+    )
+
+    assert made.status_code == 201, made.text
+    rule = made.json()
+    assert rule["saved_filter"] == {"id": saved["id"], "name": "New buys"}
+    assert (rule["investor"], rule["stock"], rule["min_value"]) == (None, None, None)
+    assert rule["sent"] is True
+    # One rule per filter: a second save sets it.
+    assert again.status_code == 200
+    assert again.json()["id"] == rule["id"]
+    assert again.json()["channels"] == ["in_app", "email"]
+    [listed] = (await client.get("/v1/saved-filters")).json()["data"]
+    assert listed["alert_rule_id"] == rule["id"]
+
+
+async def test_a_saved_filter_rule_names_one_of_the_users_filters(
+    client: AsyncClient, db_session: AsyncSession, pro: int
+) -> None:
+    saved = await _saved_filter(client)
+    other = await make_user(db_session, "bob@example.com")
+    theirs = await db_session.scalar(
+        insert(SavedFilter)
+        .values(user_id=other, name="Bob's", params={"filters": {}})
+        .returning(SavedFilter.id)
+    )
+
+    refused = {
+        "no filter": await _save(client, "saved_filter_match"),
+        "a ref too": await _save(
+            client, "saved_filter_match", BERKSHIRE, saved_filter_id=saved["id"]
+        ),
+        "a threshold": await _save(
+            client, "saved_filter_match", saved_filter_id=saved["id"], min_value="1000000"
+        ),
+        "on another kind": await _save(
+            client, "filer_filed", BERKSHIRE, saved_filter_id=saved["id"]
+        ),
+    }
+    assert {case: r.status_code for case, r in refused.items()} == dict.fromkeys(refused, 422)
+    for filter_id in (str(theirs), "999999"):
+        response = await _save(client, "saved_filter_match", saved_filter_id=filter_id)
+        assert response.status_code == 404, filter_id
+
+
+async def test_free_is_offered_pro_for_a_saved_filter_alert(client: AsyncClient, free: int) -> None:
+    saved = await _saved_filter(client)
+
+    response = await _save(client, "saved_filter_match", saved_filter_id=saved["id"])
+
+    assert response.status_code == 402
+    assert response.json()["error"]["detail"]["limit"] == "alerts_instant"
+
+
+async def test_deleting_the_filter_deletes_its_rule(client: AsyncClient, pro: int) -> None:
+    saved = await _saved_filter(client)
+    await _save(client, "saved_filter_match", saved_filter_id=saved["id"])
+
+    deleted = await client.delete(f"/v1/saved-filters/{saved['id']}", headers=FRONTEND)
+
+    assert deleted.status_code == 204
+    assert await _rules(client) == []
+
+
+async def test_a_saved_filter_rules_test_names_the_filter(
+    client: AsyncClient, pro: int, outbox: Outbox
+) -> None:
+    saved = await _saved_filter(client, "Activist stakes")
+    rule = (
+        await _save(
+            client, "saved_filter_match", saved_filter_id=saved["id"], channels=["in_app", "email"]
+        )
+    ).json()
+
+    response = await _test(client, rule["id"])
+
+    assert response.status_code == 200, response.text
+    sent = response.json()["notification"]
+    assert sent["title"] == ("Test alert: New 13F positions matching “Activist stakes”")
+    assert sent["payload"]["saved_filter_id"] == saved["id"]
+    [mail] = outbox.sent
+    assert mail.subject == sent["title"]

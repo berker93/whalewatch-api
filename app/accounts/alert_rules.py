@@ -56,7 +56,10 @@ LARGE_CHANGE: Final = Decimal("1000000")
 
 Target = dict[str, int]
 """The rule's target column and id: ``{"filer_id": 7}``, ``{"security_id":
-12}``, or ``{}`` for the digest."""
+12}``, ``{"saved_filter_id": 3}``, or ``{}`` for the digest."""
+
+#: The columns a target is one of, and what the unique index is on beside kind.
+TARGET_COLUMNS: Final = ("filer_id", "security_id", "saved_filter_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,12 +98,13 @@ def sent_kinds(who: Entitled | None) -> frozenset[AlertKind]:
 
 def target_is(target: Target) -> list[ColumnElement[bool]]:
     """``alert_rule``'s conditions for a rule about ``target``: the digest's is
-    both columns null."""
-    filer, security = target.get("filer_id"), target.get("security_id")
-    return [
-        AlertRule.filer_id.is_(None) if filer is None else AlertRule.filer_id == filer,
-        AlertRule.security_id.is_(None) if security is None else AlertRule.security_id == security,
-    ]
+    every column null."""
+    conditions: list[ColumnElement[bool]] = []
+    for name in TARGET_COLUMNS:
+        column = getattr(AlertRule, name)
+        value = target.get(name)
+        conditions.append(column.is_(None) if value is None else column == value)
+    return conditions
 
 
 async def lock(session: AsyncSession, user_id: int) -> None:
@@ -186,8 +190,7 @@ async def write(session: AsyncSession, user_id: int, presets: list[Preset], targ
             {
                 "user_id": user_id,
                 "kind": str(preset.kind),
-                "filer_id": target.get("filer_id"),
-                "security_id": target.get("security_id"),
+                **{name: target.get(name) for name in TARGET_COLUMNS},
                 "min_value": preset.min_value,
                 "channels": [str(channel) for channel in preset.channels],
             }
@@ -196,7 +199,7 @@ async def write(session: AsyncSession, user_id: int, presets: list[Preset], targ
     )
     await session.execute(
         statement.on_conflict_do_update(
-            index_elements=["user_id", "kind", "filer_id", "security_id"],
+            index_elements=["user_id", "kind", *TARGET_COLUMNS],
             set_={"is_active": True},
         )
     )

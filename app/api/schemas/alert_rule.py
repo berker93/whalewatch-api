@@ -1,9 +1,10 @@
 """Models for ``/v1/me/alert-rules``: what the user asked to be told about, and how.
 
 A rule names its target as the watchlist does (:class:`~app.api.schemas.watchlist.WatchRef`):
-an investor by slug, a stock by CUSIP. A kind fixes which it takes: the
-investor kinds an investor, the stock kinds a stock, the season digest none.
-No kind is about an insider yet.
+an investor by slug, a stock by CUSIP; or, for ``saved_filter_match``, one of
+the user's saved screener filters by its id. A kind fixes which it takes: the
+investor kinds an investor, the stock kinds a stock, ``saved_filter_match`` a
+saved filter, the season digest none. No kind is about an insider yet.
 """
 
 from datetime import datetime
@@ -76,6 +77,13 @@ class RuleStock(BaseModel):
     issuer_name: str = Field(description="As the SEC's list names it.", examples=["APPLE INC"])
 
 
+class RuleSavedFilter(BaseModel):
+    """The saved filter a rule is about."""
+
+    id: str = Field(description="As `/v1/saved-filters/{id}` takes it.", examples=["12"])
+    name: str = Field(description="What the user called it.", examples=["Activist stakes"])
+
+
 class AlertRule(BaseModel):
     """One thing the user asked to be told about."""
 
@@ -86,6 +94,9 @@ class AlertRule(BaseModel):
     )
     stock: RuleStock | None = Field(
         description="The stock, for `stock_ownership_change` and `insider_cluster`; else null."
+    )
+    saved_filter: RuleSavedFilter | None = Field(
+        description="The saved filter, for `saved_filter_match`; else null."
     )
     min_value: Threshold | None = Field(description=_THRESHOLD, examples=["1000000"])
     channels: list[Channel] = Field(description=_CHANNELS, examples=[["in_app", "email"]])
@@ -120,8 +131,17 @@ class NewAlertRule(BaseModel):
         description=(
             "What it is about: an investor for `filer_filed` and `filer_position_change`, "
             "a stock for `stock_ownership_change` and `insider_cluster`, nothing for "
-            "`season_digest`."
+            "`season_digest` and `saved_filter_match`."
         ),
+    )
+    saved_filter_id: RuleId | None = Field(
+        default=None,
+        description=(
+            "For `saved_filter_match` only, and required for it: the `id` of one of the "
+            "user's saved filters (`GET /v1/saved-filters`). Deleting the filter deletes "
+            "the rule."
+        ),
+        examples=["12"],
     )
     min_value: Threshold | None = Field(default=None, description=_THRESHOLD, examples=["1000000"])
     channels: list[Channel] = Field(
