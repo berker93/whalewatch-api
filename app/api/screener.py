@@ -39,7 +39,7 @@ it is the first we have. Those rows never pass a change filter, as the flows
 leave them out (:mod:`app.derived.views`).
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -52,6 +52,7 @@ from sqlalchemy import (
     ColumnElement,
     CompoundSelect,
     Date,
+    Integer,
     Numeric,
     Select,
     Text,
@@ -69,16 +70,17 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql.selectable import LateralFromClause, Subquery
 
 from app.api.estimates import estimate_columns
-from app.api.pagination import Keyset, PageParams, SortKey, page_statement
+from app.api.pagination import Keyset, KeyType, PageParams, SortKey, page_statement
 from app.api.routers.market import Direction
 from app.api.routers.portfolio import SortOrder
 from app.core.periods import parse_period, quarters_ending
 from app.db.models import Filer, FilerCategory, InsiderCluster, SecCompanyTicker, Security
 from app.db.models.position_change import ChangeAction, PositionChange
 from app.db.queries.returns import estimated_return
-from app.db.queries.tickers import ticker_labels
+from app.db.queries.tickers import ticker_labels, tickers_on
 from app.derived.insider_cluster import DEFAULT_MIN_INSIDERS, DEFAULT_WINDOW, counted_purchases
 from app.derived.views import CONSENSUS_HOLDINGS, QUARTER_FLOWS, traded_usd
 
@@ -121,8 +123,25 @@ class FilterType(StrEnum):
     """Investors' slugs, comma-separated or repeated."""
 
 
+class FilterSubject(StrEnum):
+    """What a filter is about, for a client to group its controls by."""
+
+    PERIOD = "period"
+    POSITION = "position"
+    INVESTOR = "investor"
+    STOCK = "stock"
+
+
 #: The types that take several values.
 _MANY: Final = frozenset({FilterType.CHOICES, FilterType.SLUGS})
+
+
+@dataclass(frozen=True, slots=True)
+class Option:
+    """One value a ``choice`` or ``choices`` filter takes, and what to call it."""
+
+    value: str
+    label: str
 
 
 #: A period: a value, or a bind parameter left for ``make explain`` to fill in.
@@ -158,7 +177,8 @@ class Filter:
     parser: Callable[[str], Any]
     """One value, as sent, to what :attr:`fragment` takes: ValueError for one it cannot."""
     fragment: Callable[[Any, Scope], ColumnElement[bool]]
-    options: tuple[str, ...] = ()
+    about: FilterSubject
+    options: tuple[Option, ...] = ()
     minimum: Decimal | None = None
     maximum: Decimal | None = None
     unavailable: str | None = None
@@ -176,6 +196,11 @@ class Filter:
     @property
     def many(self) -> bool:
         return self.type in _MANY
+
+    @property
+    def values(self) -> list[str]:
+        """The values of :attr:`options`."""
+        return [option.value for option in self.options]
 
     def parse(self, raw: Sequence[str]) -> Any:
         """The value of the parameter as FastAPI collected it, every repeat.
@@ -203,8 +228,8 @@ class Filter:
         """The parameter's schema, for the OpenAPI document."""
         schemas: dict[FilterType, dict[str, Any]] = {
             FilterType.PERIOD: {"type": "string", "examples": ["2026Q2"]},
-            FilterType.CHOICE: {"type": "string", "enum": list(self.options)},
-            FilterType.CHOICES: {"type": "string", "enum": list(self.options)},
+            FilterType.CHOICE: {"type": "string", "enum": self.values},
+            FilterType.CHOICES: {"type": "string", "enum": self.values},
             FilterType.INTEGER: {"type": "integer"},
             FilterType.DOLLARS: {"type": "string", "format": "decimal"},
             FilterType.PERCENT: {"type": "string", "format": "decimal"},
@@ -273,7 +298,7 @@ def _boolean(text: str) -> bool:
     return text == "true"
 
 
-def _one_of(options: Sequence[str], what: str) -> Callable[[str], str]:
+def _one_of(options: Collection[str], what: str) -> Callable[[str], str]:
     def parse(text: str) -> str:
         if text not in options:
             raise ValueError(f"unknown {what} {text!r}: choose from {', '.join(options)}")
@@ -314,9 +339,9 @@ def _actions(value: frozenset[str], scope: Scope) -> ColumnElement[bool]:
 def _min_holders(value: int, scope: Scope) -> ColumnElement[bool]:
     consensus = CONSENSUS_HOLDINGS
     return _change.security_id.in_(
-        select(consensus.c.security_id).where(
-            consensus.c.period_of_report == scope.period, consensus.c.holder_count >= value
-        )
+        select(consensus.c.security_id)
+        .where(consensus.c.period_of_report == scope.period, consensus.c.holder_count >= value)
+        .correlate(None)
     )
 
 
@@ -334,7 +359,7 @@ def _weight_change(value: Decimal, scope: Scope) -> ColumnElement[bool]:
 
 
 def _filer_ids(condition: ColumnElement[bool]) -> ColumnElement[bool]:
-    return _change.filer_id.in_(select(Filer.id).where(condition))
+    return _change.filer_id.in_(select(Filer.id).where(condition).correlate(None))
 
 
 def _filer_category(value: frozenset[str], scope: Scope) -> ColumnElement[bool]:
@@ -349,10 +374,12 @@ def _net_flow(value: str, scope: Scope) -> ColumnElement[bool]:
     flows = QUARTER_FLOWS
     net = flows.c.net_value_usd
     return _change.security_id.in_(
-        select(flows.c.security_id).where(
+        select(flows.c.security_id)
+        .where(
             flows.c.period_of_report == scope.period,
             net > 0 if value == Direction.BUY.value else net < 0,
         )
+        .correlate(None)
     )
 
 
@@ -383,9 +410,9 @@ def _added_quarters(value: int, scope: Scope) -> ColumnElement[bool]:
 def _min_exits(value: int, scope: Scope) -> ColumnElement[bool]:
     flows = QUARTER_FLOWS
     return _change.security_id.in_(
-        select(flows.c.security_id).where(
-            flows.c.period_of_report == scope.period, flows.c.exits >= value
-        )
+        select(flows.c.security_id)
+        .where(flows.c.period_of_report == scope.period, flows.c.exits >= value)
+        .correlate(None)
     )
 
 
@@ -408,12 +435,17 @@ def clustered_securities(scope: Scope) -> CompoundSelect[Any]:
     ]
     if scope.insiders_from is not None:
         episodes.append(cluster.window_start >= scope.insiders_from)
-    linked = select(cluster.security_id).where(*episodes, cluster.security_id.is_not(None))
+    linked = (
+        select(cluster.security_id)
+        .where(*episodes, cluster.security_id.is_not(None))
+        .correlate(None)
+    )
     by_issuer = (
         select(Security.id)
         .join(SecCompanyTicker, SecCompanyTicker.ticker == func.replace(Security.ticker, ".", "-"))
         .join(cluster, cluster.issuer_cik == SecCompanyTicker.cik)
         .where(*episodes)
+        .correlate(None)
     )
     return union(linked, by_issuer)
 
@@ -444,14 +476,18 @@ def insider_bought_securities(minimum: int, scope: Scope) -> CompoundSelect[Any]
         .where(*in_quarter)
         .group_by(line.c.issuer_cik)
         .having(func.count(distinct(line.c.insider_id)) >= minimum)
+        .correlate(None)
     )
-    linked = select(line.c.security_id).where(
-        *in_quarter, line.c.security_id.is_not(None), line.c.issuer_cik.in_(issuers)
+    linked = (
+        select(line.c.security_id)
+        .where(*in_quarter, line.c.security_id.is_not(None), line.c.issuer_cik.in_(issuers))
+        .correlate(None)
     )
     by_issuer = (
         select(Security.id)
         .join(SecCompanyTicker, SecCompanyTicker.ticker == func.replace(Security.ticker, ".", "-"))
         .where(SecCompanyTicker.cik.in_(issuers))
+        .correlate(None)
     )
     return union(linked, by_issuer)
 
@@ -459,6 +495,30 @@ def insider_bought_securities(minimum: int, scope: Scope) -> CompoundSelect[Any]
 def _insider_buyers(value: int, scope: Scope) -> ColumnElement[bool]:
     return _change.security_id.in_(insider_bought_securities(value, scope))
 
+
+#: What a client calls each option, in the order to list them.
+_ACTIONS: Final = {
+    ChangeAction.NEW.value: "Opened",
+    ChangeAction.ADD.value: "Added to",
+    ChangeAction.TRIM.value: "Trimmed",
+    ChangeAction.HOLD.value: "Held",
+    ChangeAction.EXIT.value: "Sold out",
+}
+_CATEGORIES: Final = {
+    FilerCategory.VALUE.value: "Value",
+    FilerCategory.ACTIVIST.value: "Activist",
+    FilerCategory.QUANT.value: "Quant",
+    FilerCategory.MACRO.value: "Macro",
+    FilerCategory.GROWTH.value: "Growth",
+    FilerCategory.MULTI_STRATEGY.value: "Multi-strategy",
+}
+_DIRECTIONS: Final = {
+    Direction.BUY.value: "Bought more than sold",
+    Direction.SELL.value: "Sold more than bought",
+}
+assert set(_ACTIONS) == {a.value for a in ChangeAction}, "an action with no label"
+assert set(_CATEGORIES) == {c.value for c in FilerCategory}, "a category with no label"
+assert set(_DIRECTIONS) == {d.value for d in Direction}, "a direction with no label"
 
 #: The filters, in the order a client lists them. Nothing beyond these.
 VOCABULARY: Final[tuple[Filter, ...]] = (
@@ -470,6 +530,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="position_change.period_of_report",
         parser=parse_period,
         fragment=_period,
+        about=FilterSubject.PERIOD,
         required=True,
     ),
     Filter(
@@ -482,9 +543,10 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
             "is a row only when `exit` is asked for."
         ),
         source="position_change.action",
-        parser=_one_of([a.value for a in ChangeAction], "action"),
+        parser=_one_of(_ACTIONS, "action"),
         fragment=_actions,
-        options=tuple(a.value for a in ChangeAction),
+        about=FilterSubject.POSITION,
+        options=tuple(Option(a, _ACTIONS[a]) for a in _ACTIONS),
     ),
     Filter(
         key="min_holders",
@@ -494,6 +556,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="mv_consensus_holdings.holder_count",
         parser=_count,
         fragment=_min_holders,
+        about=FilterSubject.STOCK,
         minimum=Decimal(1),
         maximum=Decimal(MAX_COUNT),
     ),
@@ -505,6 +568,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="position_snapshot.value_usd",
         parser=_at_least(Decimal(0), MAX_DOLLARS),
         fragment=_min_value,
+        about=FilterSubject.POSITION,
         minimum=Decimal(0),
         maximum=MAX_DOLLARS,
     ),
@@ -519,6 +583,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="position_snapshot.weight_pct",
         parser=_at_least(Decimal(0), Decimal(100)),
         fragment=_min_weight,
+        about=FilterSubject.POSITION,
         minimum=Decimal(0),
         maximum=Decimal(100),
     ),
@@ -534,6 +599,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="position_change.weight_delta",
         parser=_points,
         fragment=_weight_change,
+        about=FilterSubject.POSITION,
         minimum=Decimal(-100),
         maximum=Decimal(100),
     ),
@@ -549,6 +615,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         # Nothing to parse or write until there is a column to read.
         parser=str,
         fragment=lambda value, scope: true(),
+        about=FilterSubject.STOCK,
         unavailable="no source of sectors is loaded, so no stock has one. Leave it out.",
     ),
     Filter(
@@ -560,9 +627,10 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
             "none is in no category."
         ),
         source="filer.category",
-        parser=_one_of([c.value for c in FilerCategory], "category"),
+        parser=_one_of(_CATEGORIES, "category"),
         fragment=_filer_category,
-        options=tuple(c.value for c in FilerCategory),
+        about=FilterSubject.INVESTOR,
+        options=tuple(Option(c, _CATEGORIES[c]) for c in _CATEGORIES),
     ),
     Filter(
         key="filer_slug",
@@ -575,6 +643,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="filer.slug",
         parser=_slug,
         fragment=_filer_slug,
+        about=FilterSubject.INVESTOR,
     ),
     Filter(
         key="net_flow",
@@ -585,9 +654,10 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
             "in traded dollars. `sell`: sold more than bought."
         ),
         source="mv_quarter_flows.net_value_usd",
-        parser=_one_of([d.value for d in Direction], "direction"),
+        parser=_one_of(_DIRECTIONS, "direction"),
         fragment=_net_flow,
-        options=tuple(d.value for d in Direction),
+        about=FilterSubject.STOCK,
+        options=tuple(Option(d, _DIRECTIONS[d]) for d in _DIRECTIONS),
     ),
     Filter(
         key="min_exits",
@@ -599,6 +669,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="mv_quarter_flows.exits",
         parser=_count,
         fragment=_min_exits,
+        about=FilterSubject.STOCK,
         minimum=Decimal(1),
         maximum=Decimal(MAX_COUNT),
     ),
@@ -614,6 +685,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="position_change.action = 'new'",
         parser=_boolean,
         fragment=_new_position,
+        about=FilterSubject.POSITION,
     ),
     Filter(
         key="added_quarters",
@@ -628,6 +700,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="position_change.action = 'add', back through prev_period_of_report",
         parser=_whole(2, MAX_ADDED_QUARTERS),
         fragment=_added_quarters,
+        about=FilterSubject.POSITION,
         minimum=Decimal(2),
         maximum=Decimal(MAX_ADDED_QUARTERS),
     ),
@@ -643,6 +716,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="insider_cluster, by security or by the issuer's CIK",
         parser=_boolean,
         fragment=_insider_cluster,
+        about=FilterSubject.STOCK,
         insiders=True,
     ),
     Filter(
@@ -658,6 +732,7 @@ VOCABULARY: Final[tuple[Filter, ...]] = (
         source="insider_transaction, by security or by the issuer's CIK",
         parser=_count,
         fragment=_insider_buyers,
+        about=FilterSubject.STOCK,
         minimum=Decimal(1),
         maximum=Decimal(MAX_COUNT),
         insiders=True,
@@ -714,12 +789,85 @@ async def unknown_slugs(session: AsyncSession, slugs: frozenset[str]) -> list[st
 
 
 class ScreenSort(StrEnum):
-    """What the screen is ordered by."""
+    """What the screen is ordered by: any column of a row (:data:`SORTS`).
+
+    The first four were the only sorts once, and presets are stored with them,
+    so they keep their short names. Every other is the name of the row's field.
+    """
 
     VALUE = "value"
     WEIGHT = "weight"
     WEIGHT_CHANGE = "weight_change"
     TRADED = "traded"
+    DISPLAY_NAME = "display_name"
+    SLUG = "slug"
+    CATEGORY = "category"
+    CUSIP = "cusip"
+    TICKER = "ticker"
+    CURRENT_TICKER = "current_ticker"
+    DELISTED_BY = "delisted_by"
+    ISSUER_NAME = "issuer_name"
+    PREV_PERIOD = "prev_period"
+    ACTION = "action"
+    SHARES = "shares"
+    SHARES_DELTA = "shares_delta"
+    SHARES_DELTA_PCT = "shares_delta_pct"
+    HOLDER_COUNT = "holder_count"
+    NET_VALUE = "net_value_usd"
+    PRICE = "price_estimate"
+    ESTIMATED_RETURN = "estimated_return_pct"
+    ESTIMATED_RETURN_AS_OF = "estimated_return_as_of"
+    RETURN_TO_LAST_QUARTER = "return_to_last_quarter_pct"
+    LAST_QUARTER = "last_quarter_period"
+    IS_SPLIT = "is_split"
+    SPLIT_RATIO = "split_ratio"
+
+
+class Joined(StrEnum):
+    """What a sort reads besides ``position_change``.
+
+    Joined to every row the page is cut from, not only to the page: a page is
+    a keyset position in the sort, so the sort has to be there before the
+    ``LIMIT``. Which is also why each filter's subquery is written
+    ``correlate(None)``: with ``filer`` in the ``FROM`` beside it, a
+    ``SELECT filer.id`` inside would otherwise refer to the row's filer.
+    """
+
+    FILER = "filer"
+    SECURITY = "security"
+    TICKERS = "tickers"
+    HOLDERS = "holders"
+    FLOWS = "flows"
+    ESTIMATES = "estimates"
+
+
+@dataclass(frozen=True, slots=True)
+class Sources:
+    """What a sort's expression is written against, besides ``position_change``
+    and the tables :class:`Joined` names."""
+
+    period: PeriodEnd
+    returns: LateralFromClause
+    """:func:`estimated_return` of each row's security at the period."""
+    tickers: Subquery
+    """:func:`tickers_on` the period."""
+
+
+@dataclass(frozen=True, slots=True)
+class SortColumn:
+    """One sort: the row's field it orders by, and that field's SQL."""
+
+    key: ScreenSort
+    column: str
+    """The field of :class:`~app.api.schemas.screener.ScreenerRow`."""
+    label: str
+    """What to call it, for a column heading."""
+    type: KeyType
+    """What the expression's values come back as, for the cursor."""
+    expression: Callable[[Sources], ColumnElement[Any]]
+    """The field's value, as it is served, or what it is ordered by."""
+    joins: frozenset[Joined] = frozenset()
+    nullable: bool = True
 
 
 #: The dollars a change bought or sold at the period-end price, as the flows
@@ -727,44 +875,312 @@ class ScreenSort(StrEnum):
 #: period, which bought nothing: those positions are only the first we have.
 _TRADED: Final = case((_A_CHANGE, func.round(traded_usd(), 2)), else_=None)
 
+#: ``action`` from the most bought to the most sold, rather than alphabetical:
+#: largest first is every ``new``, then every ``add``.
+_ACTION_RANK: Final = case(
+    {
+        ChangeAction.EXIT.value: 0,
+        ChangeAction.TRIM.value: 1,
+        ChangeAction.HOLD.value: 2,
+        ChangeAction.ADD.value: 3,
+        ChangeAction.NEW.value: 4,
+    },
+    value=_change.action,
+)
 
-#: Beyond every real weight or move, either way: where a row with none sorts,
-#: so it is last whichever way the screen runs.
-_BEYOND: Final = Decimal(1000)
+
+def _estimated(name: str) -> Callable[[Sources], ColumnElement[Any]]:
+    return lambda s: s.returns.c[name]
 
 
-def screen_keyset(sort: ScreenSort, order: SortOrder) -> Keyset:
+def _served_if(value: str, when: str) -> Callable[[Sources], ColumnElement[Any]]:
+    """``value``, null when ``when`` is, as :func:`~app.api.estimates.estimates` serves it."""
+    return lambda s: case((s.returns.c[when].is_not(None), s.returns.c[value]), else_=None)
+
+
+_F, _S, _E = frozenset({Joined.FILER}), frozenset({Joined.SECURITY}), frozenset({Joined.ESTIMATES})
+
+#: Every sort, in the order to list them.
+SORTS: Final = {
+    s.key: s
+    for s in (
+        SortColumn(
+            ScreenSort.VALUE,
+            "value_usd",
+            "Position value",
+            Decimal,
+            lambda s: _change.value_usd.expression,
+            nullable=False,
+        ),
+        SortColumn(
+            ScreenSort.WEIGHT,
+            "weight_pct",
+            "Share of their portfolio",
+            Decimal,
+            lambda s: _change.weight_pct.expression,
+        ),
+        SortColumn(
+            ScreenSort.WEIGHT_CHANGE,
+            "weight_delta",
+            "Move in their portfolio",
+            Decimal,
+            lambda s: _change.weight_delta.expression,
+        ),
+        SortColumn(
+            ScreenSort.TRADED, "traded_value_usd", "Dollars traded", Decimal, lambda s: _TRADED
+        ),
+        SortColumn(
+            ScreenSort.DISPLAY_NAME,
+            "display_name",
+            "Investor",
+            str,
+            lambda s: _DISPLAY_NAME,
+            _F,
+            nullable=False,
+        ),
+        SortColumn(
+            ScreenSort.SLUG,
+            "slug",
+            "Investor's slug",
+            str,
+            lambda s: Filer.slug.expression,
+            _F,
+            nullable=False,
+        ),
+        SortColumn(
+            ScreenSort.CATEGORY,
+            "category",
+            "Kind of investor",
+            str,
+            lambda s: Filer.category.expression,
+            _F,
+        ),
+        SortColumn(
+            ScreenSort.CUSIP,
+            "cusip",
+            "CUSIP",
+            str,
+            lambda s: Security.cusip.expression,
+            _S,
+            nullable=False,
+        ),
+        SortColumn(
+            ScreenSort.TICKER,
+            "ticker",
+            "Ticker",
+            str,
+            lambda s: func.coalesce(s.tickers.c.ticker, Security.ticker),
+            frozenset({Joined.SECURITY, Joined.TICKERS}),
+        ),
+        SortColumn(
+            ScreenSort.CURRENT_TICKER,
+            "current_ticker",
+            "Ticker now",
+            str,
+            lambda s: Security.ticker.expression,
+            _S,
+        ),
+        SortColumn(
+            ScreenSort.DELISTED_BY,
+            "delisted_by",
+            "Delisted by",
+            date,
+            lambda s: Security.delisted_by.expression,
+            _S,
+        ),
+        SortColumn(
+            ScreenSort.ISSUER_NAME,
+            "issuer_name",
+            "Company",
+            str,
+            lambda s: Security.name.expression,
+            _S,
+        ),
+        SortColumn(
+            ScreenSort.PREV_PERIOD,
+            "prev_period",
+            "Previous period",
+            date,
+            lambda s: _change.prev_period_of_report.expression,
+        ),
+        SortColumn(
+            ScreenSort.ACTION,
+            "action",
+            "What happened",
+            int,
+            lambda s: _ACTION_RANK,
+            nullable=False,
+        ),
+        SortColumn(
+            ScreenSort.SHARES,
+            "shares",
+            "Shares",
+            Decimal,
+            lambda s: _change.shares.expression,
+            nullable=False,
+        ),
+        SortColumn(
+            ScreenSort.SHARES_DELTA,
+            "shares_delta",
+            "Shares bought or sold",
+            Decimal,
+            lambda s: _change.shares_delta.expression,
+            nullable=False,
+        ),
+        SortColumn(
+            ScreenSort.SHARES_DELTA_PCT,
+            "shares_delta_pct",
+            "Shares bought or sold, %",
+            Decimal,
+            lambda s: _change.shares_delta_pct.expression,
+        ),
+        SortColumn(
+            ScreenSort.HOLDER_COUNT,
+            "holder_count",
+            "Investors holding it",
+            int,
+            lambda s: func.coalesce(CONSENSUS_HOLDINGS.c.holder_count, 0),
+            frozenset({Joined.HOLDERS}),
+            nullable=False,
+        ),
+        SortColumn(
+            ScreenSort.NET_VALUE,
+            "net_value_usd",
+            "Bought less sold, every investor",
+            Decimal,
+            lambda s: QUARTER_FLOWS.c.net_value_usd,
+            frozenset({Joined.FLOWS}),
+        ),
+        SortColumn(
+            ScreenSort.PRICE,
+            "price_estimate",
+            "Implied price",
+            Decimal,
+            _estimated("implied_price"),
+            _E,
+        ),
+        SortColumn(
+            ScreenSort.ESTIMATED_RETURN,
+            "estimated_return_pct",
+            "Return since filing",
+            Decimal,
+            _estimated("estimated_return_pct"),
+            _E,
+        ),
+        SortColumn(
+            ScreenSort.ESTIMATED_RETURN_AS_OF,
+            "estimated_return_as_of",
+            "Return as of",
+            date,
+            _served_if("quote_date", when="estimated_return_pct"),
+            _E,
+        ),
+        SortColumn(
+            ScreenSort.RETURN_TO_LAST_QUARTER,
+            "return_to_last_quarter_pct",
+            "Return to the last quarter",
+            Decimal,
+            _estimated("return_to_last_quarter_pct"),
+            _E,
+        ),
+        SortColumn(
+            ScreenSort.LAST_QUARTER,
+            "last_quarter_period",
+            "Last quarter",
+            date,
+            _served_if("last_quarter_period", when="return_to_last_quarter_pct"),
+            _E,
+        ),
+        SortColumn(
+            ScreenSort.IS_SPLIT,
+            "is_split",
+            "Split",
+            int,
+            lambda s: cast(_change.is_split, Integer),
+            nullable=False,
+        ),
+        SortColumn(
+            ScreenSort.SPLIT_RATIO,
+            "split_ratio",
+            "Split ratio",
+            Decimal,
+            lambda s: _change.split_ratio.expression,
+        ),
+    )
+}
+assert set(SORTS) == set(ScreenSort), "a sort with no column"
+
+#: Where a missing value is put while it is ordered behind every present one:
+#: anything of the type, since every row with none ties on it.
+_PLACEHOLDER: Final[dict[KeyType, ColumnElement[Any]]] = {
+    Decimal: literal(0, Numeric),
+    int: literal(0),
+    str: literal(""),
+    date: literal(date.min, Date),
+}
+
+
+def _lead(sort: SortColumn, sources: Sources, descending: bool) -> list[SortKey]:
+    """``sort``'s keys: its value, and before it, for a field that can be
+    null, whether it is, so a row with none is last whichever way the screen
+    runs. Keys must be NOT NULL (:mod:`app.api.pagination`)."""
+    expression = sort.expression(sources)
+    if not sort.nullable:
+        return [SortKey("sort_value", expression, sort.type, descending)]
+    return [
+        # A cast rather than CASE's 1 and 0, which would be two parameters of
+        # no type that Postgres reads as text when nothing binds them typed.
+        SortKey("sort_missing", cast(expression.is_(None), Integer), int),
+        SortKey(
+            "sort_value",
+            func.coalesce(expression, _PLACEHOLDER[sort.type]),
+            sort.type,
+            descending,
+        ),
+    ]
+
+
+def screen_keyset(sort: ScreenSort, order: SortOrder, sources: Sources) -> Keyset:
     """The sort, then the position's value, then the filer and the security:
-    a total order, every key one way, so a page boundary is one row comparison."""
+    a total order, so a page boundary is one comparison.
+
+    By value, every key runs ``order``'s way, which one index reads either way
+    (``ix_position_change_screen``). By anything else, ties go to the larger
+    position whichever way the sort runs."""
     descending = order is SortOrder.DESC
-    missing = literal(-_BEYOND if descending else _BEYOND, Numeric)
-    missing_dollars = literal(-1 if descending else MAX_DOLLARS, Numeric)
-    lead = {
-        ScreenSort.VALUE: [],
-        ScreenSort.WEIGHT: [
-            SortKey("weight_key", func.coalesce(_change.weight_pct, missing), Decimal, descending)
-        ],
-        ScreenSort.WEIGHT_CHANGE: [
-            SortKey(
-                "weight_change_key",
-                func.coalesce(_change.weight_delta, missing),
-                Decimal,
-                descending,
-            )
-        ],
-        ScreenSort.TRADED: [
-            SortKey("traded_key", func.coalesce(_TRADED, missing_dollars), Decimal, descending)
-        ],
-    }[sort]
+    lead = [] if sort is ScreenSort.VALUE else _lead(SORTS[sort], sources, descending)
+    ties = descending if sort is ScreenSort.VALUE else True
     return Keyset(
         f"screener.{sort.value}.{order.value}",
         (
             *lead,
-            SortKey("value_usd", _change.value_usd.expression, Decimal, descending),
-            SortKey("filer_id", _change.filer_id.expression, int, descending),
-            SortKey("security_id", _change.security_id.expression, int, descending),
+            SortKey("value_usd", _change.value_usd.expression, Decimal, ties),
+            SortKey("filer_id", _change.filer_id.expression, int, ties),
+            SortKey("security_id", _change.security_id.expression, int, ties),
         ),
     )
+
+
+def _joined(rows: Select[Any], joins: frozenset[Joined], sources: Sources) -> Select[Any]:
+    """``rows``, with what a sort reads joined to each."""
+    if Joined.FILER in joins:
+        rows = rows.join(Filer, Filer.id == _change.filer_id)
+    if Joined.SECURITY in joins:
+        rows = rows.join(Security, Security.id == _change.security_id)
+    if Joined.TICKERS in joins:
+        rows = rows.outerjoin(sources.tickers, sources.tickers.c.security_id == _change.security_id)
+    for joined, view in ((Joined.HOLDERS, CONSENSUS_HOLDINGS), (Joined.FLOWS, QUARTER_FLOWS)):
+        if joined in joins:
+            rows = rows.outerjoin(
+                view,
+                and_(
+                    view.c.period_of_report == sources.period,
+                    view.c.security_id == _change.security_id,
+                ),
+            )
+    if Joined.ESTIMATES in joins:
+        rows = rows.outerjoin(sources.returns, true())
+    return rows
 
 
 def screen_query(
@@ -778,7 +1194,12 @@ def screen_query(
     """One page of the positions passing every filter, named, with the stock's
     holders and net flow at the period and the estimates (:mod:`app.api.estimates`),
     and the keyset."""
-    keyset = screen_keyset(sort, order)
+    sources = Sources(
+        scope.period,
+        estimated_return(_change.security_id, scope.period),
+        tickers_on(scope.period),
+    )
+    keyset = screen_keyset(sort, order, sources)
     lead = [key.expression.label(key.name) for key in keyset.keys[:-3]]
     rows = select(
         _change.filer_id,
@@ -796,6 +1217,7 @@ def screen_query(
         _TRADED.label("traded_value_usd"),
         *lead,
     ).where(*screen.conditions(scope))
+    rows = _joined(rows, SORTS[sort].joins, sources)
     page_rows = page_statement(rows, keyset, page).cte("page")
 
     consensus, flows = CONSENSUS_HOLDINGS, QUARTER_FLOWS
@@ -834,3 +1256,14 @@ def screen_query(
         .order_by(*keyset.order_by(on=page_rows))
     )
     return statement, keyset
+
+
+def matches_query(screen: Screen, scope: Scope) -> Select[Any]:
+    """How many rows the screen is, and of how many stocks and investors: one
+    row of ``positions``, ``stocks`` and ``investors``. The page's ``WHERE``,
+    counted, so a walk of every page is ``positions`` rows."""
+    return select(
+        func.count().label("positions"),
+        func.count(distinct(_change.security_id)).label("stocks"),
+        func.count(distinct(_change.filer_id)).label("investors"),
+    ).where(*screen.conditions(scope))

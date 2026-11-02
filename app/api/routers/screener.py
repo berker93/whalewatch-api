@@ -8,7 +8,8 @@
     and nothing else: an unknown parameter is a 422.
 ``GET /v1/screener/filters``
     That vocabulary, for a client to build its controls from: each filter's
-    key, label, type and options.
+    key, label, type, range and labelled options, and in ``meta`` every
+    column a screen can be sorted on.
 ``GET /v1/screener/presets``
     The presets: screens chosen by hand, each a name, one sentence and the
     filters it is (:mod:`app.api.screener_presets`). Free for everyone.
@@ -25,6 +26,16 @@ Each filter is a query parameter, declared from :data:`~app.api.screener.VOCABUL
 document, the validation and the SQL are one list, and a filter added there is
 added everywhere. ``period`` is the route's own parameter, being required and
 what the cache's lifetime is read from.
+
+The count
+---------
+Every page's ``meta.matches`` is the whole screen's: positions, stocks and
+investors passing the filters. Counted once per screen, the period, its
+filters and the caller's tier, and kept in Redis under its own key
+(:func:`~app.api.cache.remember`), so a walk of the pages, or the same screen
+sorted another way, reads it rather than counting again. Under the tier for
+the same reason the answers are: the insider filters count only what the plan
+can see.
 
 The backstop
 ------------
@@ -52,12 +63,13 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import WithJsonSchema
+from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.cache import Lifetime, cached
-from app.api.deps import PageParamsDep, SessionDep
+from app.api.cache import TTL, Lifetime, cache_key, cached, period_lifetime, remember
+from app.api.deps import PageParamsDep, RedisDep, SessionDep, SettingsDep
 from app.api.entitlements import PLAN_LIMITED, EntitlementContext, EntitlementContextDep
 from app.api.errors import INVALID, INVALID_CURSOR, ApiError, Responses, invalid, not_found
 from app.api.estimates import estimates
@@ -65,23 +77,28 @@ from app.api.meta import unscoped_meta
 from app.api.pagination import PageParams, page_of
 from app.api.routers.market import _meta, _period
 from app.api.routers.portfolio import SortOrder
-from app.api.schemas.envelope import Envelope, Page
+from app.api.schemas.envelope import Page
 from app.api.schemas.error import ErrorCode, Problem
 from app.api.schemas.screener import (
     AppliedFilter,
     ScreenerEnvelope,
     ScreenerFilter,
     ScreenerFilterEnvelope,
+    ScreenerFiltersMeta,
+    ScreenerMatches,
     ScreenerMeta,
+    ScreenerOption,
     ScreenerPreset,
     ScreenerPresetEnvelope,
     ScreenerPresetMeta,
     ScreenerPresetResultEnvelope,
     ScreenerRow,
+    ScreenerSortOption,
 )
 from app.api.schemas.types import Period
 from app.api.screener import (
     FILTERS,
+    SORTS,
     STATEMENT_TIMEOUT_SECONDS,
     VOCABULARY,
     Applied,
@@ -89,11 +106,13 @@ from app.api.screener import (
     Scope,
     Screen,
     ScreenSort,
+    matches_query,
     quarter_start,
     screen_query,
     unknown_slugs,
 )
 from app.api.screener_presets import Preset, get_preset, list_presets
+from app.core.config import Settings
 from app.derived.views import CONSENSUS_HOLDINGS, FILER_SUMMARY, QUARTER_FLOWS
 
 router = APIRouter(tags=["screener"])
@@ -168,9 +187,11 @@ SortParam = Annotated[
     ScreenSort,
     Query(
         description=(
-            "`value`, the position's dollars (the default), `weight`, its share of the "
-            "portfolio, or `weight_change`, its move in points. Ties go to the larger "
-            "position. A row with no weight or move is last either way."
+            "Any column of a row: `GET /v1/screener/filters` lists them in `meta.sorts`. "
+            "`value`, the position's dollars, by default; `weight` is `weight_pct`, "
+            "`weight_change` is `weight_delta`, `traded` is `traded_value_usd`, and every "
+            "other is the field's own name. Ties go to the larger position. A row with no "
+            "value for it is last either way."
         )
     ),
 ]
@@ -206,8 +227,35 @@ async def statement_timeout(session: AsyncSession, seconds: float) -> AsyncItera
         ) from None
 
 
+async def _matches(
+    session: AsyncSession,
+    redis: Redis,
+    settings: Settings,
+    entitled: EntitlementContext,
+    screen: Screen,
+    period: date,
+) -> ScreenerMatches:
+    """How many rows ``screen`` is in ``period``, from Redis when this screen
+    has been counted for this tier, whatever page or sort asked."""
+    scope = Scope(period=period, insiders_from=entitled.insiders_from)
+
+    async def count() -> str:
+        row = (await session.execute(matches_query(screen, scope))).one()
+        return ScreenerMatches(
+            positions=row.positions, stocks=row.stocks, investors=row.investors
+        ).model_dump_json()
+
+    key = cache_key(
+        "screener.matches", {"period": period, "screen": screen}, settings, tier=entitled.tier
+    )
+    seconds = TTL[period_lifetime(period)]
+    return ScreenerMatches.model_validate_json(await remember(redis, key, seconds, count))
+
+
 async def _screen(
     session: AsyncSession,
+    redis: Redis,
+    settings: Settings,
     page: PageParams,
     entitled: EntitlementContext,
     period: date | None,
@@ -216,7 +264,8 @@ async def _screen(
     order: SortOrder,
 ) -> tuple[list[ScreenerRow], ScreenerMeta, Page]:
     """One page of ``screen`` in ``period``, or the latest quarter inside the
-    caller's window for None: the rows, ``meta`` and the page."""
+    caller's window for None: the rows, ``meta`` with the whole screen's
+    count, and the page."""
     async with statement_timeout(session, STATEMENT_TIMEOUT_SECONDS):
         resolved = await _period(
             session, FILER_SUMMARY, period, what="positions", entitled=entitled
@@ -230,12 +279,13 @@ async def _screen(
         ):
             raise invalid("filer_slug", f"no investor has the slug {', '.join(map(repr, unknown))}")
 
+        matches = await _matches(session, redis, settings, entitled, screen, resolved)
         statement, keyset = screen_query(screen, scope, page, sort=sort, order=order)
         rows, page_info = page_of(list(await session.execute(statement)), keyset, page)
         meta = await _meta(session, resolved, CONSENSUS_HOLDINGS, QUARTER_FLOWS)
     return (
         [_row(row, resolved) for row in rows],
-        ScreenerMeta(**meta.model_dump(), filters=_applied(screen)),
+        ScreenerMeta(**meta.model_dump(), filters=_applied(screen), matches=matches),
         page_info,
     )
 
@@ -272,6 +322,8 @@ def _applied(screen: Screen) -> list[AppliedFilter]:
 @cached(period="period")
 async def read_screener(
     session: SessionDep,
+    redis: RedisDep,
+    settings: SettingsDep,
     page: PageParamsDep,
     entitled: EntitlementContextDep,
     period: PeriodParam,
@@ -283,9 +335,13 @@ async def read_screener(
     given: the filters are ANDed, and `GET /v1/screener/filters` lists them. A
     filter is about the position, its investor or its stock, and all of them
     hold for each row. Without `action`, the positions held at the period end.
-    Largest position first. `meta.filters` echoes the filters; the rows are
-    live, and their `holder_count` and `net_value_usd` as of `meta.refreshed_at`."""
-    rows, meta, page_info = await _screen(session, page, entitled, period, screen, sort, order)
+    Largest position first, or by any column of a row (`sort`). `meta.matches`
+    is how many rows pass on every page, `meta.filters` echoes the filters; the
+    rows are live, and their `holder_count` and `net_value_usd` as of
+    `meta.refreshed_at`."""
+    rows, meta, page_info = await _screen(
+        session, redis, settings, page, entitled, period, screen, sort, order
+    )
     return ScreenerEnvelope(data=rows, meta=meta, page=page_info)
 
 
@@ -293,28 +349,40 @@ async def read_screener(
     "/screener/filters",
     operation_id="getScreenerFilters",
     response_model=ScreenerFilterEnvelope,
-    summary="The screener's filters: what each is called, takes and means",
+    summary="The screener's filters and sorts: what each is called, takes and means",
 )
 @cached(Lifetime.METADATA)
-async def read_screener_filters() -> Envelope[ScreenerFilter]:
-    """Every filter `GET /v1/screener` takes, in the order to show them. Nothing
-    beyond these: any other parameter is a 422. Not paginated."""
-    return Envelope(
+async def read_screener_filters() -> ScreenerFilterEnvelope:
+    """Every filter `GET /v1/screener` takes, in the order to show them, and in
+    `meta.sorts` every column it can be sorted on: enough to build the screener
+    from, with nothing hard-coded. Nothing beyond these: any other parameter is
+    a 422. The quarters are `GET /v1/meta/periods`'. Not paginated."""
+    return ScreenerFilterEnvelope(
         data=[
             ScreenerFilter(
                 key=f.key,
                 label=f.label,
                 type=f.type,
+                about=f.about,
                 description=f.description,
                 required=f.required,
                 available=f.available,
-                options=list(f.options) or None,
+                insider_trades=f.insiders,
+                options=[ScreenerOption(value=o.value, label=o.label) for o in f.options] or None,
                 minimum=None if f.minimum is None else str(f.minimum),
                 maximum=None if f.maximum is None else str(f.maximum),
             )
             for f in VOCABULARY
         ],
-        meta=unscoped_meta(),
+        meta=ScreenerFiltersMeta(
+            **unscoped_meta().model_dump(),
+            sorts=[
+                ScreenerSortOption(key=s.key, column=s.column, label=s.label)
+                for s in SORTS.values()
+            ],
+            default_sort=ScreenSort.VALUE,
+            default_order=SortOrder.DESC,
+        ),
     )
 
 
@@ -388,6 +456,8 @@ async def preset_parameters(request: Request) -> None:
 @cached(period="period")
 async def read_screener_preset(
     session: SessionDep,
+    redis: RedisDep,
+    settings: SettingsDep,
     page: PageParamsDep,
     entitled: EntitlementContextDep,
     preset: Annotated[str, Path(description="The preset's slug.", max_length=100)],
@@ -412,7 +482,7 @@ async def read_screener_preset(
             detail=f"No preset has the slug {preset!r}. GET /v1/screener/presets lists them.",
         )
     rows, meta, page_info = await _screen(
-        session, page, entitled, period, found.screen, found.sort, found.order
+        session, redis, settings, page, entitled, period, found.screen, found.sort, found.order
     )
     return ScreenerPresetResultEnvelope(
         data=rows,

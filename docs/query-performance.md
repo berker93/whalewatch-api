@@ -1217,6 +1217,42 @@ published quarter, it is 1.4 ms, and the plan reads `insider_transaction_2026` b
 date index and no other partition: the quarter's dates reach the partitions.
 Measure it again once a full Form 4 crawl is loaded.
 
+### Every column a sort, and the count
+
+SCR-3 made every field of a row a `sort`, and gave every page the whole
+screen's count (`meta.matches`). A sort on a field off `position_change` joins
+its table to every row of the period before the page is cut, since the page
+is a keyset position in that sort; no index serves any of them. Measured the
+same way, 2022Q2, first page, server mean of 20 runs:
+
+| Query | Server mean |
+| --- | --- |
+| `screener`, the period alone, by value | 1.7 ms |
+| `screener_sort_display_name`, the investor joined | 19.1 ms |
+| `screener_sort_holder_count`, `mv_consensus_holdings` joined | 14.6 ms |
+| `screener_sort_ticker`, the ticker of the period | 26.2 ms |
+| `screener_sort_estimated_return_pct`, the estimates' `LATERAL` per row | 60.5 ms |
+| `screener_matches`, the count of the period alone | 13.7 ms |
+
+**The ticker of the period is a table, not a probe.** The page's own
+`ticker` is `ticker_at`, a probe of `security_alias`'s gist exclusion index
+per row, which is nothing for 50 rows and 384 ms (p95 773 ms) for the 51,830
+a sort has to see. Sorted by ticker, the rows join `tickers_on(period)`
+instead: one read of `security_alias` (12,240 rows) for the latest range
+covering the date per security, hash-joined, with the same fallback to
+`security.ticker`. 26 ms.
+
+**The estimates are the dearest sort**, the `LATERAL` of
+`docs/estimated-return.md` for every row rather than every row served: about
+1 µs a row here, since most of the period's securities have no quote to scan
+for. With a quote provider on it will cost more; the 5-second timeout is far.
+
+**The count costs the default screen most.** The page stops after 51 rows of
+the index; the count reads all of the period's, so an uncached first request
+for the period alone goes from 1.7 ms to about 16 ms. It is kept in Redis on
+its own key, per period, filters and tier, not per page or sort, so walking
+the pages or re-sorting reads it rather than counting again.
+
 ## Built since: partitioning `insider_transaction`
 
 `0032` partitions `insider_transaction` by `RANGE (transaction_date)`, a

@@ -10,6 +10,7 @@ misspelt filter widening the screen instead of refusing it.
 """
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -18,11 +19,14 @@ from httpx import AsyncClient
 from sqlalchemy import insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_redis
 from app.api.entitlements import EntitlementContext, entitlement_context
 from app.api.errors import ApiError
 from app.api.routers.screener import statement_timeout
-from app.api.screener import VOCABULARY
-from app.db.models import Filer, InsiderCluster, SecCompanyTicker, Security
+from app.api.schemas.screener import ScreenerRow
+from app.api.screener import SORTS, VOCABULARY, ScreenSort
+from app.db.models import Filer, InsiderCluster, SecCompanyTicker, Security, SecurityAlias
+from tests.fake_redis import FakeRedis
 from tests.integration.test_insiders_endpoint import _form4, _insider, _line
 from tests.integration.test_market_endpoint import _fund, _get, _publish, _quarter, _walk
 
@@ -405,6 +409,133 @@ async def test_a_walk_of_pages_is_the_whole_screen_once_in_order(
     assert len(whole) == 5  # newcomer's first period passes no action filter
 
 
+#: ``sort=action``'s order, the most bought first.
+_ACTION_RANK = {"exit": 0, "trim": 1, "hold": 2, "add": 3, "new": 4}
+
+
+def _sorted_on(row: dict[str, Any], column: str) -> Any:
+    """The value ``sort`` orders ``row`` by: its field, as the API serves it."""
+    value = row[column]
+    if value is None:
+        return None
+    if column == "price_estimate":
+        return Decimal(value["price"])
+    if column == "action":
+        return _ACTION_RANK[value]
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, str) and column not in ("prev_period", "delisted_by"):
+        try:
+            return Decimal(value)
+        except ArithmeticError:
+            return value
+    return value
+
+
+def test_every_field_of_a_row_is_a_sort() -> None:
+    """ "Sort on any returned column": a field added to the row and not to the
+    sorts fails here."""
+    assert {s.column for s in SORTS.values()} == set(ScreenerRow.model_fields)
+
+
+@pytest.mark.parametrize("sort", list(ScreenSort))
+@pytest.mark.parametrize("order", ["desc", "asc"])
+async def test_every_sort_orders_its_column_with_none_last_and_pages_it_once(
+    client: AsyncClient, db_session: AsyncSession, sort: ScreenSort, order: str
+) -> None:
+    """The period alone: newcomer's first period has no previous period and
+    traded nothing we can say, and no stock has a quote, so each sort with a
+    gap shows where it goes. The same rows as the default sort, in its order."""
+    await _two_quarters(db_session)
+    params = {"period": "2024Q2", "sort": sort.value, "order": order}
+
+    whole = (await _get(client, "/v1/screener", **params))["data"]
+    walked = await _walk(client, "/v1/screener", **params, limit=2)
+    default = (await _get(client, "/v1/screener", period="2024Q2"))["data"]
+
+    assert walked == whole
+    assert sorted(map(str, whole)) == sorted(map(str, default))
+    values = [_sorted_on(row, SORTS[sort].column) for row in whole]
+    present = [v for v in values if v is not None]
+    assert values == present + [None] * (len(values) - len(present)), "a gap is last"
+    assert present == sorted(present, reverse=order == "desc")
+
+
+@pytest.mark.parametrize(
+    "sort", ["display_name", "ticker", "holder_count", "net_value_usd", "price_estimate"]
+)
+async def test_a_sort_that_joins_leaves_the_filters_reading_their_own_tables(
+    client: AsyncClient, db_session: AsyncSession, sort: str
+) -> None:
+    """A sort on the investor, the stock, a view or the estimates joins it to
+    every row; each filter on the same table is still its own subquery."""
+    await _two_quarters(db_session)
+    filters = {
+        "filer_category": "value,growth",
+        "filer_slug": "value-a,newcomer",
+        "min_holders": "1",
+        "net_flow": "buy",
+        "insider_cluster": "false",
+    }
+
+    by_value = await _screen(client, **filters)
+    by_sort = await _screen(client, **filters, sort=sort)
+
+    # Bravo and Charlie were bought on balance; Alpha only held.
+    assert sorted(by_value) == [("newcomer", CHARLIE), ("value-a", BRAVO), ("value-a", CHARLIE)]
+    assert sorted(by_sort) == sorted(by_value)
+
+
+async def test_a_tie_goes_to_the_larger_position_whichever_way_the_sort_runs(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Every row is value-a's under filer_slug, so by investor they all tie."""
+    await _two_quarters(db_session)
+
+    for order in ("desc", "asc"):
+        rows = await _screen(client, filer_slug="value-a", sort="display_name", order=order)
+        assert rows == [("value-a", CHARLIE), ("value-a", BRAVO), ("value-a", ALPHA)]
+
+
+async def test_ticker_sorts_by_the_ticker_of_the_period_and_current_ticker_by_todays(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Bravo traded as AAA through 2024Q2 and is ZZZ now; Alpha is MMM
+    throughout, from no history; Charlie has no ticker at all."""
+    await _two_quarters(db_session)
+    ids = dict((await db_session.execute(select(Security.cusip, Security.id))).tuples().all())
+    for cusip, ticker in ((ALPHA, "MMM"), (BRAVO, "ZZZ")):
+        await db_session.execute(
+            update(Security)
+            .where(Security.id == ids[cusip])
+            .values(ticker=ticker, resolution_source="manual")
+        )
+    await db_session.execute(
+        insert(SecurityAlias).values(
+            [
+                {
+                    "security_id": ids[BRAVO],
+                    "ticker": "AAA",
+                    "valid_from": None,
+                    "valid_to": date(2024, 7, 15),
+                },
+                {
+                    "security_id": ids[BRAVO],
+                    "ticker": "ZZZ",
+                    "valid_from": date(2024, 7, 15),
+                    "valid_to": None,
+                },
+            ]
+        )
+    )
+
+    then = await _get(client, "/v1/screener", period="2024Q2", sort="ticker", order="asc")
+    now = await _get(client, "/v1/screener", period="2024Q2", sort="current_ticker", order="asc")
+
+    assert [row["ticker"] for row in then["data"]] == ["AAA", "MMM", "MMM", None, None]
+    assert [row["current_ticker"] for row in now["data"]] == ["MMM", "MMM", "ZZZ", None, None]
+
+
 async def test_weight_change_sorts_the_biggest_move_first_either_way(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
@@ -450,6 +581,60 @@ async def test_traded_sorts_the_dollars_bought_or_sold_first(
         "newcomer",
         None,
     )
+
+
+# --- the count ------------------------------------------------------------------
+
+
+async def test_the_count_is_the_whole_screens_on_every_page(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await _two_quarters(db_session)
+
+    first = await _get(client, "/v1/screener", period="2024Q2", limit=2)
+    second = await _get(
+        client, "/v1/screener", period="2024Q2", limit=2, cursor=first["page"]["next_cursor"]
+    )
+    exits = await _get(client, "/v1/screener", period="2024Q2", action="exit")
+    none = await _get(client, "/v1/screener", period="2024Q2", min_holders="50")
+
+    # Five positions held, in Alpha, Bravo and Charlie, by all three investors.
+    assert first["meta"]["matches"] == {"positions": 5, "stocks": 3, "investors": 3}
+    assert second["meta"]["matches"] == first["meta"]["matches"]
+    assert exits["meta"]["matches"] == {"positions": 1, "stocks": 1, "investors": 1}
+    assert none["meta"]["matches"] == {"positions": 0, "stocks": 0, "investors": 0}
+    assert none["data"] == []
+
+
+async def test_the_count_is_kept_once_per_screen_and_tier_whatever_the_page_or_sort(
+    app: FastAPI, client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Counted by the first request, then read: a count planted in Redis is
+    what the screen sorted and paged another way says. The filters' spelling
+    and order are not the screen; another plan's window is."""
+    await _two_quarters(db_session)
+    redis = FakeRedis()
+    app.dependency_overrides[get_redis] = lambda: redis
+
+    await _get(client, "/v1/screener", period="2024Q2", action="new,add")
+    [key] = [k for k in redis.values if k.startswith("ww:v1:screener.matches:")]
+    redis.values[key] = '{"positions": 218, "stocks": 64, "investors": 41}'
+
+    resorted = await _get(
+        client, "/v1/screener", period="2024-06-30", action=["add", "new"], sort="ticker", limit=1
+    )
+    other = await _get(client, "/v1/screener", period="2024Q2", action="new")
+
+    assert resorted["meta"]["matches"] == {"positions": 218, "stocks": 64, "investors": 41}
+    assert other["meta"]["matches"] == {"positions": 1, "stocks": 1, "investors": 1}
+
+    app.dependency_overrides[entitlement_context] = lambda: EntitlementContext(
+        history_quarters=4, insider_months=6, today=date(2025, 5, 10)
+    )
+    free = await _get(client, "/v1/screener", period="2024Q2", action="new,add")
+
+    assert free["meta"]["matches"]["positions"] == 2
+    assert len([k for k in redis.values if k.startswith("ww:v1:screener.matches:")]) == 3
 
 
 # --- refusals -------------------------------------------------------------------
@@ -572,7 +757,37 @@ async def test_the_vocabulary_is_listed_in_order_with_what_each_filter_takes(
     by_key = {f["key"]: f for f in body["data"]}
     assert by_key["period"]["required"] is True
     assert by_key["sector"]["available"] is False
-    assert by_key["action"]["options"] == ["new", "add", "trim", "hold", "exit"]
+    assert [o["value"] for o in by_key["action"]["options"]] == [
+        "new",
+        "add",
+        "trim",
+        "hold",
+        "exit",
+    ]
+    assert by_key["action"]["options"][-1] == {"value": "exit", "label": "Sold out"}
+    assert by_key["filer_category"]["options"][-1] == {
+        "value": "multi_strategy",
+        "label": "Multi-strategy",
+    }
     assert (by_key["min_weight"]["minimum"], by_key["min_weight"]["maximum"]) == ("0", "100")
     assert by_key["filer_slug"]["type"] == "slugs"
+    assert {k: f["about"] for k, f in by_key.items() if k in ("period", "action")} == {
+        "period": "period",
+        "action": "position",
+    }
+    assert (by_key["filer_slug"]["about"], by_key["min_holders"]["about"]) == ("investor", "stock")
+    assert [k for k, f in by_key.items() if f["insider_trades"]] == [
+        "insider_cluster",
+        "insider_buyers",
+    ]
     assert body["page"] is None
+
+
+async def test_the_sorts_are_listed_one_per_field_of_a_row(client: AsyncClient) -> None:
+    meta = (await _get(client, "/v1/screener/filters"))["meta"]
+
+    assert [s["key"] for s in meta["sorts"]] == [s.value for s in ScreenSort]
+    by_key = {s["key"]: s for s in meta["sorts"]}
+    assert by_key["value"] == {"key": "value", "column": "value_usd", "label": "Position value"}
+    assert by_key["holder_count"]["column"] == "holder_count"
+    assert (meta["default_sort"], meta["default_order"]) == ("value", "desc")

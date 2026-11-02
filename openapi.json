@@ -3613,7 +3613,7 @@
           "screener"
         ],
         "summary": "Screen one quarter's positions by named filters",
-        "description": "Every investor's position in a stock in `period` that passes every filter\ngiven: the filters are ANDed, and `GET /v1/screener/filters` lists them. A\nfilter is about the position, its investor or its stock, and all of them\nhold for each row. Without `action`, the positions held at the period end.\nLargest position first. `meta.filters` echoes the filters; the rows are\nlive, and their `holder_count` and `net_value_usd` as of `meta.refreshed_at`.",
+        "description": "Every investor's position in a stock in `period` that passes every filter\ngiven: the filters are ANDed, and `GET /v1/screener/filters` lists them. A\nfilter is about the position, its investor or its stock, and all of them\nhold for each row. Without `action`, the positions held at the period end.\nLargest position first, or by any column of a row (`sort`). `meta.matches`\nis how many rows pass on every page, `meta.filters` echoes the filters; the\nrows are live, and their `holder_count` and `net_value_usd` as of\n`meta.refreshed_at`.",
         "operationId": "screenPositions",
         "parameters": [
           {
@@ -3637,10 +3637,10 @@
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ScreenSort",
-              "description": "`value`, the position's dollars (the default), `weight`, its share of the portfolio, or `weight_change`, its move in points. Ties go to the larger position. A row with no weight or move is last either way.",
+              "description": "Any column of a row: `GET /v1/screener/filters` lists them in `meta.sorts`. `value`, the position's dollars, by default; `weight` is `weight_pct`, `weight_change` is `weight_delta`, `traded` is `traded_value_usd`, and every other is the field's own name. Ties go to the larger position. A row with no value for it is last either way.",
               "default": "value"
             },
-            "description": "`value`, the position's dollars (the default), `weight`, its share of the portfolio, or `weight_change`, its move in points. Ties go to the larger position. A row with no weight or move is last either way."
+            "description": "Any column of a row: `GET /v1/screener/filters` lists them in `meta.sorts`. `value`, the position's dollars, by default; `weight` is `weight_pct`, `weight_change` is `weight_delta`, `traded` is `traded_value_usd`, and every other is the field's own name. Ties go to the larger position. A row with no value for it is last either way."
           },
           {
             "name": "order",
@@ -3980,8 +3980,8 @@
         "tags": [
           "screener"
         ],
-        "summary": "The screener's filters: what each is called, takes and means",
-        "description": "Every filter `GET /v1/screener` takes, in the order to show them. Nothing\nbeyond these: any other parameter is a 422. Not paginated.",
+        "summary": "The screener's filters and sorts: what each is called, takes and means",
+        "description": "Every filter `GET /v1/screener` takes, in the order to show them, and in\n`meta.sorts` every column it can be sorted on: enough to build the screener\nfrom, with nothing hard-coded. Nothing beyond these: any other parameter is\na 422. The quarters are `GET /v1/meta/periods`'. Not paginated.",
         "operationId": "getScreenerFilters",
         "responses": {
           "200": {
@@ -16134,6 +16134,17 @@
         "title": "FilingSummaryEvent",
         "description": "A followed investor's 13F, summed up. `value_usd` is the net of every change."
       },
+      "FilterSubject": {
+        "type": "string",
+        "enum": [
+          "period",
+          "position",
+          "investor",
+          "stock"
+        ],
+        "title": "FilterSubject",
+        "description": "What a filter is about, for a client to group its controls by."
+      },
       "FilterType": {
         "type": "string",
         "enum": [
@@ -22042,10 +22053,32 @@
           "value",
           "weight",
           "weight_change",
-          "traded"
+          "traded",
+          "display_name",
+          "slug",
+          "category",
+          "cusip",
+          "ticker",
+          "current_ticker",
+          "delisted_by",
+          "issuer_name",
+          "prev_period",
+          "action",
+          "shares",
+          "shares_delta",
+          "shares_delta_pct",
+          "holder_count",
+          "net_value_usd",
+          "price_estimate",
+          "estimated_return_pct",
+          "estimated_return_as_of",
+          "return_to_last_quarter_pct",
+          "last_quarter_period",
+          "is_split",
+          "split_ratio"
         ],
         "title": "ScreenSort",
-        "description": "What the screen is ordered by."
+        "description": "What the screen is ordered by: any column of a row (:data:`SORTS`).\n\nThe first four were the only sorts once, and presets are stored with them,\nso they keep their short names. Every other is the name of the row's field."
       },
       "ScreenerEnvelope": {
         "properties": {
@@ -22105,6 +22138,13 @@
               "percent"
             ]
           },
+          "about": {
+            "$ref": "#/components/schemas/FilterSubject",
+            "description": "What it is about, to group the controls by: `period`, the `position`, its `investor`, or its `stock` across every investor.",
+            "examples": [
+              "position"
+            ]
+          },
           "description": {
             "type": "string",
             "title": "Description",
@@ -22129,11 +22169,19 @@
               true
             ]
           },
+          "insider_trades": {
+            "type": "boolean",
+            "title": "Insider Trades",
+            "description": "Whether it reads Form 4 trades: the quarter must then start inside the plan's insider window (`insider_months`), or the screen is a `402`.",
+            "examples": [
+              false
+            ]
+          },
           "options": {
             "anyOf": [
               {
                 "items": {
-                  "type": "string"
+                  "$ref": "#/components/schemas/ScreenerOption"
                 },
                 "type": "array"
               },
@@ -22142,14 +22190,17 @@
               }
             ],
             "title": "Options",
-            "description": "For `choice` and `choices`, the values. Null for every other type.",
+            "description": "For `choice` and `choices`, the values and their labels, in the order to list them. Null for every other type.",
             "examples": [
               [
-                "new",
-                "add",
-                "trim",
-                "hold",
-                "exit"
+                {
+                  "label": "Opened",
+                  "value": "new"
+                },
+                {
+                  "label": "Added to",
+                  "value": "add"
+                }
               ]
             ]
           },
@@ -22189,9 +22240,11 @@
           "key",
           "label",
           "type",
+          "about",
           "description",
           "required",
-          "available"
+          "available",
+          "insider_trades"
         ],
         "title": "ScreenerFilter",
         "description": "One filter of the vocabulary: what to send, and what it means."
@@ -22207,8 +22260,8 @@
             "description": "The rows, in the order the endpoint documents."
           },
           "meta": {
-            "$ref": "#/components/schemas/Meta",
-            "description": "What the rows describe, and when this answer was built."
+            "$ref": "#/components/schemas/ScreenerFiltersMeta",
+            "description": "What the filters are for, and what the rows can be sorted on."
           },
           "page": {
             "anyOf": [
@@ -22228,6 +22281,196 @@
           "meta"
         ],
         "title": "ScreenerFilterEnvelope"
+      },
+      "ScreenerFiltersMeta": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the data belongs to. Null only for a collection that is not about a period, such as a list of filers.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "quarters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarters",
+            "description": "For figures over more than one quarter, such as a year's flows, every quarter they cover, oldest first, ending with `period`. Null for one quarter.",
+            "examples": [
+              [
+                "2025Q3",
+                "2025Q4",
+                "2026Q1",
+                "2026Q2"
+              ]
+            ]
+          },
+          "latest_filing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing At",
+            "description": "When the most recently filed of this period's published filings reached EDGAR. Null when nothing for the period has been published.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `period` is."
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats",
+            "description": "Why the rows may be wrong although every rule for reading the filings was followed: an amendment left out because its cover page does not say whether it restates or adds to the period, additions counting with no original loaded, two originals filed for one period, or an amendment number missing from those loaded. One sentence each, for a person to read. Empty when nothing is known to be wrong, and on endpoints that do not check.",
+            "examples": [
+              [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is left out: if it restates or adds to the period, the period is wrong"
+              ]
+            ]
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At",
+            "description": "For a response read from the materialised aggregates, when they were last refreshed: the rows are as of then, and a filing published since is not in them yet. Null for a response read live, and when the refresh is unrecorded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At",
+            "description": "When this response was built.",
+            "examples": [
+              "2026-10-03T09:41:27Z"
+            ]
+          },
+          "sorts": {
+            "items": {
+              "$ref": "#/components/schemas/ScreenerSortOption"
+            },
+            "type": "array",
+            "title": "Sorts",
+            "description": "Every `sort`: one per field of a row. A row with no value for it is last either way; ties go to the larger position."
+          },
+          "default_sort": {
+            "$ref": "#/components/schemas/ScreenSort",
+            "description": "`sort` left out.",
+            "examples": [
+              "value"
+            ]
+          },
+          "default_order": {
+            "$ref": "#/components/schemas/SortOrder",
+            "description": "`order` left out.",
+            "examples": [
+              "desc"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "sorts",
+          "default_sort",
+          "default_order"
+        ],
+        "title": "ScreenerFiltersMeta",
+        "description": "``meta``, with what the rows can be sorted on."
+      },
+      "ScreenerMatches": {
+        "properties": {
+          "positions": {
+            "type": "integer",
+            "title": "Positions",
+            "description": "Rows: what walking every page returns. The \"218 matches\".",
+            "examples": [
+              218
+            ]
+          },
+          "stocks": {
+            "type": "integer",
+            "title": "Stocks",
+            "description": "Distinct stocks among them.",
+            "examples": [
+              64
+            ]
+          },
+          "investors": {
+            "type": "integer",
+            "title": "Investors",
+            "description": "Distinct investors among them.",
+            "examples": [
+              41
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "positions",
+          "stocks",
+          "investors"
+        ],
+        "title": "ScreenerMatches",
+        "description": "How much passed the filters: every page's rows, not this page's."
       },
       "ScreenerMeta": {
         "properties": {
@@ -22357,15 +22600,47 @@
             "type": "array",
             "title": "Filters",
             "description": "Every filter but `period`, which is `meta.period`, in the order `GET /v1/screener/filters` lists them. Empty when only the period was given."
+          },
+          "matches": {
+            "$ref": "#/components/schemas/ScreenerMatches",
+            "description": "How many rows pass, on every page, whatever the sort: the count is the screen's, kept once for all its pages and sorts."
           }
         },
         "type": "object",
         "required": [
           "generated_at",
-          "filters"
+          "filters",
+          "matches"
         ],
         "title": "ScreenerMeta",
-        "description": "``meta``, with the filters the rows passed besides the period."
+        "description": "``meta``, with the filters the rows passed besides the period, and how many did."
+      },
+      "ScreenerOption": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Value",
+            "description": "What to send.",
+            "examples": [
+              "new"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "What to call it, for a person.",
+            "examples": [
+              "Opened"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "value",
+          "label"
+        ],
+        "title": "ScreenerOption",
+        "description": "One value a `choice` or `choices` filter takes."
       },
       "ScreenerPreset": {
         "properties": {
@@ -22599,6 +22874,10 @@
             "title": "Filters",
             "description": "Every filter but `period`, which is `meta.period`, in the order `GET /v1/screener/filters` lists them. Empty when only the period was given."
           },
+          "matches": {
+            "$ref": "#/components/schemas/ScreenerMatches",
+            "description": "How many rows pass, on every page, whatever the sort: the count is the screen's, kept once for all its pages and sorts."
+          },
           "preset": {
             "$ref": "#/components/schemas/ScreenerPreset",
             "description": "The preset the rows are the screen of."
@@ -22608,6 +22887,7 @@
         "required": [
           "generated_at",
           "filters",
+          "matches",
           "preset"
         ],
         "title": "ScreenerPresetMeta",
@@ -23118,6 +23398,41 @@
         ],
         "title": "ScreenerRow",
         "description": "One investor's position in one stock, in the period ``meta`` names."
+      },
+      "ScreenerSortOption": {
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/ScreenSort",
+            "description": "What to send as `sort`.",
+            "examples": [
+              "holder_count"
+            ]
+          },
+          "column": {
+            "type": "string",
+            "title": "Column",
+            "description": "The row's field it sorts on. `price_estimate` sorts on its `price`; `action` from `new` to `exit`, the most bought first.",
+            "examples": [
+              "holder_count"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "description": "What to call the column, for a heading.",
+            "examples": [
+              "Investors holding it"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "column",
+          "label"
+        ],
+        "title": "ScreenerSortOption",
+        "description": "One column of a row the screen can be sorted on."
       },
       "SearchResults": {
         "properties": {

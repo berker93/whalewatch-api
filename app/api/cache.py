@@ -83,7 +83,7 @@ from dataclasses import fields, is_dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum, StrEnum
-from typing import Any, Final
+from typing import Annotated, Any, Final, get_args, get_origin
 
 from fastapi import Request, Response, status
 from pydantic import BaseModel
@@ -162,6 +162,11 @@ def cached(
             raise TypeError(f"{endpoint.__name__} has no parameter {period!r}")
         name = f"{endpoint.__module__.rpartition('.')[2]}.{endpoint.__name__}"
         gated = takes_entitlements(endpoint)
+        # By what each is declared as, not what it turns out to be, so a test's
+        # stand-in Redis is left out as the real one is.
+        resources = frozenset(
+            name for name, p in signature.parameters.items() if _is_resource(p.annotation)
+        )
 
         @functools.wraps(endpoint)
         async def wrapper(
@@ -176,7 +181,8 @@ def cached(
             if gated:
                 [context] = [v for v in kwargs.values() if isinstance(v, EntitlementContext)]
                 tier = context.tier
-            key = cache_key(name, kwargs, _cache_settings, tier=tier)
+            arguments = {k: v for k, v in kwargs.items() if k not in resources}
+            key = cache_key(name, arguments, _cache_settings, tier=tier)
 
             body, remaining, reachable = await _read(_cache_redis, key)
             hit = body is not None
@@ -207,6 +213,13 @@ def cached(
         return wrapper
 
     return decorate
+
+
+def _is_resource(annotation: object) -> bool:
+    """Whether a parameter declared ``annotation`` is one of :data:`_NOT_ARGUMENTS`."""
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    return isinstance(annotation, type) and issubclass(annotation, _NOT_ARGUMENTS)
 
 
 def _keyword(name: str, annotation: object) -> inspect.Parameter:
@@ -269,6 +282,25 @@ def _canonical(value: object) -> object:
     if is_dataclass(value) and not isinstance(value, type):
         return {field.name: _canonical(getattr(value, field.name)) for field in fields(value)}
     raise TypeError(f"cannot key a cached response on a {type(value).__name__}")
+
+
+async def remember(
+    redis: Redis, key: str, seconds: int, build: Callable[[], Awaitable[str]]
+) -> str:
+    """``key``'s value, or ``build()``'s, kept for ``seconds``.
+
+    For a part of an answer that several answers share, cached on its own so
+    it is built once for all of them: the screener's count, the same for every
+    page and sort of one screen. Under ``ww:v1:``, so :func:`invalidate`
+    drops it with the answers, and, like them, built for each request while
+    Redis cannot be reached.
+    """
+    body, _, reachable = await _read(redis, key)
+    if body is None:
+        body = await build()
+        if reachable:
+            await _write(redis, key, body, seconds)
+    return body
 
 
 async def _read(redis: Redis, key: str) -> tuple[str | None, int, bool]:

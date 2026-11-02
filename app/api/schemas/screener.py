@@ -18,7 +18,7 @@ from app.api.schemas.envelope import Envelope, Meta
 from app.api.schemas.estimate import Estimates
 from app.api.schemas.stock import StockRef
 from app.api.schemas.types import Money, Percent, Quantity
-from app.api.screener import FilterType, ScreenSort
+from app.api.screener import FilterSubject, FilterType, ScreenSort
 from app.db.models.filer import FilerCategory
 from app.db.models.position_change import ChangeAction
 
@@ -120,13 +120,30 @@ class AppliedFilter(BaseModel):
     )
 
 
+class ScreenerMatches(BaseModel):
+    """How much passed the filters: every page's rows, not this page's."""
+
+    positions: int = Field(
+        description='Rows: what walking every page returns. The "218 matches".',
+        examples=[218],
+    )
+    stocks: int = Field(description="Distinct stocks among them.", examples=[64])
+    investors: int = Field(description="Distinct investors among them.", examples=[41])
+
+
 class ScreenerMeta(Meta):
-    """``meta``, with the filters the rows passed besides the period."""
+    """``meta``, with the filters the rows passed besides the period, and how many did."""
 
     filters: list[AppliedFilter] = Field(
         description=(
             "Every filter but `period`, which is `meta.period`, in the order "
             "`GET /v1/screener/filters` lists them. Empty when only the period was given."
+        ),
+    )
+    matches: ScreenerMatches = Field(
+        description=(
+            "How many rows pass, on every page, whatever the sort: the count is the "
+            "screen's, kept once for all its pages and sorts."
         ),
     )
 
@@ -135,6 +152,13 @@ class ScreenerEnvelope(Envelope[ScreenerRow]):
     meta: ScreenerMeta = Field(
         description="What the rows describe, including the filters they passed."
     )
+
+
+class ScreenerOption(BaseModel):
+    """One value a `choice` or `choices` filter takes."""
+
+    value: str = Field(description="What to send.", examples=["new"])
+    label: str = Field(description="What to call it, for a person.", examples=["Opened"])
 
 
 class ScreenerFilter(BaseModel):
@@ -153,6 +177,13 @@ class ScreenerFilter(BaseModel):
         ),
         examples=["percent"],
     )
+    about: FilterSubject = Field(
+        description=(
+            "What it is about, to group the controls by: `period`, the `position`, its "
+            "`investor`, or its `stock` across every investor."
+        ),
+        examples=["position"],
+    )
     description: str = Field(
         description="What it means, for a person.",
         examples=["Only positions at least this percentage of the investor's portfolio."],
@@ -162,10 +193,20 @@ class ScreenerFilter(BaseModel):
         description="False for a filter with no data behind it yet: asking for it is a 422.",
         examples=[True],
     )
-    options: list[str] | None = Field(
+    insider_trades: bool = Field(
+        description=(
+            "Whether it reads Form 4 trades: the quarter must then start inside the "
+            "plan's insider window (`insider_months`), or the screen is a `402`."
+        ),
+        examples=[False],
+    )
+    options: list[ScreenerOption] | None = Field(
         default=None,
-        description="For `choice` and `choices`, the values. Null for every other type.",
-        examples=[["new", "add", "trim", "hold", "exit"]],
+        description=(
+            "For `choice` and `choices`, the values and their labels, in the order to "
+            "list them. Null for every other type."
+        ),
+        examples=[[{"value": "new", "label": "Opened"}, {"value": "add", "label": "Added to"}]],
     )
     minimum: str | None = Field(
         default=None, description="The smallest value taken, as a decimal string.", examples=["0"]
@@ -175,8 +216,39 @@ class ScreenerFilter(BaseModel):
     )
 
 
+class ScreenerSortOption(BaseModel):
+    """One column of a row the screen can be sorted on."""
+
+    key: ScreenSort = Field(description="What to send as `sort`.", examples=["holder_count"])
+    column: str = Field(
+        description=(
+            "The row's field it sorts on. `price_estimate` sorts on its `price`; `action` "
+            "from `new` to `exit`, the most bought first."
+        ),
+        examples=["holder_count"],
+    )
+    label: str = Field(
+        description="What to call the column, for a heading.", examples=["Investors holding it"]
+    )
+
+
+class ScreenerFiltersMeta(Meta):
+    """``meta``, with what the rows can be sorted on."""
+
+    sorts: list[ScreenerSortOption] = Field(
+        description=(
+            "Every `sort`: one per field of a row. A row with no value for it is last "
+            "either way; ties go to the larger position."
+        ),
+    )
+    default_sort: ScreenSort = Field(description="`sort` left out.", examples=["value"])
+    default_order: SortOrder = Field(description="`order` left out.", examples=["desc"])
+
+
 class ScreenerFilterEnvelope(Envelope[ScreenerFilter]):
-    pass
+    meta: ScreenerFiltersMeta = Field(
+        description="What the filters are for, and what the rows can be sorted on."
+    )
 
 
 class ScreenerPreset(BaseModel):

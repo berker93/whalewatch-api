@@ -100,7 +100,15 @@ from app.api.routers.stocks import (
     top_holders_query,
     totals_query,
 )
-from app.api.screener import FILTERS, Applied, Scope, Screen, ScreenSort, screen_query
+from app.api.screener import (
+    FILTERS,
+    Applied,
+    Scope,
+    Screen,
+    ScreenSort,
+    matches_query,
+    screen_query,
+)
 from app.core.config import get_settings
 from app.db.queries.tickers import lookup_query
 from app.db.queries.top_holding import top_holdings, top_holdings_ranked
@@ -484,6 +492,28 @@ QUERIES: Final = (
             PageParams(),
             sort=ScreenSort.WEIGHT_CHANGE,
         )[0],
+    ),
+    # A sort on a column off position_change joins it to every row of the
+    # period before the page is cut: the investor's name, the ticker as of the
+    # period (a probe of security_alias per row), a view, and the estimates'
+    # LATERAL, the most a row can cost. And the count every screen's meta has.
+    *(
+        Query.from_app(
+            f"screener_sort_{sort.value}",
+            f"GET /v1/screener?period=&sort={sort.value}",
+            screen_query(Screen(), Scope(bindparam("period")), PageParams(), sort=sort)[0],
+        )
+        for sort in (
+            ScreenSort.DISPLAY_NAME,
+            ScreenSort.TICKER,
+            ScreenSort.HOLDER_COUNT,
+            ScreenSort.ESTIMATED_RETURN,
+        )
+    ),
+    Query.from_app(
+        "screener_matches",
+        "GET /v1/screener?period= (meta.matches)",
+        matches_query(Screen(), Scope(bindparam("period"))),
     ),
     # The presets' filters that read more than the period's rows: a run of
     # adds, a probe per quarter of it (the longest run asked, not the preset's
