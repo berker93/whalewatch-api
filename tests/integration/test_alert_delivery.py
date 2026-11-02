@@ -152,7 +152,7 @@ async def _waiting(session: AsyncSession) -> list[tuple[str, str]]:
         .where(AlertOutbox.settled_at.is_(None))
         .order_by(AlertOutbox.id)
     )
-    return [tuple(row) for row in rows]  # type: ignore[misc]
+    return [tuple(row) for row in rows]
 
 
 # --- batches ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ A workbook must have the CSV's rows, and say on its own sheets what the CSV's
 
 import csv
 import io
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any, Final
 
 import openpyxl
@@ -19,6 +19,7 @@ from httpx import AsyncClient, Response
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.entitlements import utc_today
 from app.api.routers.exports import NO_COVERAGE
 from app.api.xlsx_export import MEDIA_TYPE as XLSX
 from app.db.models import Security, UserActivityDay
@@ -388,7 +389,7 @@ async def test_the_insider_file_is_its_feed(
     response = await client.get("/v1/insiders/transactions.csv", params={"ticker": "NVDA"})
     comments, rows = _file(response)
 
-    assert _named(response) == f"nvda_to-{date.today()}_trades.csv"
+    assert _named(response) == f"nvda_to-{utc_today()}_trades.csv"
     walked = await _walk_insiders(client, ticker="NVDA")
     assert [row["accession_no"] for row in rows] == [row["accession_no"] for row in walked]
     # The grant is left out by default, as the feed leaves it out, and says so.
@@ -537,7 +538,7 @@ async def test_the_insider_workbook_shows_a_formula_as_text(
     response = await client.get("/v1/insiders/transactions.xlsx", params={"ticker": "NVDA"})
     book = _workbook(response)
 
-    assert _named(response) == f"nvda_to-{date.today()}_trades.xlsx"
+    assert _named(response) == f"nvda_to-{utc_today()}_trades.xlsx"
     [line] = _data(book)
     # Text, not a formula, and not quoted as the CSV must.
     assert line["insider_name"] == '=HYPERLINK("http://evil.example","x")'

@@ -245,7 +245,7 @@ async def _queued(session: AsyncSession) -> list[tuple[int, str, str, str]]:
             AlertOutbox.user_id, AlertOutbox.route, AlertOutbox.title, AlertOutbox.dedupe_key
         ).order_by(AlertOutbox.id)
     )
-    return [tuple(row) for row in rows]  # type: ignore[misc]
+    return [tuple(row) for row in rows]
 
 
 async def _told(session: AsyncSession, *kinds: AlertKind) -> list[dict[str, Any]]:

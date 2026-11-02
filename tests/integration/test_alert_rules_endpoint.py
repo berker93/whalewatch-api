@@ -365,7 +365,14 @@ async def test_a_change_leaves_what_it_does_not_name(client: AsyncClient, pro: i
 async def test_a_change_must_change_something_it_can(client: AsyncClient, pro: int) -> None:
     filed = (await _save(client, "filer_filed", BERKSHIRE)).json()
 
-    for body in ({}, {"channels": []}, {"channels": None}, {"is_active": None}, {"name": "x"}):
+    nothing_it_can: tuple[dict[str, Any], ...] = (
+        {},
+        {"channels": []},
+        {"channels": None},
+        {"is_active": None},
+        {"name": "x"},
+    )
+    for body in nothing_it_can:
         assert (await _patch(client, filed["id"], **body)).status_code == 422, body
     threshold = await _patch(client, filed["id"], min_value="100")
     assert threshold.status_code == 422
