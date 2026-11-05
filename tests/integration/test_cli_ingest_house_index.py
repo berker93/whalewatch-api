@@ -104,7 +104,10 @@ def clean_tables(migrated_engine: AsyncEngine) -> Iterator[None]:
 def _truncate(engine: AsyncEngine) -> None:
     _execute(
         engine,
-        text("TRUNCATE ingestion_run, crawl_watermark, congress_filing RESTART IDENTITY CASCADE"),
+        text(
+            "TRUNCATE ingestion_run, crawl_watermark, congress_filing, congress_filed_name "
+            "RESTART IDENTITY CASCADE"
+        ),
     )
 
 

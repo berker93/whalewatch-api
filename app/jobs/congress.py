@@ -1,16 +1,22 @@
-"""The Congress jobs: the House Clerk's indexes and the PTRs they list, and Senate eFD's.
+"""The Congress jobs: the House Clerk's indexes and the PTRs they list, Senate
+eFD's, and the member registry the filers are matched to.
 
-``ingest-house-index``, ``ingest-house-ptrs`` and ``ingest-senate-ptrs`` are
-these with argument parsing and a summary; the tasks of the same names are
-these in ``asyncio.run``. As with the Form 4 jobs
+``ingest-house-index``, ``ingest-house-ptrs``, ``ingest-senate-ptrs``,
+``seed-congress-members`` and ``match-congress-members`` are these with
+argument parsing and a summary; the tasks of the same names are these in
+``asyncio.run``. Both index jobs end by linking what they stored to filed
+names and matching the new names to members
+(:func:`~app.ingestion.congress.members.link_and_match`). As with the Form 4 jobs
 (app/jobs/form4.py), nothing here prints.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from app.core.config import Settings
@@ -23,6 +29,15 @@ from app.ingestion.congress.filings import (
     ingest_house_index,
 )
 from app.ingestion.congress.house_clerk import HouseClerk
+from app.ingestion.congress.legislators import (
+    FILES,
+    Copy,
+    Dataset,
+    archive,
+    fetch_dataset,
+    read_dataset,
+)
+from app.ingestion.congress.members import MemberPass, MembersStored, link_and_match, store_members
 from app.ingestion.congress.ptr_ocr import Ocr, Tesseract
 from app.ingestion.congress.ptrs import (
     DEFAULT_CONCURRENCY,
@@ -45,7 +60,7 @@ from app.ingestion.congress.senate_ptrs import (
 from app.ingestion.remote.fetcher import open_fetcher
 from app.jobs.tracking import TrackedRun, tracked_task
 from app.ops.alerts import alert_ops
-from app.storage.raw import open_raw_store
+from app.storage.raw import RawStore, open_raw_store
 
 logger = get_logger(__name__)
 
@@ -56,6 +71,8 @@ class HouseIndexRun:
 
     years: list[int]
     ingest: HouseIngest | None
+    members: MemberPass | None = None
+    """The filings stored, linked to names and the new names matched."""
 
     @property
     def failed(self) -> bool:
@@ -104,6 +121,8 @@ async def ingest_house_index_job(
             ingest = await ingest_house_index(
                 sessions, clerk, years, today=today, move_watermark=move_watermark
             )
+        async with sessions.begin() as session:
+            members = await link_and_match(session)
     finally:
         await engine.dispose()
 
@@ -125,8 +144,20 @@ async def ingest_house_index_job(
         "archived": sum(1 for year in read if year.index is not None and year.index.new),
         "watermark_before": _iso(ingest.watermark_before),
         "watermark_after": _iso(ingest.watermark_after),
+    } | member_metrics(members)
+    return HouseIndexRun(years=years, ingest=ingest, members=members)
+
+
+def member_metrics(members: MemberPass) -> dict[str, Any]:
+    """What linking and matching did, for a run's ``metrics``."""
+    matched = members.matched
+    return {
+        "filings_linked": members.linked.filings,
+        "names_new": len(members.linked.new_names),
+        "names_matched": sum(matched.tally.matched.values()),
+        "names_review": matched.tally.review,
+        "names_unmatched": matched.tally.unmatched,
     }
-    return HouseIndexRun(years=years, ingest=ingest)
 
 
 def _iso(day: date | None) -> str | None:
@@ -258,6 +289,7 @@ class SenatePtrRun:
     window: tuple[date, date] | None
     ingest: SenateIngest
     table: Coverage
+    members: MemberPass
     quiet_days: int | None
     """Days since the newest Senate filing, when a catch-up found it past
     :data:`~app.ingestion.congress.senate_ptrs.QUIET_DAYS`."""
@@ -335,6 +367,8 @@ async def ingest_senate_ptrs_job(
                     f"against the archived page, then run ingest-senate-ptrs --catch-up.",
                 )
                 raise
+        async with sessions.begin() as session:
+            members = await link_and_match(session)
         async with sessions() as session:
             table = await table_coverage(session, "senate")
             newest = await newest_filing(session)
@@ -384,5 +418,96 @@ async def ingest_senate_ptrs_job(
         "watermark_before": _iso(ingest.watermark_before),
         "watermark_after": _iso(ingest.watermark_after),
         "quiet_days": quiet_days,
-    }
-    return SenatePtrRun(window=window, ingest=ingest, table=table, quiet_days=quiet_days)
+    } | member_metrics(members)
+    return SenatePtrRun(
+        window=window, ingest=ingest, table=table, members=members, quiet_days=quiet_days
+    )
+
+
+# --- members ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SeedRun:
+    """What a seed read and stored, and the pass over every name after it."""
+
+    dataset: Dataset
+    stored: MembersStored
+    members: MemberPass
+
+
+def _seed_context(_: Settings, arguments: dict[str, Any]) -> dict[str, Any]:
+    directory = arguments.get("directory")
+    return {"directory": None if directory is None else str(directory)}
+
+
+@tracked_task("seed-congress-members", context=_seed_context)
+async def seed_congress_members_job(
+    run: TrackedRun, settings: Settings, *, directory: Path | None = None
+) -> SeedRun:
+    """Seed ``congress_member`` from the congress-legislators dataset, then
+    match every filed name a person has not.
+
+    :param directory: Read ``legislators-current.json`` and
+        ``legislators-historical.json`` from here instead of downloading them.
+        Archived like a download.
+    :raises LegislatorsError: A file could not be fetched or read. Nothing is
+        written.
+    """
+    async with open_raw_store(settings) as store:
+        if directory is None:
+            copies = await fetch_dataset(
+                store,
+                base_url=settings.congress_legislators_url,
+                user_agent=settings.sec_user_agent,
+            )
+        else:
+            copies = await _copies_from(store, directory)
+    dataset = read_dataset(copies)
+
+    engine = create_engine(settings)
+    sessions = create_session_factory(engine)
+    try:
+        async with sessions.begin() as session:
+            stored = await store_members(session, dataset)
+            members = await link_and_match(session, every_name=True)
+    finally:
+        await engine.dispose()
+
+    run.items_seen = dataset.listed
+    run.items_written = stored.inserted + stored.updated
+    run.metrics |= {
+        "kept": len(dataset.legislators),
+        "inserted": stored.inserted,
+        "updated": stored.updated,
+        "terms": stored.terms,
+        "raw_keys": [copy.key for copy in copies],
+        "names_changed": members.matched.changed,
+    } | member_metrics(members)
+    return SeedRun(dataset=dataset, stored=stored, members=members)
+
+
+async def _copies_from(store: RawStore, directory: Path) -> tuple[Copy, ...]:
+    copies: list[Copy] = []
+    for name in FILES:
+        path = directory / f"{name}.json"
+        body = await asyncio.to_thread(path.read_bytes)
+        copies.append(await archive(store, name, body, url=str(path)))
+    return tuple(copies)
+
+
+@tracked_task("match-congress-members")
+async def match_congress_members_job(run: TrackedRun, settings: Settings) -> MemberPass:
+    """Link every unlinked filing, and match every filed name a person has not,
+    against the registry as it is: after a matcher change, say."""
+    engine = create_engine(settings)
+    sessions = create_session_factory(engine)
+    try:
+        async with sessions.begin() as session:
+            members = await link_and_match(session, every_name=True)
+    finally:
+        await engine.dispose()
+    run.items_seen = members.matched.names
+    run.items_written = members.matched.changed
+    run.metrics |= {"names_changed": members.matched.changed} | member_metrics(members)
+    return members

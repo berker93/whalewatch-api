@@ -1,0 +1,212 @@
+[
+ {
+  "id": {
+   "bioguide": "B001228",
+   "govtrack": 400039
+  },
+  "name": {
+   "first": "Mary",
+   "middle": "Whitaker",
+   "last": "Bono Mack",
+   "official_full": "Mary Bono Mack"
+  },
+  "other_names": [
+   {
+    "last": "Bono",
+    "end": "2007-12-17"
+   }
+  ],
+  "bio": {
+   "birthday": "1961-10-24",
+   "gender": "F"
+  },
+  "terms": [
+   {
+    "type": "rep",
+    "start": "1998-04-07",
+    "end": "1999-01-03",
+    "state": "CA",
+    "district": 44,
+    "party": "Republican"
+   },
+   {
+    "type": "rep",
+    "start": "1999-01-06",
+    "end": "2001-01-03",
+    "state": "CA",
+    "district": 44,
+    "party": "Republican"
+   },
+   {
+    "type": "rep",
+    "start": "2001-01-03",
+    "end": "2003-01-03",
+    "state": "CA",
+    "district": 44,
+    "party": "Republican"
+   },
+   {
+    "type": "rep",
+    "start": "2003-01-07",
+    "end": "2005-01-03",
+    "state": "CA",
+    "district": 45,
+    "party": "Republican"
+   },
+   {
+    "type": "rep",
+    "start": "2005-01-04",
+    "end": "2007-01-03",
+    "state": "CA",
+    "district": 45,
+    "party": "Republican"
+   },
+   {
+    "type": "rep",
+    "start": "2007-01-04",
+    "end": "2009-01-03",
+    "state": "CA",
+    "district": 45,
+    "party": "Republican"
+   },
+   {
+    "type": "rep",
+    "start": "2009-01-06",
+    "end": "2011-01-03",
+    "state": "CA",
+    "district": 45,
+    "party": "Republican"
+   },
+   {
+    "type": "rep",
+    "start": "2011-01-05",
+    "end": "2013-01-03",
+    "state": "CA",
+    "district": 45,
+    "party": "Republican"
+   }
+  ]
+ },
+ {
+  "id": {
+   "bioguide": "S000030",
+   "govtrack": 400356
+  },
+  "name": {
+   "first": "Loretta",
+   "middle": "B.",
+   "last": "Sanchez",
+   "official_full": "Loretta Sanchez"
+  },
+  "bio": {
+   "birthday": "1960-01-07",
+   "gender": "F"
+  },
+  "terms": [
+   {
+    "type": "rep",
+    "start": "1997-01-07",
+    "end": "1999-01-03",
+    "state": "CA",
+    "district": 46,
+    "party": "Democrat"
+   },
+   {
+    "type": "rep",
+    "start": "1999-01-06",
+    "end": "2001-01-03",
+    "state": "CA",
+    "district": 46,
+    "party": "Democrat"
+   },
+   {
+    "type": "rep",
+    "start": "2001-01-03",
+    "end": "2003-01-03",
+    "state": "CA",
+    "district": 46,
+    "party": "Democrat"
+   },
+   {
+    "type": "rep",
+    "start": "2003-01-07",
+    "end": "2005-01-03",
+    "state": "CA",
+    "district": 47,
+    "party": "Democrat"
+   },
+   {
+    "type": "rep",
+    "start": "2005-01-04",
+    "end": "2007-01-03",
+    "state": "CA",
+    "district": 47,
+    "party": "Democrat"
+   },
+   {
+    "type": "rep",
+    "start": "2007-01-04",
+    "end": "2009-01-03",
+    "state": "CA",
+    "district": 47,
+    "party": "Democrat"
+   },
+   {
+    "type": "rep",
+    "start": "2009-01-06",
+    "end": "2011-01-03",
+    "state": "CA",
+    "district": 47,
+    "party": "Democrat"
+   },
+   {
+    "type": "rep",
+    "start": "2011-01-05",
+    "end": "2013-01-03",
+    "state": "CA",
+    "district": 47,
+    "party": "Democrat"
+   },
+   {
+    "type": "rep",
+    "start": "2013-01-03",
+    "end": "2015-01-03",
+    "state": "CA",
+    "district": 46,
+    "party": "Democrat"
+   },
+   {
+    "type": "rep",
+    "start": "2015-01-06",
+    "end": "2017-01-03",
+    "state": "CA",
+    "district": 46,
+    "party": "Democrat"
+   }
+  ]
+ },
+ {
+  "id": {
+   "bioguide": "B000226",
+   "govtrack": 401222
+  },
+  "name": {
+   "first": "Richard",
+   "last": "Bassett"
+  },
+  "bio": {
+   "birthday": "1745-04-02",
+   "gender": "M"
+  },
+  "terms": [
+   {
+    "type": "sen",
+    "start": "1789-03-04",
+    "end": "1793-03-03",
+    "state": "DE",
+    "party": "Anti-Administration",
+    "class": 2
+   }
+  ]
+ }
+]

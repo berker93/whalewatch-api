@@ -123,7 +123,8 @@ def _truncate(engine: AsyncEngine) -> None:
     _execute(
         engine,
         text(
-            "TRUNCATE ingestion_run, congress_transaction, congress_filing RESTART IDENTITY CASCADE"
+            "TRUNCATE ingestion_run, congress_transaction, congress_filing, congress_filed_name "
+            "RESTART IDENTITY CASCADE"
         ),
         delete(AdminUser).where(AdminUser.email == REVIEWER),
     )

@@ -18,8 +18,10 @@ rows (:mod:`app.db.models.congress_transaction`); a Senate report's page, by
 ``ingest-senate-ptrs``. The columns from ``document_url`` down say how that
 went. A filing whose ``parser_version`` is null has not been read yet.
 
-Not linked to a member table: there is none yet, and the index names people
-as they filed (``Hon.``, a middle initial or not), not as a roster would.
+Who filed it is ``filed_name_id``: the name as filed, which says which
+``congress_member`` that is, or that nobody knows yet
+(:mod:`app.db.models.congress_member`). The name columns here stay as the
+index has them, matched or not.
 """
 
 from datetime import date, datetime
@@ -29,6 +31,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    ForeignKey,
     Index,
     SmallInteger,
     Text,
@@ -123,6 +126,13 @@ class CongressFiling(Base):
     """Why no row could be read from it — it then has a placeholder row — or
     why it could not be read at all yet (no PDF at the Clerk's)."""
 
+    filed_name_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("congress_filed_name.id", ondelete="RESTRICT")
+    )
+    """Who filed it, by name: :class:`~app.db.models.congress_member.CongressFiledName`.
+    Null until a run links it, and again when a re-read changes the row, so
+    that it is linked by its name as the index now spells it."""
+
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -133,6 +143,7 @@ class CongressFiling(Base):
         UniqueConstraint("chamber", "doc_id"),
         # The newest filings first, per chamber: what a feed reads.
         Index("ix_congress_filing_chamber_filing_date", "chamber", "filing_date"),
+        Index("ix_congress_filing_filed_name_id", "filed_name_id"),
         CheckConstraint(CHAMBER_CHECK, name="chamber_is_known"),
         CheckConstraint(REPORT_TYPE_CHECK, name="report_type_is_known"),
         CheckConstraint("doc_id <> ''", name="doc_id_is_not_empty"),

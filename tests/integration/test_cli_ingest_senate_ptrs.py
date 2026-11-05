@@ -219,7 +219,8 @@ def cli_settings(
 @pytest.fixture(autouse=True)
 def clean_tables(migrated_engine: AsyncEngine) -> Iterator[None]:
     truncate = text(
-        "TRUNCATE ingestion_run, congress_transaction, congress_filing RESTART IDENTITY CASCADE"
+        "TRUNCATE ingestion_run, congress_transaction, congress_filing, congress_filed_name "
+        "RESTART IDENTITY CASCADE"
     )
     _execute(migrated_engine, truncate, text(f"DELETE FROM crawl_watermark WHERE job = '{JOB}'"))
     yield

@@ -199,3 +199,130 @@ class AdminPtrCoverage(BaseModel):
     coverage_pct: Percent | None = Field(
         description="Filings read over filings seen, in percent, to a tenth.", examples=["87.0"]
     )
+    members_matched: int = Field(
+        description="Filings whose filer is matched to a member of Congress.", examples=[5390]
+    )
+    members_in_review: int = Field(
+        description="Filings whose filer has candidates waiting in the member review queue.",
+        examples=[96],
+    )
+    members_unmatched: int = Field(
+        description="Filings whose filer is no known member: shown as filed, flagged.",
+        examples=[4],
+    )
+    members_unlinked: int = Field(
+        description="Filings not linked to a filer yet: before the registry was seeded.",
+        examples=[0],
+    )
+
+
+# --- the member review queue ------------------------------------------------------
+
+NameMethod = Literal["exact", "normalised", "manual"]
+CandidateMethod = Literal["exact", "normalised", "trigram"]
+
+
+class AdminMember(BaseModel):
+    """A member of Congress, from the registry."""
+
+    bioguide_id: str = Field(description="The Bioguide's id.", examples=["K000389"])
+    full_name: str = Field(description="As the registry has it.", examples=["Ro Khanna"])
+    chamber: Literal["house", "senate"] = Field(
+        description="Their latest term's.", examples=["house"]
+    )
+    state: str = Field(description="Their latest term's.", examples=["CA"])
+    district: int | None = Field(
+        description="Their latest term's, in the House; 0 at large.", examples=[17]
+    )
+    party: str | None = Field(description="Their latest term's.", examples=["Democrat"])
+    current: bool = Field(description="In office, as the registry last said.", examples=[True])
+
+
+class AdminMemberCandidate(BaseModel):
+    """One member a filed name might be."""
+
+    id: int = Field(description="What `accept` takes.", examples=[311])
+    member: AdminMember = Field(description="Who it might be.")
+    method: CandidateMethod = Field(
+        description=(
+            "`trigram`: a similar name, never accepted without a person. `exact` or "
+            "`normalised`: the name fits, but so does another member's, or the member "
+            "was not in that seat when it was filed."
+        ),
+        examples=["trigram"],
+    )
+    confidence: Score = Field(description="0 to 1.", examples=["0.643"])
+
+
+class AdminFiledName(BaseModel):
+    """A filer, as a chamber's index names them, and who that is."""
+
+    id: int = Field(description="The filed name's id: what review takes.", examples=[57])
+    chamber: Literal["house", "senate"] = Field(description="Which chamber.", examples=["house"])
+    state: str | None = Field(
+        description="From a House filing's state and district; null for the Senate.",
+        examples=["CA"],
+    )
+    first_name: str | None = Field(description="As filed.", examples=["Rohit"])
+    last_name: str = Field(description="As filed.", examples=["Khanna"])
+    name_key: str = Field(
+        description="The name folded: what filings are grouped by.", examples=["rohit khanna"]
+    )
+    status: Literal["matched", "review", "unmatched"] = Field(
+        description=(
+            "`matched`: a member. `review`: candidates, none accepted. `unmatched`: no "
+            "candidate, or all rejected; its filings show the name as filed, flagged."
+        ),
+        examples=["review"],
+    )
+    method: NameMethod | None = Field(
+        description="How it was matched; `manual` is a person's, which no run changes.",
+        examples=[None],
+    )
+    confidence: Score | None = Field(
+        description="The match's; in review, the best candidate's.", examples=["0.643"]
+    )
+    member: AdminMember | None = Field(description="Who it is, when matched.")
+    filings: int = Field(description="Filings under the name.", examples=[14])
+    first_filed: date | None = Field(description="The first of them.", examples=["2026-01-12"])
+    last_filed: date | None = Field(description="The latest.", examples=["2026-10-30"])
+    document_url: str | None = Field(description="The latest one's original.", examples=[_URL])
+    candidates: list[AdminMemberCandidate] = Field(
+        description="Pending, best first. Empty unless in review."
+    )
+    reviewed_at: datetime | None = Field(description="When a person last decided.", examples=[None])
+    review_note: str | None = Field(description="What they said.", examples=[None])
+
+
+class AdminFiledNamePage(BaseModel):
+    """One page of the member review queue."""
+
+    items: list[AdminFiledName] = Field(description="The names on this page.")
+    total: int = Field(description="How many names match, on every page.", examples=[10])
+    limit: int = Field(description="The page size asked for.", examples=[50])
+    offset: int = Field(description="How many matches came before this page.", examples=[0])
+
+
+class AdminFiledNameDecision(BaseModel):
+    """A person's call on one filed name."""
+
+    decision: Literal["accept", "assign", "reject"] = Field(
+        description=(
+            "`accept`: the candidate `candidate_id` is who it is. `assign`: the member "
+            "`bioguide_id` is, candidate or not; also corrects any match. `reject`: none "
+            "of the candidates, which are never suggested for it again."
+        ),
+        examples=["accept"],
+    )
+    candidate_id: int | None = Field(
+        default=None, ge=1, description="With `accept` only.", examples=[311]
+    )
+    bioguide_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z][0-9]{6}$",
+        description="With `assign` only.",
+        examples=[None],
+    )
+    note: str | None = Field(
+        default=None, max_length=500, description="Why, for the next reviewer.", examples=[None]
+    )

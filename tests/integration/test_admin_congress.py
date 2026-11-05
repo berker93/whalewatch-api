@@ -397,6 +397,11 @@ async def test_coverage_counts_each_chambers_filings_and_lines(
         "rows_parsed": 2,
         "rows_needs_review": 2,
         "coverage_pct": "66.7",
+        # Inserted as an index run would, but not linked: no run has matched them.
+        "members_matched": 0,
+        "members_in_review": 0,
+        "members_unmatched": 0,
+        "members_unlinked": 3,
     }
     assert (senate["chamber"], senate["filings_seen"], senate["coverage_pct"]) == (
         "senate",

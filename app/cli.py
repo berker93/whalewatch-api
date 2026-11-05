@@ -4,7 +4,7 @@ reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticke
 fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user,
 delete-user, restore-user, purge-accounts, billing, create-admin, disable-admin, snapshot-metrics,
 check-email-domain, fetcher-check, ingest-house-index, ingest-house-ptrs, ingest-senate-ptrs,
-email-suppression.
+seed-congress-members, match-congress-members, email-suppression.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -49,6 +49,8 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli ingest-house-ptrs --limit 200
     uv run python -m app.cli ingest-senate-ptrs --from 2012-01-01
     uv run python -m app.cli ingest-senate-ptrs --catch-up
+    uv run python -m app.cli seed-congress-members
+    uv run python -m app.cli match-congress-members
     uv run python -m app.cli create-partitions --through 2028
     uv run python -m app.cli detect-clusters
     uv run python -m app.cli create-user --email ada@example.com --name "Ada Lovelace"
@@ -85,8 +87,8 @@ run's ``metrics``.
 The verbs that are also Celery tasks
 ------------------------------------
 ``discover-filings``, ``backfill``, ``crawl-form4``, ``ingest-form4``,
-``ingest-house-index``, ``ingest-house-ptrs``, ``ingest-senate-ptrs``, ``resolve-cusips``,
-``fetch-quotes``,
+``ingest-house-index``, ``ingest-house-ptrs``, ``ingest-senate-ptrs``,
+``seed-congress-members``, ``match-congress-members``, ``resolve-cusips``, ``fetch-quotes``,
 ``recompute`` and
 ``refresh-views`` are each a call to a ``@tracked_task`` job (app/jobs/), the
 same call its task makes (app/jobs/tasks.py), with the arguments parsed on the
@@ -206,6 +208,9 @@ from app.ingestion.backfill import (
 )
 from app.ingestion.congress.filings import HouseIngest, YearKind
 from app.ingestion.congress.house_clerk import FIRST_YEAR as HOUSE_FIRST_YEAR
+from app.ingestion.congress.legislators import SINCE as LEGISLATORS_SINCE
+from app.ingestion.congress.legislators import LegislatorsError
+from app.ingestion.congress.members import MemberPass
 from app.ingestion.congress.ptrs import DEFAULT_CONCURRENCY as PTR_CONCURRENCY
 from app.ingestion.congress.ptrs import Coverage, FilingRead, PtrIngest
 from app.ingestion.congress.ptrs import Outcome as PtrOutcome
@@ -311,10 +316,13 @@ from app.jobs.alerts import emit_alerts, send_alert_emails
 from app.jobs.cache import invalidate_cache
 from app.jobs.congress import (
     HousePtrRun,
+    SeedRun,
     SenatePtrRun,
     ingest_house_index_job,
     ingest_house_ptrs_job,
     ingest_senate_ptrs_job,
+    match_congress_members_job,
+    seed_congress_members_job,
 )
 from app.jobs.derived import filer_id_of, recompute_positions, refresh_matviews
 from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
@@ -2210,6 +2218,8 @@ async def _ingest_house_index(
         typer.echo("ingest-house-index  nothing to read")
         return False
     _echo_house_ingest(ran.value.ingest)
+    if ran.value.members is not None:
+        _echo_members(ran.value.members)
     return ran.value.failed
 
 
@@ -2488,6 +2498,7 @@ def _echo_senate_ptrs(ran: SenatePtrRun) -> None:
     typer.echo(f"  all Senate {_covered(ran.table)}")
     if ran.quiet_days is not None:
         typer.echo(f"  QUIET: no Senate PTR in {ran.quiet_days} days; ops told")
+    _echo_members(ran.members)
     before = "none" if ingest.watermark_before is None else str(ingest.watermark_before)
     if ingest.watermark_after == ingest.watermark_before:
         typer.echo(f"  watermark {before}, unchanged")
@@ -2497,6 +2508,113 @@ def _echo_senate_ptrs(ran: SenatePtrRun) -> None:
 
 def _senate_unclean(read: FilingRead) -> bool:
     return read.outcome not in (PtrOutcome.HTML, PtrOutcome.PLACEHOLDER) or read.needs_review > 0
+
+
+# --- seed-congress-members, match-congress-members -------------------------------
+
+
+@app.command("seed-congress-members")
+def seed_congress_members_command(
+    directory: Annotated[
+        Path | None,
+        typer.Option(
+            "--from-dir",
+            metavar="DIR",
+            file_okay=False,
+            exists=True,
+            help="Read legislators-current.json and legislators-historical.json from here "
+            "instead of downloading them. Archived like a download.",
+        ),
+    ] = None,
+) -> None:
+    """Seed congress_member from the unitedstates/congress-legislators dataset.
+
+    Downloads legislators-current.json and legislators-historical.json from
+    CONGRESS_LEGISLATORS_URL, archives each under its checksum, and upserts
+    everyone with a term since 2008 on their Bioguide id, with their names,
+    their latest term's chamber, party, state and district, and every term.
+    A member is changed only where the dataset now says something different.
+
+    Then links every filing to its filed name and matches every name a person
+    has not: exact or normalised, with one member in office fitting, is
+    accepted; anything else goes to the member review queue
+    (/admin/congress/members/review), or is unmatched. A person's match is
+    never changed.
+
+    Exits 1 if a file cannot be fetched or read; nothing is written then.
+    """
+    try:
+        asyncio.run(_seed_congress_members(directory))
+    except (LegislatorsError, OSError, RawStoreError) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+async def _seed_congress_members(directory: Path | None) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    try:
+        ran = await seed_congress_members_job(settings, directory=directory)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
+    _echo_seed_members(ran.value)
+
+
+def _echo_seed_members(seeded: SeedRun) -> None:
+    dataset, stored = seeded.dataset, seeded.stored
+    typer.echo(
+        f"seed-congress-members  {dataset.listed:,} listed  {len(dataset.legislators):,} "
+        f"since {LEGISLATORS_SINCE.year}  {stored.inserted:,} new  {stored.updated:,} changed  "
+        f"{stored.terms:,} terms"
+    )
+    for copy in dataset.copies:
+        typer.echo(f"  {copy.name:<24} {copy.key}")
+    _echo_members(seeded.members)
+
+
+@app.command("match-congress-members")
+def match_congress_members_command() -> None:
+    """Match every filed name a person has not to the member registry as it is.
+
+    What seed-congress-members does after seeding, without the download: for
+    after a change to the matcher. Links any filing not linked yet first. A
+    person's match is never changed.
+    """
+    asyncio.run(_match_congress_members())
+
+
+async def _match_congress_members() -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    try:
+        ran = await match_congress_members_job(settings)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
+    typer.echo("match-congress-members")
+    _echo_members(ran.value)
+
+
+def _echo_members(members: MemberPass) -> None:
+    """One line on linking, one on matching: what every Congress index verb ends with."""
+    linked, matched = members.linked, members.matched
+    if matched.registry == 0:
+        typer.echo(
+            f"  members    {linked.filings:,} filings linked, {len(linked.new_names):,} new "
+            "names, none matched: no members seeded (seed-congress-members)"
+        )
+        return
+    by = ", ".join(
+        f"{count:,} {method.value}" for method, count in sorted(matched.tally.matched.items())
+    )
+    typer.echo(
+        f"  members    {linked.filings:,} filings linked, {len(linked.new_names):,} new names; "
+        f"{matched.names:,} checked against {matched.registry:,} members: "
+        f"{sum(matched.tally.matched.values()):,} matched ({by or 'none'}), "
+        f"{matched.tally.review:,} to review, {matched.tally.unmatched:,} unmatched; "
+        f"{matched.changed:,} changed"
+    )
 
 
 @app.command("email-suppression")

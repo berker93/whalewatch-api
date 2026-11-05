@@ -38,6 +38,7 @@ from tests.fake_redis import FakeRedis
 #: A real excerpt of a 13(f) securities list, so import-13f-list runs in full
 #: from a file instead of from the SEC.
 LIST_FIXTURE: Final = Path(__file__).parents[1] / "fixtures" / "13f_list" / "13flist2026q1.txt"
+LEGISLATORS_FIXTURE: Final = Path(__file__).parents[1] / "fixtures" / "congress_legislators"
 
 #: Each tracked verb, the job name it records under, an invocation that runs
 #: in full against an empty database without touching EDGAR, and the status
@@ -85,6 +86,14 @@ TRACKED: Final = {
     "ingest-house-ptrs": ("ingest-house-ptrs", [], "success"),
     # No watermark to catch up from, which it finds before opening a fetcher.
     "ingest-senate-ptrs": ("ingest-senate-ptrs", ["--catch-up"], "failed"),
+    # The fixture cut of the dataset, so nothing is downloaded; no filings to match.
+    "seed-congress-members": (
+        "seed-congress-members",
+        ["--from-dir", str(LEGISLATORS_FIXTURE)],
+        "success",
+    ),
+    # No filed names, so nothing to match.
+    "match-congress-members": ("match-congress-members", [], "success"),
     # Every year through 2027 exists since 0032, so nothing is created.
     "create-partitions": ("create-partitions", ["--through", "2027"], "success"),
     # No purchases, so no clusters: the table is emptied and nothing written.

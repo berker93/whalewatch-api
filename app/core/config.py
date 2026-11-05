@@ -315,6 +315,12 @@ class Settings(BaseSettings):
     us_fetcher_access_key_id: str | None = None
     us_fetcher_secret_access_key: SecretStr | None = None
 
+    # --- the congress member registry ---------------------------------------
+    # Where seed-congress-members downloads the unitedstates/congress-legislators
+    # dataset from (app/ingestion/congress/legislators.py): its GitHub Pages
+    # site, which serves legislators-current.json and legislators-historical.json.
+    congress_legislators_url: str = "https://unitedstates.github.io/congress-legislators"
+
     # --- PTR OCR ------------------------------------------------------------
     # How ingest-house-ptrs reads a paper PTR, which is a scan with no text.
     # "tesseract" runs TESSERACT_COMMAND, if it is installed (the image has

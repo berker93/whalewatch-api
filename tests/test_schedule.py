@@ -175,6 +175,11 @@ def test_every_entry_names_a_task_that_exists(name: str) -> None:
         ("billing", "run_billing", crontab(minute=15)),
         ("senate-efd", "poll_senate_efd", crontab(minute=10, hour="*/2")),
         ("snapshot-metrics", "snapshot_metrics", crontab(minute=5, hour=20)),
+        (
+            "seed-congress-members",
+            "seed_congress_members",
+            crontab(minute=40, hour=2, day_of_week="sun"),
+        ),
     ],
 )
 def test_each_entry_runs_when_the_ticket_says(name: str, task: str, when: crontab) -> None:
@@ -195,6 +200,7 @@ _SECONDS_BETWEEN_SENDS = {
     "senate-efd": SENATE_POLL_EVERY_HOURS * 60 * 60,
     "alert-emails": 60,
     "snapshot-metrics": 24 * 60 * 60,
+    "seed-congress-members": 7 * 24 * 60 * 60,
 }
 
 

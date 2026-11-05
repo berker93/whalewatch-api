@@ -102,7 +102,8 @@ class ProblemError(BaseModel):
             "no plan has that slug; `no_subscription` (409): grandfathering an account "
             "with no live subscription; `already_grandfathered` (409): grandfathering "
             "one already pinned to a snapshot; `not_in_review` (409): reviewing a PTR "
-            "line that is not in the review queue."
+            "line that is not in the review queue, or accepting or rejecting the "
+            "candidates of a filed name that has none."
         ),
         examples=["not_found"],
     )

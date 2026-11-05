@@ -249,6 +249,11 @@ async def upsert_filings(
     """Upsert ``congress_filing`` ``rows`` on ``(chamber, doc_id)``, updating
     ``changing`` only where one of them differs, and ``updated_at`` with them.
 
+    A row that changes is unlinked from its filed name, for
+    :func:`~app.ingestion.congress.members.link_filings` to link again by the
+    name as it now reads: the same name, unless the name is what changed. A
+    person's match stays with the name it was made for.
+
     Either chamber's: ``rows`` must not repeat a key. Does not commit.
     """
     inserted = updated = 0
@@ -257,7 +262,8 @@ async def upsert_filings(
         insert = pg_insert(CongressFiling).values(list(rows[start : start + _BATCH]))
         statement: ReturningInsert[tuple[bool]] = insert.on_conflict_do_update(
             index_elements=[CongressFiling.chamber, CongressFiling.doc_id],
-            set_={name: insert.excluded[name] for name in changing} | {"updated_at": func.now()},
+            set_={name: insert.excluded[name] for name in changing}
+            | {"updated_at": func.now(), "filed_name_id": None},
             where=tuple_(*(table[name] for name in changing)).is_distinct_from(
                 tuple_(*(insert.excluded[name] for name in changing))
             ),

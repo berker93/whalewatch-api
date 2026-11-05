@@ -48,6 +48,14 @@ from app.db.models.congress_filing import (
     REPORT_TYPES,
     CongressFiling,
 )
+from app.db.models.congress_member import (
+    CandidateStatus,
+    CongressFiledName,
+    CongressMember,
+    CongressMemberCandidate,
+    CongressMemberTerm,
+    NameStatus,
+)
 from app.db.models.congress_transaction import CongressTransaction
 from app.db.models.crawl_watermark import CrawlWatermark
 from app.db.models.email import (
@@ -226,9 +234,14 @@ __all__ = [
     "AppUser",
     "Base",
     "Basis",
+    "CandidateStatus",
     "ChangeAction",
     "Channel",
+    "CongressFiledName",
     "CongressFiling",
+    "CongressMember",
+    "CongressMemberCandidate",
+    "CongressMemberTerm",
     "CongressTransaction",
     "ConsentRecord",
     "ConsentSource",
@@ -256,6 +269,7 @@ __all__ = [
     "ManualReview",
     "MatviewRefresh",
     "MetricDay",
+    "NameStatus",
     "Notification",
     "NotificationPayload",
     "OverlapPolicy",

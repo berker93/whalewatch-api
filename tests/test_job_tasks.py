@@ -526,6 +526,7 @@ def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -
         "ingest_house_index": INGESTION_QUEUE,
         "ingest_house_ptrs": INGESTION_QUEUE,
         "ingest_senate_ptrs": INGESTION_QUEUE,
+        "seed_congress_members": INGESTION_QUEUE,
         "resolve_cusips": INGESTION_QUEUE,
         "fetch_prices": INGESTION_QUEUE,
         "recompute_positions": COMPUTE_QUEUE,

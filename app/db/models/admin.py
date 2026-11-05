@@ -90,6 +90,11 @@ class AdminActionKind(StrEnum):
     """A PTR line in the review queue taken as a trade, corrected or not."""
     PTR_ROW_REJECTED = "ptr_row_rejected"
     """A PTR line in the review queue set aside as not a trade."""
+    MEMBER_MATCHED = "member_matched"
+    """A filed name taken as a member of Congress: a candidate accepted, or a
+    member assigned."""
+    MEMBER_REJECTED = "member_rejected"
+    """A filed name's candidates all rejected: it is none of them."""
 
 
 class ActionSource(StrEnum):

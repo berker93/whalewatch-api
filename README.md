@@ -1332,6 +1332,68 @@ ingest-senate-ptrs  2026-10-22..2026-11-05  9 listed of 9 counted on 1 pages  6 
   watermark 2026-11-03 -> 2026-11-04
 ```
 
+### `seed-congress-members [--from-dir DIR]`
+
+The member registry: everyone who has sat in Congress since 2008, from the
+[unitedstates/congress-legislators](https://github.com/unitedstates/congress-legislators)
+dataset (`legislators-current.json` and `legislators-historical.json`, from
+`CONGRESS_LEGISLATORS_URL`; not through the US fetcher). Each file is archived
+under its checksum (`raw/congress-legislators/{file}/{sha256}.json`), then
+everyone with a term ending on or after 2008-01-01 is upserted into
+`congress_member` on their Bioguide id — names, nickname, earlier last names,
+and their latest term's chamber, state, district and party — and their terms
+replaced in `congress_member_term`
+([app/ingestion/congress/legislators.py](app/ingestion/congress/legislators.py)).
+A member changes only where the dataset does. `--from-dir` reads both files
+from a directory instead. Exit 1 if a file cannot be fetched or read: nothing
+is written then.
+
+Then it links every filing to a **filed name** — chamber, the state of a House
+`StateDst`, and the name folded (`thomas h kean`, honorifics and suffixes out)
+— and matches every name a person has not
+([app/ingestion/congress/member_match.py](app/ingestion/congress/member_match.py)):
+
+1. **Exact**: the filed first and last name, case and spacing aside, is one
+   the member is listed under (first last, first middle last, nickname last,
+   official full name). Confidence 1.
+2. **Normalised**: the same with accents, punctuation, honorifics, degrees and
+   suffixes folded away, or the surnames equal and the filed first name the
+   member's first, middle or nickname. Confidence 0.95.
+3. **Trigram**: `pg_trgm`'s `similarity()` (ported, and checked equal to
+   Postgres's on 404 pairs) against the members in office. Confidence = the
+   similarity. **Never accepted by a run.**
+
+Exact and normalised are looked for among members who sat in that chamber (and
+state) when it was filed, or up to a year after their term. One such member
+fitting, at confidence ≥ 0.9, is accepted. Two who fit split the confidence; a
+name that only fits someone not in that seat is a candidate at 0.6. Everything
+not accepted goes to the **member review queue**
+(`GET /admin/congress/members/review`, `POST .../members/review/{id}` to
+`accept` a candidate, `assign` a Bioguide id, or `reject` the candidates),
+or is `unmatched` when nothing fits. An accepted or assigned name is `manual`:
+no run changes it — not a re-read of the index (which unlinks and relinks a
+changed filing, by name), not a re-seed. A rejected member is never suggested
+for that name again. Unmatched filings keep the name as filed; the feed shows
+them flagged (`congress_filed_name.status <> 'matched'`).
+
+`ingest-house-index` and `ingest-senate-ptrs` link what they stored and match
+the names that are new, and print the same `members` line. On dev, the 2026
+House index: 111 names, 89 exact, 12 normalised, 10 to review (Rohit → Ro
+Khanna, Richard → Rick Allen, Daniel → Dan Crenshaw…), 0 unmatched.
+
+```
+seed-congress-members  12,770 listed  1,334 since 2008  1,334 new  0 changed  7,633 terms
+  legislators-current      raw/congress-legislators/legislators-current/ae8c….json
+  legislators-historical   raw/congress-legislators/legislators-historical/2518….json
+  members    453 filings linked, 111 new names; 111 checked against 1,334 members: 101 matched (89 exact, 12 normalised), 10 to review, 0 unmatched; 111 changed
+```
+
+### `match-congress-members`
+
+What `seed-congress-members` does after seeding, without the download: links
+any filing not linked yet and matches every name a person has not, against the
+registry as it is. For after a change to the matcher.
+
 ### `runs [--job NAME] [--limit N]`
 
 Lists the most recent job runs, newest first, from `ingestion_run`. Every verb
@@ -1451,6 +1513,7 @@ body inside `track_run`, and binds `job_name` and `run_id` on every line.
 | `ingest_house_index` | ingestion | `ingest-house-index --catch-up` | `ingest-house-index` |
 | `ingest_house_ptrs` | ingestion | `ingest-house-ptrs` | `ingest-house-ptrs` |
 | `ingest_senate_ptrs` | ingestion | `ingest-senate-ptrs --catch-up` | `ingest-senate-ptrs` |
+| `seed_congress_members` | ingestion | `seed-congress-members` | `seed-congress-members` |
 | `resolve_cusips` | ingestion | `resolve-cusips` | `resolve-cusips` |
 | `fetch_prices` | ingestion | `fetch-quotes` | `fetch-quotes` |
 | `recompute_positions` | compute | `recompute` | `recompute` |
@@ -1499,6 +1562,7 @@ stores and sends is UTC (`enable_utc`), as every `timestamptz` is.
 | `daily-form4` | `daily_form4` → `crawl_form4_daily` → `ingest_form4` | weekdays 22:00 |
 | `fetch-prices` | `fetch_prices` | weekdays 21:30 |
 | `senate-efd` | `poll_senate_efd` → `ingest_senate_ptrs` | every 2 hours (minute 10) on a day the Senate sits, at 06:10 otherwise; never without a US fetcher |
+| `seed-congress-members` | `seed_congress_members` | Sundays 02:40 |
 | `resolve-cusips` | `resolve_cusips` | daily 03:00 |
 | `refresh-matviews` | `refresh_matviews` | daily 04:00, and after every 13F ingest that published |
 

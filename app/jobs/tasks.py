@@ -15,6 +15,7 @@ task                       CLI verb                    job
 ``ingest_house_index``     ``ingest-house-index``      app/jobs/congress.py
 ``ingest_house_ptrs``      ``ingest-house-ptrs``       app/jobs/congress.py
 ``ingest_senate_ptrs``     ``ingest-senate-ptrs``      app/jobs/congress.py
+``seed_congress_members``  ``seed-congress-members``   app/jobs/congress.py
 ``resolve_cusips``         ``resolve-cusips``          app/jobs/enrichment.py
 ``fetch_prices``           ``fetch-quotes``            app/jobs/enrichment.py
 ``recompute_positions``    ``recompute``               app/jobs/derived.py
@@ -231,6 +232,13 @@ def ingest_senate_ptrs(self: Task[Any, Any], limit: int | None = None) -> Summar
     every Senate filing not read yet. A layout change fails it the first time,
     and tells ops."""
     return _run(self, congress.ingest_senate_ptrs_job, today=new_york_today(), limit=limit)
+
+
+@shared_task(bind=True, queue=INGESTION_QUEUE, max_retries=MAX_RETRIES)
+def seed_congress_members(self: Task[Any, Any]) -> Summary:
+    """``seed-congress-members``: the member registry from congress-legislators,
+    then every filed name a person has not matched, matched again."""
+    return _run(self, congress.seed_congress_members_job)
 
 
 # --- enrichment --------------------------------------------------------------

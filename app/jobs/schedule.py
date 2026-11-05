@@ -154,6 +154,14 @@ BEAT_SCHEDULE: Final[dict[str, dict[str, Any]]] = {
         "schedule": crontab(minute=10, hour=f"*/{SENATE_POLL_EVERY_HOURS}"),
         "options": {"expires": SENATE_POLL_EXPIRES_SECONDS},
     },
+    # The member registry, weekly: the dataset changes when someone is sworn
+    # in or leaves, a few times a year. Sunday, when no index run is due, and
+    # needing no US fetcher: the dataset is on GitHub.
+    "seed-congress-members": {
+        "task": "app.jobs.tasks.seed_congress_members",
+        "schedule": crontab(minute=40, hour=2, day_of_week="sun"),
+        "options": {"expires": DAILY_EXPIRES_SECONDS},
+    },
     # When nothing else wants the ingestion worker or OpenFIGI.
     "resolve-cusips": {
         "task": "app.jobs.tasks.resolve_cusips",

@@ -57,6 +57,11 @@ under the index year it is listed in and its doc id: the Clerk's own path. An
 amendment is a filing of its own, under a doc id of its own, so the key never
 needs a version. Built only by :func:`house_ptr_key`.
 
+``raw/congress-legislators/{file}/{sha256}.json`` — one version of a file of the
+``unitedstates/congress-legislators`` dataset (``legislators-current``,
+``legislators-historical``), as served, under its SHA-256: a re-seed that finds
+the file unchanged writes nothing. Built only by :func:`congress_legislators_key`.
+
 Two implementations, chosen by ``RAW_STORE_BACKEND``: :class:`LocalRawStore`
 under ``./data`` for development, and :class:`~app.storage.s3.S3RawStore` for
 any S3-compatible bucket, Cloudflare R2 included. Get one with
@@ -271,6 +276,20 @@ def house_ptr_key(year: int, doc_id: str) -> str:
     if not doc_id or not all(c.isascii() and (c.isalnum() or c == "-") for c in doc_id):
         raise ValueError(f"{doc_id!r} is not a House doc id")
     return validate_key(f"raw/house-clerk/ptr/{year}/{doc_id}.pdf")
+
+
+def congress_legislators_key(name: str, sha256: str) -> str:
+    """``raw/congress-legislators/legislators-current/{sha256}.json``, one version
+    of one of the dataset's files.
+
+    :raises ValueError: If ``name`` is not the lower-case letters and dashes of
+        the dataset's file names, or ``sha256`` is not a lower-case hex SHA-256.
+    """
+    if not name or not all(c in "abcdefghijklmnopqrstuvwxyz-" for c in name):
+        raise ValueError(f"{name!r} is not a congress-legislators file name")
+    if len(sha256) != 64 or not all(c in "0123456789abcdef" for c in sha256):
+        raise ValueError(f"{sha256!r} is not a hex SHA-256")
+    return validate_key(f"raw/congress-legislators/{name}/{sha256}.json")
 
 
 def validate_key(key: str) -> str:
