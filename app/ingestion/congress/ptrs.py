@@ -52,7 +52,6 @@ from app.core.logging import get_logger
 from app.db.models.congress_filing import CongressFiling
 from app.db.models.congress_transaction import CongressTransaction
 from app.ingestion.congress.house_clerk import (
-    ArchivedPtr,
     HouseClerk,
     HouseClerkError,
     PtrNotFound,
@@ -86,6 +85,8 @@ DEFAULT_CONCURRENCY: Final = 4
 class Outcome(StrEnum):
     TEXT = "text"
     OCR = "ocr"
+    HTML = "html"
+    """A Senate report filed online, read from its table."""
     PLACEHOLDER = "placeholder"
     MISSING = "missing"
     FAILED = "failed"
@@ -129,6 +130,8 @@ class Coverage:
     """Read from the text layer, :attr:`read` or :attr:`review_only`."""
     by_ocr: int = 0
     """Read by OCR, :attr:`read` or :attr:`review_only`."""
+    by_html: int = 0
+    """Read from a Senate report's table, :attr:`read` or :attr:`review_only`."""
     placeholders: int = 0
     missing: int = 0
     failed: int = 0
@@ -141,6 +144,10 @@ class Coverage:
         if not self.seen:
             return None
         return (Decimal(100 * self.read) / self.seen).quantize(Decimal("0.1"), ROUND_HALF_UP)
+
+
+#: The outcomes that are lines read.
+_LINES: Final = (Outcome.TEXT, Outcome.OCR, Outcome.HTML)
 
 
 @dataclass(slots=True)
@@ -160,13 +167,14 @@ class PtrIngest:
         def count(*outcomes: Outcome) -> int:
             return sum(1 for read in self.reads if read.outcome in outcomes)
 
-        lines = [read for read in self.reads if read.outcome in (Outcome.TEXT, Outcome.OCR)]
+        lines = [read for read in self.reads if read.outcome in _LINES]
         return Coverage(
             seen=len(self.reads),
             read=sum(1 for read in lines if read.parsed),
             review_only=sum(1 for read in lines if not read.parsed),
             by_text=count(Outcome.TEXT),
             by_ocr=count(Outcome.OCR),
+            by_html=count(Outcome.HTML),
             placeholders=count(Outcome.PLACEHOLDER),
             missing=count(Outcome.MISSING),
             failed=count(Outcome.FAILED),
@@ -304,7 +312,14 @@ async def _read_filing(
         )
 
     async with sessions.begin() as session:
-        outcome = await store_ptr(session, pending, archived, document, opened=opened)
+        outcome = await store_ptr(
+            session,
+            pending.filing_id,
+            document,
+            url=archived.url,
+            key=archived.key,
+            opened=opened,
+        )
     statuses = [row.status for row in document.rows]
     return FilingRead(
         pending,
@@ -319,27 +334,39 @@ async def _read_filing(
 # --- writing -------------------------------------------------------------------------
 
 
+#: The outcome of a document with rows, by how they were read.
+_READ_AS: Final = {
+    Extraction.TEXT: Outcome.TEXT,
+    Extraction.OCR: Outcome.OCR,
+    Extraction.HTML: Outcome.HTML,
+}
+
+
 async def store_ptr(
     session: AsyncSession,
-    pending: Pending,
-    archived: ArchivedPtr,
+    filing_id: int,
     document: PtrDocument,
     *,
+    url: str,
+    key: str | None,
     opened: bool = True,
+    parser_version: int = PARSER_VERSION,
 ) -> Outcome:
     """Replace the filing's rows with ``document``'s, or with a placeholder.
 
-    Leaves the filing alone if a person reviewed a row of it after it was
-    chosen. Does not commit.
+    Either chamber's: ``url`` is where the chamber serves the original, ``key``
+    where it is archived (``None`` for one never fetched), ``parser_version``
+    the reader's. Leaves the filing alone if a person reviewed a row of it
+    after it was chosen. Does not commit.
     """
     # The filing locked, so a review cannot land between the check and the write.
     await session.execute(
-        select(CongressFiling.id).where(CongressFiling.id == pending.filing_id).with_for_update()
+        select(CongressFiling.id).where(CongressFiling.id == filing_id).with_for_update()
     )
     reviewed = await session.scalar(
         select(
             exists().where(
-                CongressTransaction.filing_id == pending.filing_id,
+                CongressTransaction.filing_id == filing_id,
                 CongressTransaction.reviewed_at.is_not(None),
             )
         )
@@ -348,24 +375,24 @@ async def store_ptr(
         return Outcome.KEPT
 
     await session.execute(
-        delete(CongressTransaction).where(CongressTransaction.filing_id == pending.filing_id)
+        delete(CongressTransaction).where(CongressTransaction.filing_id == filing_id)
     )
     if document.rows:
-        values = [_row(pending.filing_id, row, document.extraction) for row in document.rows]
-        outcome = Outcome.OCR if document.extraction is Extraction.OCR else Outcome.TEXT
+        values = [_row(filing_id, row, document.extraction) for row in document.rows]
+        outcome = _READ_AS.get(document.extraction, Outcome.TEXT)
     else:
-        values = [_placeholder(pending.filing_id, document)]
+        values = [_placeholder(filing_id, document)]
         outcome = Outcome.PLACEHOLDER
     await session.execute(insert(CongressTransaction), values)
     await session.execute(
         update(CongressFiling)
-        .where(CongressFiling.id == pending.filing_id)
+        .where(CongressFiling.id == filing_id)
         .values(
-            document_url=archived.url,
-            document_key=archived.key,
+            document_url=url,
+            document_key=key,
             pages=document.pages or None,
             extraction=document.extraction.value if opened else None,
-            parser_version=PARSER_VERSION,
+            parser_version=parser_version,
             parsed_at=func.now(),
             parse_error=None if document.rows else document.unreadable,
         )
@@ -453,6 +480,7 @@ async def table_coverage(session: AsyncSession, chamber: str = HOUSE) -> Coverag
                 func.count().filter(lines, rows.c.parsed == 0),
                 func.count().filter(filing.extraction == Extraction.TEXT.value, lines),
                 func.count().filter(filing.extraction == Extraction.OCR.value, lines),
+                func.count().filter(filing.extraction == Extraction.HTML.value, lines),
                 func.count().filter(rows.c.holder > 0),
                 func.count().filter(filing.parser_version.is_(None)),
                 func.coalesce(func.sum(rows.c.parsed), 0).cast(Integer),
@@ -463,13 +491,16 @@ async def table_coverage(session: AsyncSession, chamber: str = HOUSE) -> Coverag
             .where(filing.chamber == chamber, tried)
         )
     ).one()
-    seen, read, review_only, by_text, by_ocr, placeholders, missing, parsed, review = counts
+    seen, read, review_only, by_text, by_ocr, by_html, placeholders, missing, parsed, review = (
+        counts
+    )
     return Coverage(
         seen=seen,
         read=read,
         review_only=review_only,
         by_text=by_text,
         by_ocr=by_ocr,
+        by_html=by_html,
         placeholders=placeholders,
         missing=missing,
         rows_parsed=parsed,

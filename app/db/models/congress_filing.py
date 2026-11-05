@@ -2,8 +2,9 @@
 
 The STOCK Act filing a member makes within 45 days of a trade. One row per
 filing, from the index each chamber publishes — the House Clerk's yearly ZIP
-(:mod:`app.ingestion.congress.house_index`) so far — before anything has read
-the filing itself: who filed, for which office, when, and the chamber's id for
+(:mod:`app.ingestion.congress.house_index`), Senate eFD's search
+(:mod:`app.ingestion.congress.senate_ptr`) — before anything has read the
+filing itself: who filed, for which office, when, and the chamber's id for
 the document. The trades in it are a later step's.
 
 Keyed naturally on ``(chamber, doc_id)``: a doc id is the chamber's own, and
@@ -13,9 +14,9 @@ the Clerk correcting a name, or a date — so a re-run that finds nothing new
 writes nothing, ``updated_at`` included.
 
 Its PDF is read later, by ``ingest-house-ptrs``, into ``congress_transaction``
-rows (:mod:`app.db.models.congress_transaction`); the columns from
-``document_url`` down say how that went. A filing whose ``parser_version`` is
-null has not been read yet.
+rows (:mod:`app.db.models.congress_transaction`); a Senate report's page, by
+``ingest-senate-ptrs``. The columns from ``document_url`` down say how that
+went. A filing whose ``parser_version`` is null has not been read yet.
 
 Not linked to a member table: there is none yet, and the index names people
 as they filed (``Hon.``, a middle initial or not), not as a roster would.
@@ -66,10 +67,11 @@ class CongressFiling(Base):
 
     doc_id: Mapped[str] = mapped_column(Text)
     """The chamber's id for the document: the House's ``DocID``, ``20033725``,
-    which also names its PDF."""
+    which also names its PDF; the UUID in eFD's link to a Senate report,
+    lower-cased."""
 
     report_type: Mapped[str] = mapped_column(Text)
-    """``ptr``. The House's ``FilingType`` ``P``."""
+    """``ptr``. The House's ``FilingType`` ``P``; eFD's ``report_types`` 11."""
 
     last_name: Mapped[str] = mapped_column(Text)
     first_name: Mapped[str | None] = mapped_column(Text)
@@ -80,26 +82,39 @@ class CongressFiling(Base):
     """``Jr.``, ``III``, as filed (``Jr`` and ``Jr.`` both occur)."""
 
     office: Mapped[str | None] = mapped_column(Text)
-    """The House's ``StateDst``: state and district, ``CA11``, ``AK00`` at large."""
+    """The House's ``StateDst``: state and district, ``CA11``, ``AK00`` at large.
+    For the Senate, the filer's role as eFD gives it: ``Senator``, ``Former
+    Senator``."""
 
     filing_date: Mapped[date] = mapped_column(Date)
     """When the chamber received it."""
 
     year: Mapped[int] = mapped_column(SmallInteger)
     """The year the index files it under, which can be years before
-    :attr:`filing_date` for a late filing."""
+    :attr:`filing_date` for a late filing. The Senate has no yearly index: its
+    filing date's year."""
+
+    report_date: Mapped[date | None] = mapped_column(Date)
+    """Senate only: the day eFD's title says the report is "for" — on an
+    amendment, the original's, which is how the two are matched."""
+    amendment: Mapped[int | None] = mapped_column(SmallInteger)
+    """Senate only: ``1`` for "(Amendment 1)"; null on an original. An
+    amendment restates the whole report."""
 
     source_key: Mapped[str] = mapped_column(Text)
-    """The raw-store key of the index that first listed it."""
+    """The raw-store key of the index that first listed it: for the Senate, the
+    search page."""
 
     document_url: Mapped[str | None] = mapped_column(Text)
     """Where the chamber serves the filing itself: the "view original" link."""
     document_key: Mapped[str | None] = mapped_column(Text)
-    """The raw-store key of its PDF, once fetched."""
+    """The raw-store key of its PDF, or its eFD page, once fetched. Null for a
+    Senate paper filing, which is linked, never fetched."""
     pages: Mapped[int | None] = mapped_column(SmallInteger)
     extraction: Mapped[str | None] = mapped_column(Text)
-    """How its rows were read: ``text``, ``ocr``, or ``none`` (a scan, with no
-    OCR installed when it was read)."""
+    """How its rows were read: ``text``, ``ocr``, ``html`` (a Senate report
+    filed online), or ``none`` (a scan with no OCR installed when it was read,
+    or a Senate paper filing)."""
     parser_version: Mapped[int | None] = mapped_column(SmallInteger)
     """The :data:`~app.ingestion.congress.ptr.PARSER_VERSION` that read it;
     null until read."""
@@ -122,7 +137,8 @@ class CongressFiling(Base):
         CheckConstraint(REPORT_TYPE_CHECK, name="report_type_is_known"),
         CheckConstraint("doc_id <> ''", name="doc_id_is_not_empty"),
         CheckConstraint(
-            "extraction IS NULL OR extraction IN ('text', 'ocr', 'none')",
+            "extraction IS NULL OR extraction IN ('text', 'ocr', 'html', 'none')",
             name="extraction_is_known",
         ),
+        CheckConstraint("amendment IS NULL OR amendment >= 1", name="amendment_is_positive"),
     )

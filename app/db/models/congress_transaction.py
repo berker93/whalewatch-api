@@ -1,7 +1,9 @@
 """One trade a member of Congress reported, as read from their PTR's PDF.
 
 A row per line of the PTR's transaction grid (:mod:`app.ingestion.congress.ptr`),
-keyed ``(filing_id, line)``, written by ``ingest-house-ptrs``:
+keyed ``(filing_id, line)``, written by ``ingest-house-ptrs`` and, from the table
+of a Senate report filed online, ``ingest-senate-ptrs``
+(:mod:`app.ingestion.congress.senate_ptr`):
 
 - ``parsed``: read in full — from the text layer, exactly, or by OCR with
   confidence — or accepted by a person in the review queue.
@@ -9,7 +11,8 @@ keyed ``(filing_id, line)``, written by ``ingest-house-ptrs``:
   could be read, and why not the rest (``problems``), for the admin review
   queue. Never dropped.
 - ``placeholder``: the one row of a filing from which no line could be read —
-  a scan with OCR not installed, handwriting, a grid that is not the form's.
+  a scan with OCR not installed, handwriting, a grid that is not the form's,
+  or a Senate paper filing, which eFD serves only as page images.
   Every field of the trade is null; the filing it belongs to carries the
   member, the date and ``document_url``, so the feed can still say "filing not
   machine-readable — view original" rather than leave the member out.
@@ -80,12 +83,13 @@ class CongressTransaction(Base):
         BigInteger, ForeignKey("congress_filing.id", ondelete="CASCADE")
     )
     line: Mapped[int] = mapped_column(SmallInteger)
-    """1-based, in the order the PTR lists them. A placeholder is line 1."""
+    """1-based, in the order the PTR lists them; a Senate report's own ``#``.
+    A placeholder is line 1."""
     page: Mapped[int | None] = mapped_column(SmallInteger)
     parse_status: Mapped[str] = mapped_column(Text)
     """One :class:`~app.ingestion.congress.ptr.RowStatus` value."""
     extraction: Mapped[str] = mapped_column(Text)
-    """``text``, ``ocr``; ``none`` on a placeholder no reader could read."""
+    """``text``, ``ocr``, ``html``; ``none`` on a placeholder no reader could read."""
 
     owner: Mapped[str | None] = mapped_column(Text)
     """``SP`` spouse, ``JT`` joint, ``DC`` dependent child; null for the member."""
@@ -93,7 +97,8 @@ class CongressTransaction(Base):
     ticker: Mapped[str | None] = mapped_column(Text)
     """As the filer wrote it in parentheses; never on a scan."""
     asset_type: Mapped[str | None] = mapped_column(Text)
-    """The House's two-letter code: ``ST``, ``OP``, ``GS``…"""
+    """The House's two-letter code: ``ST``, ``OP``, ``GS``… A Senate row's
+    words are mapped to it (:data:`~app.ingestion.congress.senate_ptr.ASSET_TYPES`)."""
     transaction_type: Mapped[str | None] = mapped_column(Text)
     transaction_date: Mapped[date | None] = mapped_column(Date)
     notification_date: Mapped[date | None] = mapped_column(Date)

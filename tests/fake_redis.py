@@ -51,11 +51,14 @@ class FakeRedis:
         exat: int | None = None,
         *,
         xx: bool = False,
+        nx: bool = False,
         keepttl: bool = False,
         **_: Any,
     ) -> bool | None:
         self._send("set")
         if xx and key not in self.values:
+            return None
+        if nx and key in self.values:
             return None
         self.values[key] = value
         if keepttl and key in self.ttls:

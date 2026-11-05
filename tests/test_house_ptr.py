@@ -241,7 +241,7 @@ def test_a_long_ptr_reads_every_row_on_every_page() -> None:
     rows = _read("20029134")
 
     assert len(rows) == 30
-    assert sorted({row.page for row in rows}) == [1, 2, 3, 4]
+    assert {row.page for row in rows} == {1, 2, 3, 4}
     assert [row.line for row in rows] == list(range(1, 31))
     assert all(row.status is RowStatus.PARSED for row in rows)
     etf = rows[7]

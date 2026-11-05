@@ -1286,6 +1286,52 @@ of its lines. A missing PDF (indexed, not up yet) is tried again next run.
 Exit 1 if a filing failed (the others are still read), or with no fetcher for
 a PDF not archived yet.
 
+### `ingest-senate-ptrs [--from DATE [--to DATE] | --catch-up | --no-search] [--doc-id UUID]... [--limit N] [--reparse]`
+
+Senate eFD's PTRs, through the US fetcher, in one eFD session (terms accepted,
+`csrftoken` held, re-accepted once when it expires): searches the window of
+filing dates 100 reports a page — senators and former senators, PTRs only —
+archiving each page under `raw/senate-efd/search/`, and upserts every report
+into `congress_filing` (`chamber` `senate`, the report's UUID as `doc_id`, the
+role as `office`, and from the title `report_date` and `amendment`). Then it
+reads every Senate filing not read yet
+([app/ingestion/congress/senate_ptrs.py](app/ingestion/congress/senate_ptrs.py)):
+
+- **Filed online**: the page from the archive if it is there, else fetched and
+  archived (`raw/senate-efd/report/ptr/{uuid}.html`), then its one table read
+  into `congress_transaction` rows, `extraction` `html`. Owners map to `SP`,
+  `JT`, `DC`; asset types to the House's codes (`ST`, `OP`, `CS`, `GS`, …); an
+  exchange is the asset given, with the one received in `description`. A value
+  eFD had not used before (an asset type, an amount off the bands) sends that
+  row to the review queue, and the rest are read. Checked against 583 real
+  reports from 2021–2026: every row read.
+- **Paper**: scanned page images. Never fetched: `document_url` links to eFD
+  and the filing gets one placeholder row, as an unreadable House scan does.
+
+**A layout change stops the run, never returns zero rows.** A table with
+other columns, a row of other than nine cells, a count ("(7 transactions
+total)") that does not match the rows, a search row not eFD's shape: the run
+fails with `SenateLayoutError` naming the archived page, logs `ops.alert`, and
+posts to `OPS_ALERT_WEBHOOK_URL` (once a day per kind). The filing stays
+unread, so the run after the parser fix reads it; a page from the archive is
+fetched once more before it is called a layout change. A catch-up that finds
+no Senate PTR in 35 days says so the same way (`senate-efd-quiet`): the
+longest gap from 2021 to 2026 was 27.
+
+The watermark is the newest filing date a complete search listed; a catch-up
+searches from 14 days before it (a paper PTR is listed under the day it was
+received) to today. `--from` with no `--to` moves it; a window ending before
+today does not. `--no-search --reparse` re-reads the archive without asking
+eFD anything. Requests are a second apart. Exit 1 on a layout change, a
+failed report (the others are still read), a quiet catch-up, or no fetcher.
+
+```
+ingest-senate-ptrs  2026-10-22..2026-11-05  9 listed of 9 counted on 1 pages  6 new  0 changed
+  this run   5/6 filings read (83.3%), 0 only in review, 1 placeholders (paper), 0 failed; rows 41 parsed, 0 needs review
+  all Senate 612/701 filings read (87.3%)
+  watermark 2026-11-03 -> 2026-11-04
+```
+
 ### `runs [--job NAME] [--limit N]`
 
 Lists the most recent job runs, newest first, from `ingestion_run`. Every verb
@@ -1404,6 +1450,7 @@ body inside `track_run`, and binds `job_name` and `run_id` on every line.
 | `ingest_form4` | ingestion | `ingest-form4` | `ingest-form4` |
 | `ingest_house_index` | ingestion | `ingest-house-index --catch-up` | `ingest-house-index` |
 | `ingest_house_ptrs` | ingestion | `ingest-house-ptrs` | `ingest-house-ptrs` |
+| `ingest_senate_ptrs` | ingestion | `ingest-senate-ptrs --catch-up` | `ingest-senate-ptrs` |
 | `resolve_cusips` | ingestion | `resolve-cusips` | `resolve-cusips` |
 | `fetch_prices` | ingestion | `fetch-quotes` | `fetch-quotes` |
 | `recompute_positions` | compute | `recompute` | `recompute` |
@@ -1451,10 +1498,17 @@ stores and sends is UTC (`enable_utc`), as every `timestamptz` is.
 | `poll-13f` | `poll_13f` → discover → ingest → recompute → refresh | every 30 minutes in a filing window (1–20 Feb, May, Aug, Nov), at 06:00 otherwise |
 | `daily-form4` | `daily_form4` → `crawl_form4_daily` → `ingest_form4` | weekdays 22:00 |
 | `fetch-prices` | `fetch_prices` | weekdays 21:30 |
+| `senate-efd` | `poll_senate_efd` → `ingest_senate_ptrs` | every 2 hours (minute 10) on a day the Senate sits, at 06:10 otherwise; never without a US fetcher |
 | `resolve-cusips` | `resolve_cusips` | daily 03:00 |
 | `refresh-matviews` | `refresh_matviews` | daily 04:00, and after every 13F ingest that published |
 
-Beat sends a task, not a chain, so `poll_13f` and `daily_form4` are triggers:
+Which days the Senate sits is its published calendar, written out for 2026
+in [app/ingestion/congress/senate_calendar.py](app/ingestion/congress/senate_calendar.py):
+weekdays from convening to the target adjournment, less the state work periods
+and federal holidays. A year not written out counts every weekday, and logs
+`senate_calendar.unknown_year` so someone adds it.
+
+Beat sends a task, not a chain, so `poll_13f`, `daily_form4` and `poll_senate_efd` are triggers:
 on `compute`, they apply their chain and return `{"chain": ..., "task_id":
 <last link>}` at once, with no lock or run row of their own. `poll-13f` fires
 every half hour all year and the task decides whether to poll

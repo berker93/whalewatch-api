@@ -28,6 +28,13 @@ and returns at once (``poll_13f``, ``daily_form4`` in app/jobs/tasks.py).
 Each entry names its task by its registered name, a string, so this module
 imports no task and the schedule cannot be the reason a task module was loaded.
 
+The Senate poll
+---------------
+Senate eFD is read every two hours on a day the Senate sits, and once a day
+otherwise (:func:`should_poll_senate_now`, by the published session calendar in
+app/ingestion/congress/senate_calendar.py). One entry and the decision in the
+task, for the 13F poll's reasons.
+
 Every entry expires before it is next sent: one nobody consumed, behind a
 stopped worker, is dropped rather than piling up to fire all at once later.
 """
@@ -41,6 +48,7 @@ from zoneinfo import ZoneInfo
 from celery.schedules import crontab
 
 from app.core.periods import in_filing_window
+from app.ingestion.congress.senate_calendar import in_session
 
 #: The zone every crontab below is read in: the app's ``timezone``, and EDGAR's.
 TIMEZONE: Final = "America/New_York"
@@ -62,6 +70,30 @@ POLL_EXPIRES_SECONDS: Final = 25 * 60
 #: For entries sent once a day: half a day late is still worth running, and the
 #: next one is never more than a day behind it.
 DAILY_EXPIRES_SECONDS: Final = 12 * 60 * 60
+
+
+#: How often the Senate eFD entry fires, in hours, and the hour (New York) whose
+#: send reads eFD on a day the Senate does not sit: early, like the 13F poll's.
+SENATE_POLL_EVERY_HOURS: Final = 2
+SENATE_DAILY_HOUR: Final = 6
+
+#: Under an hour, so a send runs inside the hour it was sent in and
+#: :func:`should_poll_senate_now` can tell the 06:10 send from the 08:10 one.
+SENATE_POLL_EXPIRES_SECONDS: Final = 50 * 60
+
+
+def should_poll_senate_now(now: datetime) -> bool:
+    """Whether the Senate eFD poll sent at ``now`` should read eFD.
+
+    Always, on a day the Senate sits; otherwise only for the send in
+    :data:`SENATE_DAILY_HOUR`. Both in New York time, whatever zone ``now`` is in.
+
+    :raises ValueError: ``now`` is naive, so names no moment.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError(f"{now.isoformat()} has no time zone: say which moment it is")
+    local = now.astimezone(_ZONE)
+    return in_session(local.date()) or local.hour == SENATE_DAILY_HOUR
 
 
 def should_poll_now(now: datetime) -> bool:
@@ -113,6 +145,14 @@ BEAT_SCHEDULE: Final[dict[str, dict[str, Any]]] = {
         "task": "app.jobs.tasks.fetch_prices",
         "schedule": crontab(minute=30, hour=21, day_of_week="mon-fri"),
         "options": {"expires": DAILY_EXPIRES_SECONDS},
+    },
+    # Senate eFD: every two hours on a day the Senate sits, at 06:10 otherwise.
+    # The task decides which (should_poll_senate_now), and does nothing
+    # without a US fetcher. Ten past, off the 13F poll's half hours.
+    "senate-efd": {
+        "task": "app.jobs.tasks.poll_senate_efd",
+        "schedule": crontab(minute=10, hour=f"*/{SENATE_POLL_EVERY_HOURS}"),
+        "options": {"expires": SENATE_POLL_EXPIRES_SECONDS},
     },
     # When nothing else wants the ingestion worker or OpenFIGI.
     "resolve-cusips": {

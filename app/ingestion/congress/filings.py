@@ -80,7 +80,7 @@ HOUSE: Final = "house"
 #: Years before the watermark's that a catch-up reads again. See the module docstring.
 LOOKBACK_YEARS: Final = 2
 
-#: Rows per INSERT: thirteen parameters a row, well under asyncpg's 32,767.
+#: Rows per INSERT: at most fifteen parameters a row, well under asyncpg's 32,767.
 _BATCH: Final = 2_000
 
 #: What a re-read may change. Not ``source_key``, which says where a row was
@@ -240,16 +240,26 @@ async def store_house_filings(
     ``ptrs`` must not repeat a doc id (the parser collapses repeats): Postgres
     refuses an upsert that would write one row twice. Does not commit.
     """
+    return await upsert_filings(session, [_row(ptr, source_key) for ptr in ptrs], _CHANGING)
+
+
+async def upsert_filings(
+    session: AsyncSession, rows: Sequence[dict[str, Any]], changing: Sequence[str]
+) -> Stored:
+    """Upsert ``congress_filing`` ``rows`` on ``(chamber, doc_id)``, updating
+    ``changing`` only where one of them differs, and ``updated_at`` with them.
+
+    Either chamber's: ``rows`` must not repeat a key. Does not commit.
+    """
     inserted = updated = 0
-    for start in range(0, len(ptrs), _BATCH):
-        rows = [_row(ptr, source_key) for ptr in ptrs[start : start + _BATCH]]
-        insert = pg_insert(CongressFiling).values(rows)
-        table = CongressFiling.__table__.c
+    table = CongressFiling.__table__.c
+    for start in range(0, len(rows), _BATCH):
+        insert = pg_insert(CongressFiling).values(list(rows[start : start + _BATCH]))
         statement: ReturningInsert[tuple[bool]] = insert.on_conflict_do_update(
             index_elements=[CongressFiling.chamber, CongressFiling.doc_id],
-            set_={name: insert.excluded[name] for name in _CHANGING} | {"updated_at": func.now()},
-            where=tuple_(*(table[name] for name in _CHANGING)).is_distinct_from(
-                tuple_(*(insert.excluded[name] for name in _CHANGING))
+            set_={name: insert.excluded[name] for name in changing} | {"updated_at": func.now()},
+            where=tuple_(*(table[name] for name in changing)).is_distinct_from(
+                tuple_(*(insert.excluded[name] for name in changing))
             ),
         ).returning(literal_column("xmax = 0", Boolean))
         # A row the WHERE skipped returns nothing; an insert has no xmax yet.
@@ -258,7 +268,7 @@ async def store_house_filings(
                 inserted += 1
             else:
                 updated += 1
-    return Stored(inserted=inserted, updated=updated, unchanged=len(ptrs) - inserted - updated)
+    return Stored(inserted=inserted, updated=updated, unchanged=len(rows) - inserted - updated)
 
 
 def _row(ptr: IndexEntry, source_key: str) -> dict[str, Any]:

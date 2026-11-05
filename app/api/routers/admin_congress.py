@@ -181,6 +181,7 @@ async def coverage(_: AdminDep, session: SessionDep) -> list[AdminPtrCoverage]:
                 review_only=counted.review_only,
                 by_text=counted.by_text,
                 by_ocr=counted.by_ocr,
+                by_html=counted.by_html,
                 placeholders=counted.placeholders,
                 missing=counted.missing,
                 rows_parsed=counted.rows_parsed,

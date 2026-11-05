@@ -32,7 +32,9 @@ fetcher's failures propagate as they are.
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -54,6 +56,12 @@ _SEARCH_DATA: Final = "/search/report/data/"
 #: eFD's ``report_types`` value for a Periodic Transaction Report — the
 #: STOCK Act filing a senator makes within 45 days of a trade.
 PTR_REPORT_TYPE: Final = 11
+
+#: eFD's ``filer_types``: who filed. Senators and former senators — a former
+#: senator's late PTR is still a senator's trade — and not candidates, nor the
+#: Senate officers and staff who file PTRs too.
+SENATOR: Final = 1
+FORMER_SENATOR: Final = 5
 
 #: The largest page the search endpoint serves. It is a DataTables backend,
 #: and quietly truncates a larger ``length`` to this.
@@ -85,7 +93,12 @@ class Archived:
 
     key: str
     body: bytes
-    fetched_at: datetime
+    fetched_at: datetime | None
+    """When eFD served it; ``None`` when it was read from the archive."""
+
+    @property
+    def fetched(self) -> bool:
+        return self.fetched_at is not None
 
 
 class SenateEfd:
@@ -107,8 +120,13 @@ class SenateEfd:
         user_agent: str,
         base_url: str = EFD_BASE,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        interval: float = 0.0,
     ) -> None:
+        """:param interval: The fewest seconds between two requests to eFD, so
+        a backfill of thousands of reports does not look like an attack."""
         self._session = CookieSession(fetcher)
+        self._interval = interval
+        self._last_sent: float | None = None
         self._store = store
         self._user_agent = user_agent
         self._base = base_url.rstrip("/")
@@ -125,7 +143,7 @@ class SenateEfd:
         """
         self._session.clear()
         self._accepted = False
-        home = await self._session.fetch(self._request(_HOME))
+        home = await self._fetch(self._request(_HOME))
         if home.status != 200:
             raise SenateEfdSessionError(
                 f"eFD answered {home.status} for its agreement page"
@@ -136,7 +154,7 @@ class SenateEfd:
         if token is None:
             raise SenateEfdSessionError("eFD's agreement page carried no CSRF token")
 
-        accepted = await self._session.fetch(
+        accepted = await self._fetch(
             self._request(
                 _HOME,
                 method="POST",
@@ -162,6 +180,7 @@ class SenateEfd:
         start: int = 0,
         length: int = MAX_SEARCH_PAGE,
         report_types: Sequence[int] = (PTR_REPORT_TYPE,),
+        filer_types: Sequence[int] = (SENATOR, FORMER_SENATOR),
     ) -> Archived:
         """One page of reports filed from ``submitted_from``, archived, as served.
 
@@ -179,7 +198,7 @@ class SenateEfd:
                     ("start", str(start)),
                     ("length", str(length)),
                     ("report_types", _js_list(report_types)),
-                    ("filer_types", "[]"),
+                    ("filer_types", _js_list(filer_types)),
                     ("submitted_start_date", _efd_datetime(submitted_from)),
                     (
                         "submitted_end_date",
@@ -206,22 +225,30 @@ class SenateEfd:
         )
         return Archived(key=key, body=response.body, fetched_at=fetched_at)
 
-    async def report(self, link: str, *, overwrite: bool = False) -> Archived:
+    def report_url(self, link: str) -> str:
+        """The whole URL of a report ``link``: what a "view original" opens."""
+        return self._base + _report_path(urljoin(self._base + "/", link))[0]
+
+    async def report(
+        self, link: str, *, overwrite: bool = False, archived: bool = False
+    ) -> Archived:
         """One report page — ``/search/view/ptr/{id}/`` — archived, as served.
 
         ``link`` is a path or a whole eFD URL, as a search row's link has it.
         Archived write-once like every raw document, unless ``overwrite``.
+
+        :param archived: Read it from the archive when it is there, and fetch
+            only when it is not: a re-parse, and a retry of a run that stopped.
         """
-        path = _path(urljoin(self._base + "/", link))
-        match = _REPORT_PATH.match(path)
-        if match is None:
-            raise ValueError(f"{link!r} is not an eFD report link")
-        kind, report_id = match.groups()
+        path, kind, report_id = _report_path(urljoin(self._base + "/", link))
+        key = senate_efd_report_key(kind, report_id)
+        if archived and not overwrite and await self._store.exists(key):
+            return Archived(key=key, body=await self._store.get(key), fetched_at=None)
 
         response = await self._send(lambda: self._request(path))
         _expect(response, "text/html", what=f"{kind} report {report_id}")
-        key = await self._store.put(
-            senate_efd_report_key(kind, report_id),
+        await self._store.put(
+            key,
             response.body,
             "text/html",
             overwrite=overwrite,
@@ -238,13 +265,13 @@ class SenateEfd:
         """
         if not self._accepted:
             await self.accept_terms()
-        response = await self._session.fetch(build())
+        response = await self._fetch(build())
         if not _session_refused(response):
             return response
 
         logger.info("senate_efd.session_expired", status=response.status, at=_path(response.url))
         await self.accept_terms()
-        response = await self._session.fetch(build())
+        response = await self._fetch(build())
         if _session_refused(response):
             raise SenateEfdSessionError(
                 f"eFD refused a session it had just accepted: {response.status} at "
@@ -252,6 +279,15 @@ class SenateEfd:
                 status=response.status,
             )
         return response
+
+    async def _fetch(self, request: FetchRequest) -> FetchResponse:
+        """``request`` in the session, at least :attr:`_interval` after the last."""
+        if self._interval and self._last_sent is not None:
+            wait = self._last_sent + self._interval - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+        self._last_sent = time.monotonic()
+        return await self._session.fetch(request)
 
     def _request(
         self,
@@ -279,6 +315,19 @@ class SenateEfd:
         if token is None:
             raise SenateEfdSessionError("no csrftoken cookie in the session")
         return token
+
+
+def _report_path(url: str) -> tuple[str, str, str]:
+    """A report URL's path, kind and id.
+
+    :raises ValueError: It is not an eFD report link.
+    """
+    path = _path(url)
+    match = _REPORT_PATH.match(path)
+    if match is None:
+        raise ValueError(f"{url!r} is not an eFD report link")
+    kind, report_id = match.groups()
+    return path, kind, report_id
 
 
 def _csrf_token(page: bytes) -> str | None:

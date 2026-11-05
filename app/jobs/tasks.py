@@ -14,6 +14,7 @@ task                       CLI verb                    job
 ``ingest_form4``           ``ingest-form4``            app/jobs/form4.py
 ``ingest_house_index``     ``ingest-house-index``      app/jobs/congress.py
 ``ingest_house_ptrs``      ``ingest-house-ptrs``       app/jobs/congress.py
+``ingest_senate_ptrs``     ``ingest-senate-ptrs``      app/jobs/congress.py
 ``resolve_cusips``         ``resolve-cusips``          app/jobs/enrichment.py
 ``fetch_prices``           ``fetch-quotes``            app/jobs/enrichment.py
 ``recompute_positions``    ``recompute``               app/jobs/derived.py
@@ -46,7 +47,8 @@ follows. A link whose predecessor did nothing does nothing too, and says so.
 :func:`form4_chain` is the daily crawl and then its ingest.
 
 Beat sends a task, not a chain, so :func:`poll_13f` and :func:`daily_form4`
-apply them (app/jobs/schedule.py). They are not jobs: no lock and no row of
+apply them (app/jobs/schedule.py), as :func:`poll_senate_efd` applies
+:func:`ingest_senate_ptrs` when it is time to. They are not jobs: no lock and no row of
 their own, since each link takes its own job's lock and writes its own row.
 
 The exceptions are :func:`ping`, which checks the broker and the worker and
@@ -79,7 +81,7 @@ from app.ingestion.insider_discovery import new_york_today
 from app.jobs import accounts, alerts, congress, derived, enrichment, form4, thirteen_f
 from app.jobs.celery_app import COMPUTE_QUEUE, INGESTION_QUEUE
 from app.jobs.retry import MAX_RETRIES, is_transient, retry_countdown
-from app.jobs.schedule import should_poll_now
+from app.jobs.schedule import should_poll_now, should_poll_senate_now
 from app.jobs.tracking import JobLocked, Ran
 
 logger = get_logger(__name__)
@@ -221,6 +223,14 @@ def ingest_house_index(self: Task[Any, Any]) -> Summary:
 def ingest_house_ptrs(self: Task[Any, Any], limit: int | None = None) -> Summary:
     """``ingest-house-ptrs``: the PDFs of House filings not read yet."""
     return _run(self, congress.ingest_house_ptrs_job, limit=limit)
+
+
+@shared_task(bind=True, queue=INGESTION_QUEUE, max_retries=MAX_RETRIES)
+def ingest_senate_ptrs(self: Task[Any, Any], limit: int | None = None) -> Summary:
+    """``ingest-senate-ptrs --catch-up``: eFD's PTRs since the watermark, and
+    every Senate filing not read yet. A layout change fails it the first time,
+    and tells ops."""
+    return _run(self, congress.ingest_senate_ptrs_job, today=new_york_today(), limit=limit)
 
 
 # --- enrichment --------------------------------------------------------------
@@ -447,6 +457,22 @@ def daily_form4(self: Task[Any, Any]) -> Summary:
     """Beat's ``daily-form4``: :func:`form4_chain`, the crawl since the
     watermark and then its ingest."""
     return _enqueued("form4", form4_chain())
+
+
+@shared_task(bind=True, queue=COMPUTE_QUEUE)
+def poll_senate_efd(self: Task[Any, Any]) -> Summary:
+    """Beat's ``senate-efd``: :func:`ingest_senate_ptrs`, when
+    :func:`~app.jobs.schedule.should_poll_senate_now` says so.
+
+    Sent every two hours; reads eFD each time on a day the Senate sits and
+    once a day otherwise. Never without a US fetcher, which eFD needs: that is
+    a deployment not finished, not a run to fail every two hours.
+    """
+    if get_settings().us_fetcher_backend == "none":
+        return _skipped("ingest-senate-ptrs", "no US fetcher")
+    if not should_poll_senate_now(_now()):
+        return {"chain": "senate-efd", "skipped": "the Senate is not sitting"}
+    return _enqueued("senate-efd", chain(ingest_senate_ptrs.si()))
 
 
 # --- health ------------------------------------------------------------------

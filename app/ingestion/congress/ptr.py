@@ -53,6 +53,9 @@ class Extraction(StrEnum):
 
     TEXT = "text"
     OCR = "ocr"
+    HTML = "html"
+    """From the table of a report filed online, as Senate eFD serves it
+    (:mod:`app.ingestion.congress.senate_ptr`): exact, like ``text``."""
     NONE = "none"
     """Not at all: no text layer, and OCR either not installed or unable."""
 
@@ -123,8 +126,9 @@ class PtrRow:
 
     line: int
     """1-based, in the order the document lists them."""
-    page: int
-    """1-based page the row starts on."""
+    page: int | None
+    """1-based page the row starts on; ``None`` for a row of an HTML report,
+    which has no pages."""
     status: RowStatus
     owner: str | None = None
     """``SP``, ``JT`` or ``DC``; ``None`` for the filer."""

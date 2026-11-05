@@ -10,13 +10,17 @@ from zoneinfo import ZoneInfo
 import pytest
 from celery.schedules import crontab
 
+from app.ingestion.congress.senate_calendar import in_session
 from app.jobs import tasks
 from app.jobs.schedule import (
     BEAT_SCHEDULE,
     POLL_EVERY_MINUTES,
     POLL_EXPIRES_SECONDS,
+    SENATE_POLL_EVERY_HOURS,
+    SENATE_POLL_EXPIRES_SECONDS,
     TIMEZONE,
     should_poll_now,
+    should_poll_senate_now,
 )
 from tests.test_celery_app import _celery
 
@@ -81,6 +85,57 @@ def test_a_naive_moment_is_refused() -> None:
         should_poll_now(datetime(2026, 10, 24, 6, 0))
 
 
+# --- should_poll_senate_now ---------------------------------------------------
+
+
+@pytest.mark.parametrize("hour", range(0, 24, SENATE_POLL_EVERY_HOURS))
+def test_every_send_on_a_sitting_day_reads_efd(hour: int) -> None:
+    # Tuesday 17 November 2026: back from the election recess.
+    assert should_poll_senate_now(_ny(2026, 11, 17, hour, 10))
+
+
+@pytest.mark.parametrize(
+    "day",
+    [
+        (2026, 11, 14),  # a Saturday
+        (2026, 10, 14),  # a Wednesday in the October to election recess
+        (2026, 8, 20),  # the August state work period
+        (2026, 11, 11),  # Veterans Day
+        (2026, 12, 21),  # after the target adjournment
+        (2026, 1, 2),  # before the session convenes
+    ],
+    ids=str,
+)
+def test_on_a_day_the_senate_does_not_sit_only_the_six_oclock_send_reads(
+    day: tuple[int, int, int],
+) -> None:
+    assert not in_session(_ny(*day).date())
+    assert should_poll_senate_now(_ny(*day, 6, 10))
+    assert not should_poll_senate_now(_ny(*day, 8, 10))
+    assert not should_poll_senate_now(_ny(*day, 4, 10))
+
+
+def test_a_year_with_no_calendar_counts_every_weekday_as_sitting() -> None:
+    assert in_session(_ny(2027, 3, 3).date())
+    assert not in_session(_ny(2027, 3, 6).date())
+
+
+def test_whose_sitting_day_it_is_is_new_yorks() -> None:
+    # 23:10 on Friday 13 November in New York, already Saturday in UTC.
+    assert should_poll_senate_now(datetime(2026, 11, 14, 4, 10, tzinfo=UTC))
+    assert not should_poll_senate_now(datetime(2026, 11, 15, 4, 10, tzinfo=UTC))
+
+
+def test_a_senate_send_expires_inside_its_own_hour() -> None:
+    """What lets should_poll_senate_now tell the 06:10 send from a late 04:10 one."""
+    assert SENATE_POLL_EXPIRES_SECONDS < 60 * 60 - 10 * 60 + 1
+
+
+def test_a_naive_moment_is_refused_by_the_senate_poll_too() -> None:
+    with pytest.raises(ValueError, match="no time zone"):
+        should_poll_senate_now(datetime(2026, 11, 17, 6, 10))
+
+
 # --- the entries -------------------------------------------------------------
 
 
@@ -118,6 +173,7 @@ def test_every_entry_names_a_task_that_exists(name: str) -> None:
         ("refresh-matviews", "refresh_matviews", crontab(minute=0, hour=4)),
         ("purge-accounts", "purge_accounts", crontab(minute=0, hour=5)),
         ("billing", "run_billing", crontab(minute=15)),
+        ("senate-efd", "poll_senate_efd", crontab(minute=10, hour="*/2")),
         ("snapshot-metrics", "snapshot_metrics", crontab(minute=5, hour=20)),
     ],
 )
@@ -136,6 +192,7 @@ _SECONDS_BETWEEN_SENDS = {
     "refresh-matviews": 24 * 60 * 60,
     "purge-accounts": 24 * 60 * 60,
     "billing": 60 * 60,
+    "senate-efd": SENATE_POLL_EVERY_HOURS * 60 * 60,
     "alert-emails": 60,
     "snapshot-metrics": 24 * 60 * 60,
 }

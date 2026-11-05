@@ -323,6 +323,14 @@ class Settings(BaseSettings):
     ptr_ocr: Literal["tesseract", "none"] = "tesseract"
     tesseract_command: str = "tesseract"
 
+    # --- ops alerts -----------------------------------------------------------
+    # Where a job says something is broken that no retry will mend — Senate
+    # eFD's layout changing under ingest-senate-ptrs (app/ops/alerts.py): an
+    # incoming webhook that takes {"text": "..."}, as Slack's, Mattermost's and
+    # Discord's (with /slack on the end) do. Unset, the alert is the ERROR line
+    # in the log and the failed ingestion_run row, and nothing else.
+    ops_alert_webhook_url: SecretStr | None = None
+
     @field_validator("openfigi_api_key", mode="before")
     @classmethod
     def _blank_key_is_no_key(cls, value: object) -> object:
@@ -338,6 +346,7 @@ class Settings(BaseSettings):
         "postmark_server_token",
         "postmark_webhook_secret",
         "email_unsubscribe_secret",
+        "ops_alert_webhook_url",
         mode="before",
     )
     @classmethod

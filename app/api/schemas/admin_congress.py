@@ -188,6 +188,10 @@ class AdminPtrCoverage(BaseModel):
         description="Lines read from the text layer, parsed or in review.", examples=[4790]
     )
     by_ocr: int = Field(description="Lines read by OCR, parsed or in review.", examples=[60])
+    by_html: int = Field(
+        description="Lines read from a Senate report's table, parsed or in review.",
+        examples=[0],
+    )
     placeholders: int = Field(description="With a placeholder: no line read.", examples=[702])
     missing: int = Field(description="Whose PDF the chamber does not have up yet.", examples=[16])
     rows_parsed: int = Field(description="Lines read in full, or accepted.", examples=[61204])

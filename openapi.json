@@ -13437,6 +13437,14 @@
               60
             ]
           },
+          "by_html": {
+            "type": "integer",
+            "title": "By Html",
+            "description": "Lines read from a Senate report's table, parsed or in review.",
+            "examples": [
+              0
+            ]
+          },
           "placeholders": {
             "type": "integer",
             "title": "Placeholders",
@@ -13494,6 +13502,7 @@
           "review_only",
           "by_text",
           "by_ocr",
+          "by_html",
           "placeholders",
           "missing",
           "rows_parsed",

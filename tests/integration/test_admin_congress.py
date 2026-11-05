@@ -391,6 +391,7 @@ async def test_coverage_counts_each_chambers_filings_and_lines(
         "review_only": 0,
         "by_text": 1,
         "by_ocr": 1,
+        "by_html": 0,
         "placeholders": 1,
         "missing": 0,
         "rows_parsed": 2,

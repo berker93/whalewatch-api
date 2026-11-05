@@ -3,7 +3,8 @@ audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
 fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user,
 delete-user, restore-user, purge-accounts, billing, create-admin, disable-admin, snapshot-metrics,
-check-email-domain, fetcher-check, ingest-house-index, ingest-house-ptrs, email-suppression.
+check-email-domain, fetcher-check, ingest-house-index, ingest-house-ptrs, ingest-senate-ptrs,
+email-suppression.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -46,6 +47,8 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli ingest-house-index --from-year 2012
     uv run python -m app.cli ingest-house-index --catch-up
     uv run python -m app.cli ingest-house-ptrs --limit 200
+    uv run python -m app.cli ingest-senate-ptrs --from 2012-01-01
+    uv run python -m app.cli ingest-senate-ptrs --catch-up
     uv run python -m app.cli create-partitions --through 2028
     uv run python -m app.cli detect-clusters
     uv run python -m app.cli create-user --email ada@example.com --name "Ada Lovelace"
@@ -82,7 +85,8 @@ run's ``metrics``.
 The verbs that are also Celery tasks
 ------------------------------------
 ``discover-filings``, ``backfill``, ``crawl-form4``, ``ingest-form4``,
-``ingest-house-index``, ``ingest-house-ptrs``, ``resolve-cusips``, ``fetch-quotes``,
+``ingest-house-index``, ``ingest-house-ptrs``, ``ingest-senate-ptrs``, ``resolve-cusips``,
+``fetch-quotes``,
 ``recompute`` and
 ``refresh-views`` are each a call to a ``@tracked_task`` job (app/jobs/), the
 same call its task makes (app/jobs/tasks.py), with the arguments parsed on the
@@ -206,6 +210,8 @@ from app.ingestion.congress.ptrs import DEFAULT_CONCURRENCY as PTR_CONCURRENCY
 from app.ingestion.congress.ptrs import Coverage, FilingRead, PtrIngest
 from app.ingestion.congress.ptrs import Outcome as PtrOutcome
 from app.ingestion.congress.senate_efd import SenateEfd, SenateEfdError
+from app.ingestion.congress.senate_ptr import SenateLayoutError
+from app.ingestion.congress.senate_ptrs import FIRST_DAY as SENATE_FIRST_DAY
 from app.ingestion.discovery import (
     FilerDiscovery,
     QueuedFiling,
@@ -303,7 +309,13 @@ from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_invest
 from app.jobs.accounts import purge_accounts, run_billing, snapshot_metrics
 from app.jobs.alerts import emit_alerts, send_alert_emails
 from app.jobs.cache import invalidate_cache
-from app.jobs.congress import HousePtrRun, ingest_house_index_job, ingest_house_ptrs_job
+from app.jobs.congress import (
+    HousePtrRun,
+    SenatePtrRun,
+    ingest_house_index_job,
+    ingest_house_ptrs_job,
+    ingest_senate_ptrs_job,
+)
 from app.jobs.derived import filer_id_of, recompute_positions, refresh_matviews
 from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
 from app.jobs.errors import JobError
@@ -1162,6 +1174,15 @@ def crawl_form4_command(
         raise typer.Exit(code=1) from failure
     if failed:
         raise typer.Exit(code=1)
+
+
+def _day(value: str) -> date:
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as failure:
+        raise typer.BadParameter(
+            f"{value!r} is not a date: expected one like 2022-06-09"
+        ) from failure
 
 
 def _usage(message: str) -> NoReturn:
@@ -2316,7 +2337,7 @@ def _unclean(read: FilingRead) -> bool:
 
 
 def _ptr_detail(read: FilingRead) -> str:
-    if read.outcome in (PtrOutcome.TEXT, PtrOutcome.OCR):
+    if read.outcome in (PtrOutcome.TEXT, PtrOutcome.OCR, PtrOutcome.HTML):
         return f"{read.parsed:>4,} parsed  {read.needs_review:>4,} needs review"
     if read.outcome is PtrOutcome.KEPT:
         return "reviewed since it was chosen: left as it is"
@@ -2326,6 +2347,156 @@ def _ptr_detail(read: FilingRead) -> str:
 def _covered(coverage: Coverage) -> str:
     percent = "-" if coverage.percent is None else f"{coverage.percent}%"
     return f"{coverage.read:,}/{coverage.seen:,} filings read ({percent})"
+
+
+# --- ingest-senate-ptrs ------------------------------------------------------
+
+
+@app.command("ingest-senate-ptrs")
+def ingest_senate_ptrs_command(
+    first: Annotated[
+        date | None,
+        typer.Option(
+            "--from",
+            metavar="YYYY-MM-DD",
+            parser=_day,
+            help="Search reports filed from this day. Moves the watermark when the "
+            "window reaches today.",
+        ),
+    ] = None,
+    last: Annotated[
+        date | None,
+        typer.Option(
+            "--to", metavar="YYYY-MM-DD", parser=_day, help="To this day. Default: today."
+        ),
+    ] = None,
+    catch_up: Annotated[
+        bool,
+        typer.Option(
+            "--catch-up",
+            help="Search from two weeks before the watermark to today: what a run "
+            "with no --from does, and what the schedule runs.",
+        ),
+    ] = False,
+    search: Annotated[
+        bool,
+        typer.Option(
+            "--search/--no-search",
+            help="--no-search reads only filings already listed: with --reparse, a "
+            "re-read of the archive after a parser fix.",
+        ),
+    ] = True,
+    doc_id: Annotated[
+        list[str] | None,
+        typer.Option("--doc-id", metavar="UUID", help="Read only this filing. Repeatable."),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", min=1, help="Read at most this many filings, newest first."),
+    ] = None,
+    reparse: Annotated[
+        bool,
+        typer.Option(
+            "--reparse",
+            help="Read every filing chosen again, from the archive where it is there. "
+            "Never a filing a person has reviewed a row of.",
+        ),
+    ] = False,
+) -> None:
+    """Read Senate eFD's PTRs into congress_filing and congress_transaction.
+
+    Through the US fetcher, in one eFD session (terms accepted, CSRF token
+    held): searches the window of filing dates a page at a time, archiving
+    each page, and upserts every report on (chamber, doc_id); then reads each
+    Senate filing not read yet. A report filed online is fetched (archived
+    first) and its table read into rows; a paper one is linked, never fetched,
+    and gets a placeholder row.
+
+    A page that is not eFD's layout stops the run, exits 1 and tells ops
+    (OPS_ALERT_WEBHOOK_URL), rather than read no rows. Exits 1 too if a
+    report failed (the others are still read), and if there is no US fetcher.
+    """
+    if first is not None and catch_up:
+        _usage("--from and --catch-up are two ways to choose the window: use one")
+    if not search and (first is not None or last is not None or catch_up):
+        _usage("--no-search reads filings already listed: it takes no window")
+    if last is not None and first is None:
+        _usage("--to ends a window that --from starts")
+    today = new_york_today()
+    if first is not None and not SENATE_FIRST_DAY <= first <= today:
+        _usage(f"eFD lists PTRs from {SENATE_FIRST_DAY} to today")
+    if first is not None and last is not None and last < first:
+        _usage("--to is before --from")
+
+    try:
+        failed = asyncio.run(
+            _ingest_senate_ptrs(
+                today=today,
+                first=first,
+                last=last,
+                search=search,
+                doc_ids=doc_id or None,
+                limit=limit,
+                reparse=reparse,
+            )
+        )
+    except (NoWatermarkError, FetcherError, SenateEfdError, SenateLayoutError) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+    if failed:
+        raise typer.Exit(code=1)
+
+
+async def _ingest_senate_ptrs(**arguments: Any) -> bool:
+    """The job, then its summary. Returns whether anything failed."""
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    try:
+        ran = await ingest_senate_ptrs_job(settings, **arguments)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return False
+    _echo_senate_ptrs(ran.value)
+    return bool(ran.run.errors)
+
+
+def _echo_senate_ptrs(ran: SenatePtrRun) -> None:
+    ingest = ran.ingest
+    searched = ingest.searched
+    if searched is None:
+        typer.echo(f"ingest-senate-ptrs  no search, {len(ingest.reads):,} filings")
+    else:
+        typer.echo(
+            f"ingest-senate-ptrs  {searched.first}..{searched.last}  "
+            f"{len(searched.rows):,} listed of {searched.counted:,} counted on "
+            f"{len(searched.pages):,} pages  {searched.stored.inserted:,} new  "
+            f"{searched.stored.updated:,} changed"
+        )
+        if searched.short:
+            typer.echo(f"  {searched.short:,} counted and not listed: the watermark stays")
+    unclean = [read for read in ingest.reads if _senate_unclean(read)]
+    for read in unclean[:_PTR_LINES]:
+        typer.echo(f"  {read.filing.doc_id:<36} {read.outcome.value:<12} {_ptr_detail(read)}")
+    if len(unclean) > _PTR_LINES:
+        typer.echo(f"  … and {len(unclean) - _PTR_LINES:,} more")
+    run = ingest.coverage
+    typer.echo(
+        f"  this run   {_covered(run)}, {run.review_only:,} only in review, "
+        f"{run.placeholders:,} placeholders (paper), {run.failed:,} failed; rows "
+        f"{run.rows_parsed:,} parsed, {run.rows_needs_review:,} needs review"
+    )
+    typer.echo(f"  all Senate {_covered(ran.table)}")
+    if ran.quiet_days is not None:
+        typer.echo(f"  QUIET: no Senate PTR in {ran.quiet_days} days; ops told")
+    before = "none" if ingest.watermark_before is None else str(ingest.watermark_before)
+    if ingest.watermark_after == ingest.watermark_before:
+        typer.echo(f"  watermark {before}, unchanged")
+    else:
+        typer.echo(f"  watermark {before} -> {ingest.watermark_after}")
+
+
+def _senate_unclean(read: FilingRead) -> bool:
+    return read.outcome not in (PtrOutcome.HTML, PtrOutcome.PLACEHOLDER) or read.needs_review > 0
 
 
 @app.command("email-suppression")
@@ -4409,15 +4580,6 @@ def _echo_manual(resolved: ManualResolution, *, note: str | None) -> None:
 
 
 # --- ticker-alias ----------------------------------------------------------------
-
-
-def _day(value: str) -> date:
-    try:
-        return date.fromisoformat(value.strip())
-    except ValueError as failure:
-        raise typer.BadParameter(
-            f"{value!r} is not a date: expected one like 2022-06-09"
-        ) from failure
 
 
 @app.command("ticker-alias")

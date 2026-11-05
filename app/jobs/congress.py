@@ -1,8 +1,8 @@
-"""The Congress jobs: the House Clerk's indexes and the PTRs they list.
+"""The Congress jobs: the House Clerk's indexes and the PTRs they list, and Senate eFD's.
 
-``ingest-house-index`` and ``ingest-house-ptrs`` are these with argument
-parsing and a summary; the ``ingest_house_index`` and ``ingest_house_ptrs``
-tasks are these in ``asyncio.run``. As with the Form 4 jobs
+``ingest-house-index``, ``ingest-house-ptrs`` and ``ingest-senate-ptrs`` are
+these with argument parsing and a summary; the tasks of the same names are
+these in ``asyncio.run``. As with the Form 4 jobs
 (app/jobs/form4.py), nothing here prints.
 """
 
@@ -33,8 +33,18 @@ from app.ingestion.congress.ptrs import (
     pending_filings,
     table_coverage,
 )
+from app.ingestion.congress.senate_efd import SenateEfd
+from app.ingestion.congress.senate_ptr import SenateLayoutError
+from app.ingestion.congress.senate_ptrs import (
+    QUIET_DAYS,
+    SenateIngest,
+    catch_up_from,
+    ingest_senate_ptrs,
+    newest_filing,
+)
 from app.ingestion.remote.fetcher import open_fetcher
 from app.jobs.tracking import TrackedRun, tracked_task
+from app.ops.alerts import alert_ops
 from app.storage.raw import open_raw_store
 
 logger = get_logger(__name__)
@@ -229,3 +239,150 @@ async def ingest_house_ptrs_job(
         "table_coverage_pct": _number(table.percent),
     }
     return HousePtrRun(ingest=ingest, table=table)
+
+
+# --- Senate ----------------------------------------------------------------------
+
+#: The fewest seconds between two requests to eFD.
+EFD_INTERVAL_SECONDS = 1.0
+
+#: The ops alerts the Senate job raises (app/ops/alerts.py), each once a day at most.
+EFD_LAYOUT_ALERT = "senate-efd-layout"
+EFD_QUIET_ALERT = "senate-efd-quiet"
+
+
+@dataclass(frozen=True, slots=True)
+class SenatePtrRun:
+    """What one run did, and the Senate's coverage after it."""
+
+    window: tuple[date, date] | None
+    ingest: SenateIngest
+    table: Coverage
+    quiet_days: int | None
+    """Days since the newest Senate filing, when a catch-up found it past
+    :data:`~app.ingestion.congress.senate_ptrs.QUIET_DAYS`."""
+
+
+def _senate_context(_: Settings, arguments: dict[str, Any]) -> dict[str, Any]:
+    first, last = arguments.get("first"), arguments.get("last")
+    return {
+        "catch_up": first is None and arguments.get("search", True),
+        "first": first,
+        "last": last,
+        "search": arguments.get("search", True),
+        "doc_ids": arguments.get("doc_ids"),
+        "limit": arguments.get("limit"),
+        "reparse": arguments.get("reparse", False),
+    }
+
+
+@tracked_task("ingest-senate-ptrs", context=_senate_context)
+async def ingest_senate_ptrs_job(
+    run: TrackedRun,
+    settings: Settings,
+    *,
+    today: date,
+    first: date | None = None,
+    last: date | None = None,
+    search: bool = True,
+    doc_ids: list[str] | None = None,
+    limit: int | None = None,
+    reparse: bool = False,
+) -> SenatePtrRun:
+    """Search eFD for the window's PTRs, then read every Senate filing not read yet.
+
+    :param first: The first filing date to search, or ``None`` for a catch-up
+        from the watermark: what the scheduled task does.
+    :param last: The last, or ``None`` for today. A window that reaches today
+        moves the watermark; one that ends before it does not.
+    :param search: ``False`` to only read filings already listed: a re-parse.
+    :param today: Today in New York.
+    :raises SenateLayoutError: eFD changed the shape of a page. Ops are told.
+    :raises NoWatermarkError: A catch-up with no watermark to start from.
+    :raises FetcherUnavailable: No fetcher, or one that cannot be used.
+    """
+    engine = create_engine(settings)
+    sessions = create_session_factory(engine)
+    window: tuple[date, date] | None = None
+    try:
+        if search:
+            if first is None:
+                async with sessions() as session:
+                    first = await catch_up_from(session)
+            window = (first, min(last or today, today))
+        catch_up = search and (last is None or last >= today)
+        async with open_fetcher(settings) as fetcher, open_raw_store(settings) as store:
+            efd = SenateEfd(
+                fetcher, store, user_agent=settings.sec_user_agent, interval=EFD_INTERVAL_SECONDS
+            )
+            try:
+                ingest = await ingest_senate_ptrs(
+                    sessions,
+                    efd,
+                    window=window,
+                    today=today,
+                    move_watermark=catch_up,
+                    doc_ids=doc_ids,
+                    reparse=reparse,
+                    limit=limit,
+                )
+            except SenateLayoutError as failure:
+                await alert_ops(
+                    settings,
+                    EFD_LAYOUT_ALERT,
+                    f"Senate eFD changed its layout, and ingest-senate-ptrs stopped rather "
+                    f"than read no rows: {failure}. Fix app/ingestion/congress/senate_ptr.py "
+                    f"against the archived page, then run ingest-senate-ptrs --catch-up.",
+                )
+                raise
+        async with sessions() as session:
+            table = await table_coverage(session, "senate")
+            newest = await newest_filing(session)
+    finally:
+        await engine.dispose()
+
+    quiet_days = None
+    if catch_up and newest is not None and (today - newest).days > QUIET_DAYS:
+        quiet_days = (today - newest).days
+        message = (
+            f"no Senate PTR filed in {quiet_days} days (newest {newest}): eFD may be "
+            f"answering the search with nothing"
+        )
+        run.errors.append(message)
+        await alert_ops(settings, EFD_QUIET_ALERT, f"ingest-senate-ptrs: {message}.")
+
+    searched = ingest.searched
+    coverage = ingest.coverage
+    if searched is not None and searched.short:
+        run.errors.append(
+            f"the search counted {searched.counted} reports and listed {len(searched.rows)}: "
+            "the watermark stays, and the next run reads the window again"
+        )
+    run.errors.extend(
+        f"{read.filing.doc_id}: {read.error}"
+        for read in ingest.reads
+        if read.outcome is Outcome.FAILED
+    )
+    run.items_seen = coverage.seen
+    run.items_written = coverage.read + coverage.review_only + coverage.placeholders
+    run.metrics |= {
+        "window": None if window is None else f"{window[0]}..{window[1]}",
+        "search_pages": 0 if searched is None else len(searched.pages),
+        "listed": 0 if searched is None else len(searched.rows),
+        "inserted": 0 if searched is None else searched.stored.inserted,
+        "updated": 0 if searched is None else searched.stored.updated,
+        "filings_seen": coverage.seen,
+        "filings_read": coverage.read,
+        "review_only": coverage.review_only,
+        "placeholders": coverage.placeholders,
+        "failed": coverage.failed,
+        "rows_parsed": coverage.rows_parsed,
+        "rows_needs_review": coverage.rows_needs_review,
+        "fetched": sum(1 for read in ingest.reads if read.fetched),
+        "coverage_pct": _number(coverage.percent),
+        "table_coverage_pct": _number(table.percent),
+        "watermark_before": _iso(ingest.watermark_before),
+        "watermark_after": _iso(ingest.watermark_after),
+        "quiet_days": quiet_days,
+    }
+    return SenatePtrRun(window=window, ingest=ingest, table=table, quiet_days=quiet_days)

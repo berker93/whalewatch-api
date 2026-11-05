@@ -34,6 +34,7 @@ from app.jobs.retry import (
     retry_countdown,
 )
 from app.jobs.tracking import JobLocked, Ran, TrackedRun
+from tests.conftest import make_settings
 
 # --- what retries ------------------------------------------------------------
 
@@ -465,6 +466,51 @@ def test_outside_a_window_the_poll_trigger_enqueues_only_at_six(
     assert len(applied) == 1
 
 
+def _with_fetcher(monkeypatch: pytest.MonkeyPatch, backend: str) -> None:
+    settings = make_settings(us_fetcher_backend=backend)
+    monkeypatch.setattr(tasks, "get_settings", lambda: settings)
+
+
+def test_on_a_sitting_day_the_senate_trigger_enqueues_the_ingest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    applied = _capture_chains(monkeypatch)
+    _with_fetcher(monkeypatch, "local")
+    # Tuesday 17 November 2026, 12:10 New York.
+    monkeypatch.setattr(tasks, "_now", lambda: datetime(2026, 11, 17, 17, 10, tzinfo=UTC))
+
+    assert tasks.poll_senate_efd() == {"chain": "senate-efd", "task_id": "last-link"}
+    assert [_links(chain) for chain in applied] == [["ingest_senate_ptrs"]]
+
+
+def test_in_a_recess_the_senate_trigger_enqueues_only_at_six(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    applied = _capture_chains(monkeypatch)
+    _with_fetcher(monkeypatch, "local")
+    # Wednesday 14 October 2026, in the recess: 12:10 and then 06:10 New York.
+    monkeypatch.setattr(tasks, "_now", lambda: datetime(2026, 10, 14, 16, 10, tzinfo=UTC))
+    assert tasks.poll_senate_efd() == {
+        "chain": "senate-efd",
+        "skipped": "the Senate is not sitting",
+    }
+    assert applied == []
+
+    monkeypatch.setattr(tasks, "_now", lambda: datetime(2026, 10, 14, 10, 10, tzinfo=UTC))
+    assert tasks.poll_senate_efd()["task_id"] == "last-link"
+
+
+def test_without_a_us_fetcher_the_senate_trigger_does_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    applied = _capture_chains(monkeypatch)
+    _with_fetcher(monkeypatch, "none")
+    monkeypatch.setattr(tasks, "_now", lambda: datetime(2026, 11, 17, 17, 10, tzinfo=UTC))
+
+    assert tasks.poll_senate_efd() == {"job": "ingest-senate-ptrs", "skipped": "no US fetcher"}
+    assert applied == []
+
+
 def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -> None:
     queues = {
         name: task.queue
@@ -479,6 +525,7 @@ def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -
         "ingest_form4": INGESTION_QUEUE,
         "ingest_house_index": INGESTION_QUEUE,
         "ingest_house_ptrs": INGESTION_QUEUE,
+        "ingest_senate_ptrs": INGESTION_QUEUE,
         "resolve_cusips": INGESTION_QUEUE,
         "fetch_prices": INGESTION_QUEUE,
         "recompute_positions": COMPUTE_QUEUE,
@@ -488,6 +535,7 @@ def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -
         "snapshot_metrics": COMPUTE_QUEUE,
         "poll_13f": COMPUTE_QUEUE,
         "daily_form4": COMPUTE_QUEUE,
+        "poll_senate_efd": COMPUTE_QUEUE,
         "emit_alerts": COMPUTE_QUEUE,
         "send_alert_emails": COMPUTE_QUEUE,
         "ping": COMPUTE_QUEUE,
