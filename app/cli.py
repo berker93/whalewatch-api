@@ -3,7 +3,7 @@ audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
 fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user,
 delete-user, restore-user, purge-accounts, billing, create-admin, disable-admin, snapshot-metrics,
-check-email-domain, email-suppression.
+check-email-domain, fetcher-check, ingest-house-index, email-suppression.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -43,6 +43,8 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli crawl-form4 --from 2026-07-01
     uv run python -m app.cli crawl-form4 --catch-up
     uv run python -m app.cli ingest-form4
+    uv run python -m app.cli ingest-house-index --from-year 2012
+    uv run python -m app.cli ingest-house-index --catch-up
     uv run python -m app.cli create-partitions --through 2028
     uv run python -m app.cli detect-clusters
     uv run python -m app.cli create-user --email ada@example.com --name "Ada Lovelace"
@@ -79,10 +81,10 @@ run's ``metrics``.
 The verbs that are also Celery tasks
 ------------------------------------
 ``discover-filings``, ``backfill``, ``crawl-form4``, ``ingest-form4``,
-``resolve-cusips``, ``fetch-quotes``, ``recompute`` and ``refresh-views`` are
-each a call to a ``@tracked_task`` job (app/jobs/), the same call its task
-makes (app/jobs/tasks.py), with the arguments parsed on the way in and the
-summary printed on the way out. The job holds its advisory lock for the run,
+``ingest-house-index``, ``resolve-cusips``, ``fetch-quotes``, ``recompute`` and
+``refresh-views`` are each a call to a ``@tracked_task`` job (app/jobs/), the
+same call its task makes (app/jobs/tasks.py), with the arguments parsed on the
+way in and the summary printed on the way out. The job holds its advisory lock for the run,
 so a verb started while the same job is running — the worker's, or another
 shell's — prints ``skipped: ...`` on stderr, records nothing and exits 0.
 
@@ -196,6 +198,9 @@ from app.ingestion.backfill import (
     FilingResult,
     Outcome,
 )
+from app.ingestion.congress.filings import HouseIngest, YearKind
+from app.ingestion.congress.house_clerk import FIRST_YEAR as HOUSE_FIRST_YEAR
+from app.ingestion.congress.senate_efd import SenateEfd, SenateEfdError
 from app.ingestion.discovery import (
     FilerDiscovery,
     QueuedFiling,
@@ -282,10 +287,18 @@ from app.ingestion.parsers.thirteen_f_list import (
     ThirteenFListParseError,
     parse_13f_list,
 )
+from app.ingestion.remote.fetcher import (
+    CHECKIP_URL,
+    FetcherError,
+    FetchRequest,
+    UpstreamUnreachable,
+    open_fetcher,
+)
 from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_investors
 from app.jobs.accounts import purge_accounts, run_billing, snapshot_metrics
 from app.jobs.alerts import emit_alerts, send_alert_emails
 from app.jobs.cache import invalidate_cache
+from app.jobs.congress import ingest_house_index_job
 from app.jobs.derived import filer_id_of, recompute_positions, refresh_matviews
 from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
 from app.jobs.errors import JobError
@@ -2048,6 +2061,156 @@ def check_email_domain_command(
         )
         raise typer.Exit(1)
     typer.echo(f"check-email-domain  {domain} is ready to send")
+
+
+@app.command("fetcher-check")
+def fetcher_check_command(
+    efd: Annotated[
+        bool,
+        typer.Option(
+            "--efd/--no-efd",
+            help="Also accept Senate eFD's terms through the fetcher. Default: on.",
+        ),
+    ] = True,
+) -> None:
+    """Prove the US fetcher works: its egress address, then an eFD session.
+
+    Run after deploying infra/us-fetcher/ and after any change to its
+    credentials. Exit 1 names what failed: the fetcher itself (not deployed,
+    not invocable, crashed) or the site behind it.
+    """
+    try:
+        asyncio.run(_fetcher_check(efd=efd))
+    except (FetcherError, SenateEfdError) as exc:
+        typer.echo(f"fetcher-check: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
+async def _fetcher_check(*, efd: bool) -> None:
+    settings = get_settings()
+    async with open_fetcher(settings) as fetcher:
+        started = time.monotonic()
+        egress = await fetcher.fetch(FetchRequest(url=CHECKIP_URL))
+        if egress.status != 200:
+            raise UpstreamUnreachable(f"{CHECKIP_URL} answered {egress.status}")
+        address = egress.body.decode("ascii", errors="replace").strip()
+        typer.echo(
+            f"ok    egress       {address} via {fetcher.backend} "
+            f"({time.monotonic() - started:.1f}s)"
+        )
+        if not efd:
+            return
+        async with open_raw_store(settings) as store:
+            started = time.monotonic()
+            await SenateEfd(fetcher, store, user_agent=settings.sec_user_agent).accept_terms()
+        typer.echo(f"ok    senate-efd   terms accepted ({time.monotonic() - started:.1f}s)")
+
+
+# --- ingest-house-index ------------------------------------------------------
+
+
+@app.command("ingest-house-index")
+def ingest_house_index_command(
+    year: Annotated[
+        int | None,
+        typer.Option("--year", metavar="YYYY", help="Read this one year's index."),
+    ] = None,
+    from_year: Annotated[
+        int | None,
+        typer.Option("--from-year", metavar="YYYY", help="Read every year from this one to now."),
+    ] = None,
+    catch_up: Annotated[
+        bool,
+        typer.Option(
+            "--catch-up",
+            help="Read the watermark's year, the two before it, and every year since. "
+            "What a run with no year given does.",
+        ),
+    ] = False,
+) -> None:
+    """Read the House Clerk's yearly disclosure indexes into congress_filing.
+
+    Downloads each year's {year}FD.zip through the US fetcher, archives it
+    under the year and the checksum of its index, and upserts the Periodic
+    Transaction Reports in it on (chamber, doc_id). A year read again changes
+    nothing. Annual reports and the other filing types are counted, not kept.
+
+    The watermark is the newest PTR filing date read. --catch-up and
+    --from-year move it, and only when no year failed; --year does not.
+
+    Exits 1 if a year failed (the other years are still read), and if there is
+    no US fetcher (US_FETCHER_BACKEND).
+    """
+    chosen = sum((year is not None, from_year is not None, catch_up))
+    if chosen > 1:
+        _usage("--year, --from-year and --catch-up are three ways to choose years: use one")
+    today = new_york_today()
+    for given in (year, from_year):
+        if given is not None and not HOUSE_FIRST_YEAR <= given <= today.year:
+            _usage(f"the House Clerk has indexes from {HOUSE_FIRST_YEAR} to {today.year}")
+    years: list[int] | None
+    if year is not None:
+        years = [year]
+    elif from_year is not None:
+        years = list(range(from_year, today.year + 1))
+    else:
+        years = None  # --catch-up, read from the watermark inside the run
+
+    try:
+        failed = asyncio.run(
+            _ingest_house_index(years, move_watermark=from_year is not None, today=today)
+        )
+    except (NoWatermarkError, FetcherError) as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+    if failed:
+        raise typer.Exit(code=1)
+
+
+async def _ingest_house_index(
+    years: list[int] | None, *, move_watermark: bool, today: date
+) -> bool:
+    """The job, then its summary. Returns whether a year failed."""
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    try:
+        ran = await ingest_house_index_job(
+            settings, years=years, today=today, move_watermark=move_watermark
+        )
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return False
+    if ran.value.ingest is None:
+        typer.echo("ingest-house-index  nothing to read")
+        return False
+    _echo_house_ingest(ran.value.ingest)
+    return ran.value.failed
+
+
+def _echo_house_ingest(ingest: HouseIngest) -> None:
+    first, last = ingest.years[0].year, ingest.years[-1].year
+    typer.echo(f"ingest-house-index  {first}" + ("" if first == last else f"..{last}"))
+    for read in ingest.years:
+        if read.kind is YearKind.FAILED:
+            typer.echo(f"  {read.year}  FAILED  {read.error}")
+            continue
+        if read.kind is YearKind.UNPUBLISHED or read.parsed is None or read.index is None:
+            typer.echo(f"  {read.year}  not published yet")
+            continue
+        stored = read.stored
+        archived = "new" if read.index.new else "unchanged"
+        typer.echo(
+            f"  {read.year}  {read.parsed.listed:>6,} listed  {len(read.parsed.ptrs):>5,} PTRs  "
+            f"{stored.inserted:>5,} new  {stored.updated:>4,} changed  index {archived}"
+        )
+        for bad in read.parsed.malformed:
+            typer.echo(f"        row {bad.position} ({bad.doc_id}) left out: {bad.reason}")
+
+    before = "none" if ingest.watermark_before is None else str(ingest.watermark_before)
+    if ingest.watermark_after == ingest.watermark_before:
+        typer.echo(f"  watermark {before}, unchanged")
+    else:
+        typer.echo(f"  watermark {before} -> {ingest.watermark_after}")
 
 
 @app.command("email-suppression")

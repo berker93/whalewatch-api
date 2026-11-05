@@ -76,6 +76,13 @@ ignore_missing_imports = true
 module = ["yfinance", "yfinance.*"]
 ignore_missing_imports = true
 
+# Imported only by the deployed US fetcher (app/ingestion/remote/handler.py),
+# where the Lambda runtime provides it. Not a dependency here: in the dev group
+# it arrives through moto, untyped, and in the image not at all.
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*"]
+ignore_missing_imports = true
+
 # Neither ships a py.typed marker. xlsxwriter is used in app/api/xlsx_export.py
 # alone; openpyxl only reads the exports back in tests.
 [[tool.mypy.overrides]]
@@ -115,7 +122,7 @@ dev = [
     "respx>=0.22",
     "ruff>=0.16.4",
     "testcontainers[postgres]>=4.15",
-    "types-aiobotocore[s3]>=2.15",
+    "types-aiobotocore[lambda,s3]>=2.15",
     "types-pyyaml>=6.0",
 ]
 # Development only, and not a default group, so `uv sync` in the image never

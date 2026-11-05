@@ -12,6 +12,7 @@ task                       CLI verb                    job
 ``ingest_pending_filings`` ``backfill``                app/jobs/thirteen_f.py
 ``crawl_form4_daily``      ``crawl-form4 --catch-up``  app/jobs/form4.py
 ``ingest_form4``           ``ingest-form4``            app/jobs/form4.py
+``ingest_house_index``     ``ingest-house-index``      app/jobs/congress.py
 ``resolve_cusips``         ``resolve-cusips``          app/jobs/enrichment.py
 ``fetch_prices``           ``fetch-quotes``            app/jobs/enrichment.py
 ``recompute_positions``    ``recompute``               app/jobs/derived.py
@@ -74,7 +75,7 @@ from app.core.logging import get_logger
 from app.core.periods import parse_period
 from app.derived.scope import Pair
 from app.ingestion.insider_discovery import new_york_today
-from app.jobs import accounts, alerts, derived, enrichment, form4, thirteen_f
+from app.jobs import accounts, alerts, congress, derived, enrichment, form4, thirteen_f
 from app.jobs.celery_app import COMPUTE_QUEUE, INGESTION_QUEUE
 from app.jobs.retry import MAX_RETRIES, is_transient, retry_countdown
 from app.jobs.schedule import should_poll_now
@@ -204,6 +205,15 @@ def ingest_form4(
 ) -> Summary:
     """``ingest-form4``: load every queued Form 4, then rebuild the clusters."""
     return _run(self, form4.ingest_form4, concurrency=concurrency, limit=limit, force=force)
+
+
+# --- Congress ----------------------------------------------------------------
+
+
+@shared_task(bind=True, queue=INGESTION_QUEUE, max_retries=MAX_RETRIES)
+def ingest_house_index(self: Task[Any, Any]) -> Summary:
+    """``ingest-house-index --catch-up``: the House Clerk's indexes since the watermark."""
+    return _run(self, congress.ingest_house_index_job, years=None, today=new_york_today())
 
 
 # --- enrichment --------------------------------------------------------------

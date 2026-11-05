@@ -325,6 +325,13 @@ left alone, so the first copy is the one kept — unless `--force` says otherwis
 securities lists are archived beside them, under
 `raw/13f-list/{quarter}/{filename}` (see
 [`import-13f-list`](#import-13f-list---quarter-yyyyqn---file-path---force)).
+Senate eFD's report pages and search pages, fetched through the US fetcher,
+are kept the same way under `raw/senate-efd/report/{kind}/{report_id}.html`
+and `raw/senate-efd/search/{fetched_at}-{start}.json` — the search stamped with
+when it ran, because it answers differently every day. The House Clerk's
+yearly disclosure ZIPs go under `raw/house-clerk/index/{year}/{sha256}.zip`,
+named by the checksum of the XML index inside: the Clerk rebuilds every ZIP
+nightly, so the ZIP's own bytes change when nothing in it has.
 
 `RAW_STORE_BACKEND` picks the implementation ([app/storage](app/storage/)):
 
@@ -1187,6 +1194,51 @@ Each insider counts once per window, however many times they bought. The
 window rolls over all of history, so a 2021 cluster is found like last week's,
 and a re-run with nothing loaded writes the same rows. Drops the API's cache.
 
+### `fetcher-check [--efd/--no-efd]`
+
+Proves the US-region fetcher works ([app/ingestion/remote](app/ingestion/remote/)):
+fetches `checkip.amazonaws.com` through it and prints the address it left
+from, then accepts Senate eFD's terms through it. Run after deploying
+[infra/us-fetcher](infra/us-fetcher/) and after any change to its credentials.
+
+```
+ok    egress       203.0.113.7 via lambda (0.8s)
+ok    senate-efd   terms accepted (1.9s)
+```
+
+Exit 1 names what failed: no fetcher configured, the function not deployed or
+not invocable, the placeholder code still in place, or eFD refusing the
+session. Senate eFD and the House Clerk answer non-US addresses badly or not
+at all, so everything that reads them goes through the fetcher, and there is
+no fallback: an unreachable fetcher stops the run with `FetcherUnavailable`
+rather than fetching from the worker's own address or serving an archived copy.
+`US_FETCHER_BACKEND=local` fetches from this machine, for development only.
+
+### `ingest-house-index [--year YYYY | --from-year YYYY | --catch-up]`
+
+Reads the House Clerk's yearly disclosure indexes (`{year}FD.zip`, 2008 on)
+through the US fetcher into `congress_filing`, keeping the Periodic
+Transaction Reports (`FilingType` `P`) and counting the rest. Each ZIP is
+archived before its rows are read, and the PTRs are upserted on
+`(chamber, doc_id)`, writing a row only when it is new or the index now says
+something different — so a year read again changes nothing.
+
+```
+ingest-house-index  2024..2026
+  2024   2,301 listed    451 PTRs      0 new     0 changed  index unchanged
+  2025   2,973 listed    515 PTRs      1 new     0 changed  index new
+  2026   1,837 listed    453 PTRs      4 new     0 changed  index new
+  watermark 2026-11-03 -> 2026-11-04
+```
+
+The watermark is the newest PTR filing date read. `--catch-up`, the daily
+run, reads the watermark's year, the two before it and every year since:
+every year's index keeps gaining late filings (the 2020 index lists PTRs filed
+in 2023). `--from-year` sweeps to the current year and sets it; `--year` reads
+one year without moving it. A 404 for the current year is "not published
+yet", not a failure. Exit 1 if a year failed — the others are still read,
+and the watermark holds — or with no fetcher configured.
+
 ### `runs [--job NAME] [--limit N]`
 
 Lists the most recent job runs, newest first, from `ingestion_run`. Every verb
@@ -1303,6 +1355,7 @@ body inside `track_run`, and binds `job_name` and `run_id` on every line.
 | `ingest_pending_filings` | ingestion | `backfill` | `backfill_13f` |
 | `crawl_form4_daily` | ingestion | `crawl-form4 --catch-up` | `crawl-form4` |
 | `ingest_form4` | ingestion | `ingest-form4` | `ingest-form4` |
+| `ingest_house_index` | ingestion | `ingest-house-index --catch-up` | `ingest-house-index` |
 | `resolve_cusips` | ingestion | `resolve-cusips` | `resolve-cusips` |
 | `fetch_prices` | ingestion | `fetch-quotes` | `fetch-quotes` |
 | `recompute_positions` | compute | `recompute` | `recompute` |

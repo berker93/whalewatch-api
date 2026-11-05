@@ -36,6 +36,22 @@ by :func:`form4_key`; :func:`form4_prefix` names one filing's.
 Securities for one quarter (``2026Q1``), under the SEC's own filename. Built only
 by :func:`thirteen_f_list_key`; :func:`thirteen_f_list_prefix` names a quarter's.
 
+``raw/senate-efd/report/{kind}/{report_id}.html`` — one Senate eFD report page
+(``ptr``, ``paper``, ``annual``…) under eFD's own report id. Built only by
+:func:`senate_efd_report_key`.
+
+``raw/senate-efd/search/{fetched_at}-{start}.json`` — one page of an eFD search,
+stamped with when it was fetched (``20261105T140312Z``) and its row offset,
+because a search answers differently every day and each answer is worth
+keeping. Built only by :func:`senate_efd_search_key`.
+
+``raw/house-clerk/index/{year}/{sha256}.zip`` — one version of the House
+Clerk's yearly disclosure ZIP, as served, under the SHA-256 of the XML index
+inside it. Of the XML and not the ZIP, because the Clerk rebuilds every year's
+ZIP each night and the rebuild's timestamps alone change its bytes: keyed on
+the ZIP, an unchanged index would be a new object every day. Built only by
+:func:`house_index_key`.
+
 Two implementations, chosen by ``RAW_STORE_BACKEND``: :class:`LocalRawStore`
 under ``./data`` for development, and :class:`~app.storage.s3.S3RawStore` for
 any S3-compatible bucket, Cloudflare R2 included. Get one with
@@ -49,7 +65,7 @@ import os
 import tempfile
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Final, Protocol
 
@@ -199,6 +215,44 @@ def thirteen_f_list_key(period: date, filename: str) -> str:
     if "/" in filename:
         raise ValueError(f"{filename!r} is not a raw store key segment")
     return validate_key(thirteen_f_list_prefix(period) + filename)
+
+
+def senate_efd_report_key(kind: str, report_id: str) -> str:
+    """``raw/senate-efd/report/ptr/{report_id}.html``, one eFD report page.
+
+    :raises ValueError: If either is not the letters, digits and dashes eFD
+        uses — they come from a URL path, and must not become two segments.
+    """
+    for part in (kind, report_id):
+        if not part or not all(c.isascii() and (c.isalnum() or c == "-") for c in part):
+            raise ValueError(f"{part!r} is not an eFD report kind or id")
+    return validate_key(f"raw/senate-efd/report/{kind.lower()}/{report_id.lower()}.html")
+
+
+def senate_efd_search_key(fetched_at: datetime, start: int) -> str:
+    """``raw/senate-efd/search/20261105T140312Z-000000.json``, one search page.
+
+    :raises ValueError: If ``fetched_at`` is naive or ``start`` negative.
+    """
+    if fetched_at.tzinfo is None:
+        raise ValueError("fetched_at must be timezone-aware")
+    if start < 0:
+        raise ValueError(f"start {start} is negative")
+    stamp = fetched_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return validate_key(f"raw/senate-efd/search/{stamp}-{start:06d}.json")
+
+
+def house_index_key(year: int, sha256: str) -> str:
+    """``raw/house-clerk/index/2026/{sha256}.zip``, one version of a year's ZIP.
+
+    :raises ValueError: If ``year`` is not four digits or ``sha256`` is not a
+        lower-case hex SHA-256.
+    """
+    if not 1000 <= year <= 9999:
+        raise ValueError(f"{year} is not a four-digit year")
+    if len(sha256) != 64 or not all(c in "0123456789abcdef" for c in sha256):
+        raise ValueError(f"{sha256!r} is not a hex SHA-256")
+    return validate_key(f"raw/house-clerk/index/{year}/{sha256}.zip")
 
 
 def validate_key(key: str) -> str:

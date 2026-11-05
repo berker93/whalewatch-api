@@ -300,6 +300,21 @@ class Settings(BaseSettings):
     raw_store_s3_access_key_id: str | None = None
     raw_store_s3_secret_access_key: SecretStr | None = None
 
+    # --- the US-region fetcher ---------------------------------------------
+    # How Senate eFD and the House Clerk are fetched (app/ingestion/remote):
+    # they answer non-US addresses badly or not at all. "lambda" invokes the
+    # function infra/us-fetcher/ deploys to us-east-1; "local" fetches from this
+    # machine, for development, and is refused in staging and production. The
+    # default, "none", is no fetcher: anything that needs one stops and says so.
+    us_fetcher_backend: Literal["none", "local", "lambda"] = "none"
+    # The function's name or ARN: the stack's FunctionName output.
+    us_fetcher_function: str | None = None
+    us_fetcher_region: str = "us-east-1"
+    # Both unset means botocore's credential chain. The key needs the stack's
+    # WorkerPolicy: invoke the function, read and delete its spool.
+    us_fetcher_access_key_id: str | None = None
+    us_fetcher_secret_access_key: SecretStr | None = None
+
     @field_validator("openfigi_api_key", mode="before")
     @classmethod
     def _blank_key_is_no_key(cls, value: object) -> object:
@@ -439,6 +454,24 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "RAW_STORE_S3_ACCESS_KEY_ID and RAW_STORE_S3_SECRET_ACCESS_KEY are set "
+                "together or not at all"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _us_fetcher_is_complete(self) -> Self:
+        """The local backend deployed would fetch from the very address the
+        fetcher exists to avoid, and look like an eFD outage when it failed."""
+        if self.us_fetcher_backend == "local" and self.environment in ("staging", "production"):
+            raise ValueError(
+                f"US_FETCHER_BACKEND=local is for development; {self.environment} fetches "
+                "from a non-US address. Use US_FETCHER_BACKEND=lambda"
+            )
+        if self.us_fetcher_backend == "lambda" and not self.us_fetcher_function:
+            raise ValueError("US_FETCHER_BACKEND=lambda needs US_FETCHER_FUNCTION")
+        if (self.us_fetcher_access_key_id is None) != (self.us_fetcher_secret_access_key is None):
+            raise ValueError(
+                "US_FETCHER_ACCESS_KEY_ID and US_FETCHER_SECRET_ACCESS_KEY are set "
                 "together or not at all"
             )
         return self

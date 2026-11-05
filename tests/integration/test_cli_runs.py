@@ -79,6 +79,8 @@ TRACKED: Final = {
     "crawl-form4": ("crawl-form4", ["--catch-up"], "failed"),
     # Nothing queued, so nothing is fetched.
     "ingest-form4": ("ingest-form4", [], "success"),
+    # No watermark to catch up from, which it finds before opening a fetcher.
+    "ingest-house-index": ("ingest-house-index", ["--catch-up"], "failed"),
     # Every year through 2027 exists since 0032, so nothing is created.
     "create-partitions": ("create-partitions", ["--through", "2027"], "success"),
     # No purchases, so no clusters: the table is emptied and nothing written.
@@ -101,6 +103,7 @@ UNTRACKED: Final = {
     "create-admin": "admin administration: logged in admin_action, which names no email",
     "disable-admin": "admin administration, as create-admin",
     "check-email-domain": "asks DNS, and writes nothing anywhere",
+    "fetcher-check": "probes the US fetcher and eFD's terms page; archives and loads nothing",
     "email-suppression": "account administration, as create-user",
 }
 

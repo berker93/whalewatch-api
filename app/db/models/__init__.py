@@ -41,6 +41,13 @@ from app.db.models.alert import (
     Route,
 )
 from app.db.models.base import NAMING_CONVENTION, Base
+from app.db.models.congress_filing import (
+    CHAMBER_CHECK,
+    CHAMBERS,
+    REPORT_TYPE_CHECK,
+    REPORT_TYPES,
+    CongressFiling,
+)
 from app.db.models.crawl_watermark import CrawlWatermark
 from app.db.models.email import (
     STATUS_RANKS,
@@ -153,6 +160,8 @@ __all__ = [
     "ACTION_CHECK",
     "BASES",
     "CATEGORY_CHECK",
+    "CHAMBERS",
+    "CHAMBER_CHECK",
     "CHANGE_PCT",
     "CONFIDENCE_CHECK",
     "ENTITLEMENT_KEYS",
@@ -182,6 +191,8 @@ __all__ = [
     "QUANTITY",
     "QUARTER_EXPRESSION",
     "QUOTE_SOURCE_CHECK",
+    "REPORT_TYPES",
+    "REPORT_TYPE_CHECK",
     "REQUESTED_BY_CHECK",
     "RESOLUTION_SOURCE_CHECK",
     "REVIEW_STATUS_CHECK",
@@ -216,6 +227,7 @@ __all__ = [
     "Basis",
     "ChangeAction",
     "Channel",
+    "CongressFiling",
     "ConsentRecord",
     "ConsentSource",
     "CrawlWatermark",

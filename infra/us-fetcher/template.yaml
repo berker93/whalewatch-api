@@ -1,0 +1,166 @@
+# The US-region fetcher (CON-1): one Lambda function in us-east-1 that fetches
+# a URL from an AWS US address, plus the bucket it spools response bodies to.
+#
+# Deploy with infra/us-fetcher/deploy.sh, which creates or updates this stack
+# and then uploads app/ingestion/remote/handler.py as the function's code.
+# The template's own inline code is a placeholder that refuses every request,
+# so a stack whose code upload never happened fails loudly in fetcher-check
+# rather than half-working.
+#
+# What the worker needs afterwards:
+#   US_FETCHER_BACKEND=lambda
+#   US_FETCHER_FUNCTION=<FunctionName output>
+#   US_FETCHER_REGION=us-east-1
+#   and credentials allowed WorkerPolicy (<WorkerPolicyArn output>): an IAM
+#   user's access key in US_FETCHER_ACCESS_KEY_ID / _SECRET_ACCESS_KEY when the
+#   worker is not on AWS, or a role with the policy attached when it is.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: WhaleWatch US-region fetcher — fetch a URL from us-east-1, spool the body to S3
+
+Parameters:
+  AllowedHosts:
+    Type: String
+    Default: efdsearch.senate.gov,disclosures-clerk.house.gov,checkip.amazonaws.com
+    Description: >-
+      Comma-separated hosts the function may fetch from, redirects included.
+      Keep it in step with LOCAL_ALLOWED_HOSTS in app/ingestion/remote/fetcher.py.
+  MaxConcurrency:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >-
+      Reserved concurrency: the most invocations at once, bounding what a leaked
+      credential or a runaway loop can do. 0 reserves nothing. A new account's
+      whole quota is 10 and AWS keeps 10 unreserved, so any reservation fails
+      there until Service Quotas raises "Concurrent executions".
+
+Conditions:
+  CapConcurrency: !Not [!Equals [!Ref MaxConcurrency, 0]]
+
+Resources:
+  SpoolBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          # The worker deletes what it reads. This is what a crashed worker
+          # left behind: a day is the shortest S3 lifecycle can do.
+          - Id: expire-spool
+            Status: Enabled
+            Prefix: spool/
+            ExpirationInDays: 1
+
+  SpoolBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SpoolBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt SpoolBucket.Arn
+              - !Sub "${SpoolBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  FunctionLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}"
+      RetentionInDays: 14
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: logs-and-spool
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${FunctionLogs.Arn}:*"
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${SpoolBucket.Arn}/spool/*"
+
+  Function:
+    Type: AWS::Lambda::Function
+    DependsOn: FunctionLogs
+    Properties:
+      FunctionName: !Ref AWS::StackName
+      Description: Fetch a URL from a US address; body to the spool bucket (CON-1)
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: handler.lambda_handler
+      Role: !GetAtt FunctionRole.Arn
+      MemorySize: 512
+      # The worker's invoke read timeout (75s) is longer, so a slow fetch comes
+      # back as "Task timed out" rather than as the worker's socket giving up.
+      Timeout: 60
+      ReservedConcurrentExecutions: !If [CapConcurrency, !Ref MaxConcurrency, !Ref AWS::NoValue]
+      Environment:
+        Variables:
+          SPOOL_BUCKET: !Ref SpoolBucket
+          ALLOWED_HOSTS: !Ref AllowedHosts
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              raise RuntimeError(
+                  "placeholder code: run infra/us-fetcher/deploy.sh to upload handler.py"
+              )
+
+  WorkerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: What the WhaleWatch worker needs to use the US fetcher, and no more
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: !GetAtt Function.Arn
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub "${SpoolBucket.Arn}/spool/*"
+
+Outputs:
+  FunctionName:
+    Description: US_FETCHER_FUNCTION
+    Value: !Ref Function
+  FunctionArn:
+    Value: !GetAtt Function.Arn
+  SpoolBucket:
+    Value: !Ref SpoolBucket
+  WorkerPolicyArn:
+    Description: Attach to the worker's IAM user or role
+    Value: !Ref WorkerPolicy
