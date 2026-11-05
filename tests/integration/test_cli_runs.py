@@ -81,6 +81,8 @@ TRACKED: Final = {
     "ingest-form4": ("ingest-form4", [], "success"),
     # No watermark to catch up from, which it finds before opening a fetcher.
     "ingest-house-index": ("ingest-house-index", ["--catch-up"], "failed"),
+    # No filing listed, so no fetcher is opened.
+    "ingest-house-ptrs": ("ingest-house-ptrs", [], "success"),
     # Every year through 2027 exists since 0032, so nothing is created.
     "create-partitions": ("create-partitions", ["--through", "2027"], "success"),
     # No purchases, so no clusters: the table is emptied and nothing written.

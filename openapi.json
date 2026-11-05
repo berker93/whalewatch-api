@@ -11879,6 +11879,292 @@
           }
         }
       }
+    },
+    "/admin/congress/review": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The PTR lines waiting for a person",
+        "description": "Newest filing first, a filing's lines in order. Each carries what was read\n(`raw_text`), why it is here (`problems`), OCR's `confidence`, and its filing's\n`document_url`, for reading it against the original.",
+        "operationId": "adminPtrReviewQueue",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "needs_review",
+                "placeholder"
+              ],
+              "type": "string",
+              "description": "`needs_review`: lines read in part, or by OCR without confidence. `placeholder`: filings no line could be read from.",
+              "default": "needs_review",
+              "title": "Status"
+            },
+            "description": "`needs_review`: lines read in part, or by OCR without confidence. `placeholder`: filings no line could be read from."
+          },
+          {
+            "name": "chamber",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "house",
+                    "senate"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One chamber's only.",
+              "title": "Chamber"
+            },
+            "description": "One chamber's only."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Lines per page.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Lines per page."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100000,
+              "minimum": 0,
+              "description": "How many to skip.",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "How many to skip."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPtrPage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` or `session_expired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/congress/review/{line_id}": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Accept or reject a PTR line in review",
+        "description": "`accept` makes it `parsed`, with `corrections` applied first; it must then have\nan asset, a type, a transaction date and one of the form's amount bands, or it is\na 422 `validation_error`. `reject` makes it `rejected`: kept, and out of the feed.\nEither is logged, and the filing is never read again over it.",
+        "operationId": "adminPtrReview",
+        "parameters": [
+          {
+            "name": "line_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The line's id, from the queue.",
+              "title": "Line Id"
+            },
+            "description": "The line's id, from the queue."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminPtrReview"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminPtrRow"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` or `session_expired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such line.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_in_review`: the line is not `needs_review`, or not any more.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/congress/coverage": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "How much of each chamber's PTRs has been read",
+        "description": "Per chamber: filings tried, read by text or OCR, given a placeholder, or still\nmissing a PDF; lines parsed and in review. A filing no run has tried yet is not\ncounted.",
+        "operationId": "adminPtrCoverage",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdminPtrCoverage"
+                  },
+                  "type": "array",
+                  "title": "Response Adminptrcoverage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` or `session_expired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -12918,6 +13204,946 @@
         ],
         "title": "AdminPlan",
         "description": "One plan, public, private or a grandfathering snapshot."
+      },
+      "AdminPtrCorrections": {
+        "properties": {
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "SP",
+                  "JT",
+                  "DC"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner",
+            "description": "`SP`, `JT`, `DC`; null for the member.",
+            "examples": [
+              "JT"
+            ]
+          },
+          "asset_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Name",
+            "description": "The asset, as the original has it.",
+            "examples": [
+              "Tractor Supply Co"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 12,
+                "pattern": "^[A-Z0-9.\\-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Upper case.",
+            "examples": [
+              "TSCO"
+            ]
+          },
+          "asset_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Z]{2}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Type",
+            "description": "The House's two-letter code.",
+            "examples": [
+              "ST"
+            ]
+          },
+          "transaction_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "purchase",
+                  "sale",
+                  "partial_sale",
+                  "exchange"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transaction Type",
+            "description": "What kind.",
+            "examples": [
+              "sale"
+            ]
+          },
+          "transaction_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transaction Date",
+            "description": "The trade's day.",
+            "examples": [
+              "2026-06-09"
+            ]
+          },
+          "notification_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Date",
+            "description": "When it was notified.",
+            "examples": [
+              "2026-07-01"
+            ]
+          },
+          "amount_low": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Low",
+            "description": "The band's floor.",
+            "examples": [
+              1001
+            ]
+          },
+          "amount_high": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount High",
+            "description": "The band's ceiling; null on an open band.",
+            "examples": [
+              15000
+            ]
+          },
+          "amount_exact": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,2})?$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Exact",
+            "description": "A figure instead of a band, as the filer wrote it; clear the band with it.",
+            "examples": [
+              "710.52"
+            ]
+          }
+        },
+        "type": "object",
+        "title": "AdminPtrCorrections",
+        "description": "Fields to set before accepting. Leave a field out to keep it; send null to clear it."
+      },
+      "AdminPtrCoverage": {
+        "properties": {
+          "chamber": {
+            "type": "string",
+            "enum": [
+              "house",
+              "senate"
+            ],
+            "title": "Chamber",
+            "description": "Which chamber.",
+            "examples": [
+              "house"
+            ]
+          },
+          "filings_seen": {
+            "type": "integer",
+            "title": "Filings Seen",
+            "description": "Filings a run has tried: read, given a placeholder, or missing a PDF.",
+            "examples": [
+              5530
+            ]
+          },
+          "filings_read": {
+            "type": "integer",
+            "title": "Filings Read",
+            "description": "With a line parsed: what a feed of trades shows.",
+            "examples": [
+              4812
+            ]
+          },
+          "review_only": {
+            "type": "integer",
+            "title": "Review Only",
+            "description": "With lines read and none parsed yet: all in the review queue.",
+            "examples": [
+              38
+            ]
+          },
+          "by_text": {
+            "type": "integer",
+            "title": "By Text",
+            "description": "Lines read from the text layer, parsed or in review.",
+            "examples": [
+              4790
+            ]
+          },
+          "by_ocr": {
+            "type": "integer",
+            "title": "By Ocr",
+            "description": "Lines read by OCR, parsed or in review.",
+            "examples": [
+              60
+            ]
+          },
+          "placeholders": {
+            "type": "integer",
+            "title": "Placeholders",
+            "description": "With a placeholder: no line read.",
+            "examples": [
+              702
+            ]
+          },
+          "missing": {
+            "type": "integer",
+            "title": "Missing",
+            "description": "Whose PDF the chamber does not have up yet.",
+            "examples": [
+              16
+            ]
+          },
+          "rows_parsed": {
+            "type": "integer",
+            "title": "Rows Parsed",
+            "description": "Lines read in full, or accepted.",
+            "examples": [
+              61204
+            ]
+          },
+          "rows_needs_review": {
+            "type": "integer",
+            "title": "Rows Needs Review",
+            "description": "Lines in the review queue.",
+            "examples": [
+              312
+            ]
+          },
+          "coverage_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Pct",
+            "description": "Filings read over filings seen, in percent, to a tenth.",
+            "examples": [
+              "87.0"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "chamber",
+          "filings_seen",
+          "filings_read",
+          "review_only",
+          "by_text",
+          "by_ocr",
+          "placeholders",
+          "missing",
+          "rows_parsed",
+          "rows_needs_review",
+          "coverage_pct"
+        ],
+        "title": "AdminPtrCoverage",
+        "description": "How much of a chamber's PTRs has been read."
+      },
+      "AdminPtrFiling": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The filing's id.",
+            "examples": [
+              812
+            ]
+          },
+          "chamber": {
+            "type": "string",
+            "enum": [
+              "house",
+              "senate"
+            ],
+            "title": "Chamber",
+            "description": "Which chamber.",
+            "examples": [
+              "house"
+            ]
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id",
+            "description": "The chamber's id for the document.",
+            "examples": [
+              "9116212"
+            ]
+          },
+          "member": {
+            "type": "string",
+            "title": "Member",
+            "description": "The filer's name as the index lists it.",
+            "examples": [
+              "Charles J Fleischmann"
+            ]
+          },
+          "office": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Office",
+            "description": "State and district.",
+            "examples": [
+              "TN03"
+            ]
+          },
+          "filing_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Filing Date",
+            "description": "When the chamber received it.",
+            "examples": [
+              "2026-07-08"
+            ]
+          },
+          "document_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Url",
+            "description": "The original PDF.",
+            "examples": [
+              "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/9116212.pdf"
+            ]
+          },
+          "extraction": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "ocr",
+                  "none"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction",
+            "description": "How its lines were read: from the text layer, by OCR, or not at all.",
+            "examples": [
+              "ocr"
+            ]
+          },
+          "pages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pages",
+            "description": "Pages in the PDF.",
+            "examples": [
+              1
+            ]
+          },
+          "parse_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parse Error",
+            "description": "Why no line could be read from it, on a placeholder's filing.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "chamber",
+          "doc_id",
+          "member",
+          "office",
+          "filing_date",
+          "document_url",
+          "extraction",
+          "pages",
+          "parse_error"
+        ],
+        "title": "AdminPtrFiling",
+        "description": "The filing a line is from."
+      },
+      "AdminPtrPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminPtrRow"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "The lines on this page."
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "How many lines match, on every page.",
+            "examples": [
+              312
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "The page size asked for.",
+            "examples": [
+              50
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "How many matches came before this page.",
+            "examples": [
+              0
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "AdminPtrPage",
+        "description": "One page of the queue."
+      },
+      "AdminPtrReview": {
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "reject"
+            ],
+            "title": "Decision",
+            "description": "`accept`: a trade, as corrected. `reject`: not a trade at all.",
+            "examples": [
+              "accept"
+            ]
+          },
+          "corrections": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdminPtrCorrections"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `accept` only: what the reader got wrong."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": "Why, for the next reviewer.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "title": "AdminPtrReview",
+        "description": "A person's call on one line in review."
+      },
+      "AdminPtrRow": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The line's id: what review takes.",
+            "examples": [
+              40213
+            ]
+          },
+          "filing": {
+            "$ref": "#/components/schemas/AdminPtrFiling",
+            "description": "The filing it is from."
+          },
+          "line": {
+            "type": "integer",
+            "title": "Line",
+            "description": "1-based, in the filing's order.",
+            "examples": [
+              1
+            ]
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page",
+            "description": "The page it starts on.",
+            "examples": [
+              1
+            ]
+          },
+          "parse_status": {
+            "type": "string",
+            "enum": [
+              "parsed",
+              "needs_review",
+              "placeholder",
+              "rejected"
+            ],
+            "title": "Parse Status",
+            "description": "Where it stands.",
+            "examples": [
+              "needs_review"
+            ]
+          },
+          "extraction": {
+            "type": "string",
+            "enum": [
+              "text",
+              "ocr",
+              "none"
+            ],
+            "title": "Extraction",
+            "description": "How it was read.",
+            "examples": [
+              "ocr"
+            ]
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "SP",
+                  "JT",
+                  "DC"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner",
+            "description": "`SP` spouse, `JT` joint, `DC` dependent child; null for the member.",
+            "examples": [
+              "JT"
+            ]
+          },
+          "asset_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Name",
+            "description": "The asset.",
+            "examples": [
+              "Tractor Supply Co TSCO"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "As the filer gave it; never on a scan.",
+            "examples": [
+              null
+            ]
+          },
+          "asset_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Type",
+            "description": "The House's two-letter code.",
+            "examples": [
+              null
+            ]
+          },
+          "transaction_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "purchase",
+                  "sale",
+                  "partial_sale",
+                  "exchange"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transaction Type",
+            "description": "What kind.",
+            "examples": [
+              "sale"
+            ]
+          },
+          "transaction_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transaction Date",
+            "description": "The trade's day.",
+            "examples": [
+              "2026-06-09"
+            ]
+          },
+          "notification_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Date",
+            "description": "When the member learned of it.",
+            "examples": [
+              "2026-07-01"
+            ]
+          },
+          "amount_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Low",
+            "description": "The band's floor, in dollars.",
+            "examples": [
+              1001
+            ]
+          },
+          "amount_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount High",
+            "description": "The band's ceiling; null on an open band.",
+            "examples": [
+              15000
+            ]
+          },
+          "amount_exact": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Exact",
+            "description": "A figure the filer wrote instead of a band; never with one.",
+            "examples": [
+              null
+            ]
+          },
+          "cap_gains_over_200": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cap Gains Over 200",
+            "description": "The form's capital-gains box, where it has one.",
+            "examples": [
+              null
+            ]
+          },
+          "filing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filing Status",
+            "description": "`new` or `amended`.",
+            "examples": [
+              null
+            ]
+          },
+          "subholding_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subholding Of",
+            "description": "The account it sits in.",
+            "examples": [
+              null
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "The filer's description.",
+            "examples": [
+              null
+            ]
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment",
+            "description": "The filer's comment.",
+            "examples": [
+              null
+            ]
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence",
+            "description": "OCR's confidence, 0 to 1; null for text.",
+            "examples": [
+              "0.775"
+            ]
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Problems",
+            "description": "Why it is in review, or why its filing has a placeholder.",
+            "examples": [
+              [
+                "OCR confidence 0.78 under 0.80"
+              ]
+            ]
+          },
+          "raw_text": {
+            "type": "string",
+            "title": "Raw Text",
+            "description": "What was read, for comparing with the original.",
+            "examples": [
+              "JT | Tractor Supply Co TSCO | 06/09/26 | 07/01/26 | type 0.000/0.071/0.000"
+            ]
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At",
+            "description": "When a person settled it.",
+            "examples": [
+              null
+            ]
+          },
+          "review_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Note",
+            "description": "What they said.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "filing",
+          "line",
+          "page",
+          "parse_status",
+          "extraction",
+          "owner",
+          "asset_name",
+          "ticker",
+          "asset_type",
+          "transaction_type",
+          "transaction_date",
+          "notification_date",
+          "amount_low",
+          "amount_high",
+          "amount_exact",
+          "cap_gains_over_200",
+          "filing_status",
+          "subholding_of",
+          "description",
+          "comment",
+          "confidence",
+          "problems",
+          "raw_text",
+          "reviewed_at",
+          "review_note"
+        ],
+        "title": "AdminPtrRow",
+        "description": "One line of a PTR, as read."
       },
       "AdminSession": {
         "properties": {
@@ -15007,6 +16233,7 @@
           "unknown_plan",
           "no_subscription",
           "already_grandfathered",
+          "not_in_review",
           "http_error"
         ],
         "title": "ErrorCode",
@@ -21592,7 +22819,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot; `not_in_review` (409): reviewing a PTR line that is not in the review queue.",
             "examples": [
               "not_found"
             ]
@@ -22271,7 +23498,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot; `not_in_review` (409): reviewing a PTR line that is not in the review queue.",
             "examples": [
               "not_found"
             ]
@@ -22468,7 +23695,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot; `not_in_review` (409): reviewing a PTR line that is not in the review queue.",
             "examples": [
               "not_found"
             ]
@@ -25243,7 +26470,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot; `not_in_review` (409): reviewing a PTR line that is not in the review queue.",
             "examples": [
               "not_found"
             ]
@@ -26464,7 +27691,7 @@
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode",
-            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot.",
+            "description": "What went wrong, stable across releases. `invalid_cursor`: `cursor` is malformed, or belongs to a different listing or sort. `not_found`: no such thing, or nothing published for the period asked for. `validation_error`: a parameter is missing or malformed; `detail.errors` says which. `rate_limited`: too many requests from this address, or too many sign-in attempts for this email; wait `Retry-After` seconds. `payload_too_large`: the request body is over the limit. `timeout`: the answer took too long to build. `internal_error`: a fault on our side; quote `request_id` when reporting it. Accounts: `unauthenticated` (401): no session; `session_expired` (401): the session the cookie named has ended or was signed out; `invalid_credentials` (403): wrong email or password, or a wrong current password; `weak_password`, `invalid_email`, `invalid_name` (422): a refused field, named in `detail.errors`; `email_taken` (409): registration for an address that has an account; `terms_not_accepted` (422): registration without `accept_terms`; `invalid_token` (422): an emailed link that is unknown, used, replaced or expired; `forbidden_origin` (403): a write from a site not allowed to call; `email_unverified` (403): a save by an account whose email is not verified yet; `unavailable` (503): sessions cannot be read right now, try again shortly. Plans: `plan_limit` (402): the caller's plan does not reach that far back, holds no more of something, or has no API access; `detail` names the limit and the plan that lifts it. API keys: `invalid_api_key` (401): the `Authorization` header is not `Bearer <key>`, or the key is unknown or revoked; `quota_exceeded` (429): the month's quota of calls is spent; `X-RateLimit-Reset` says when it resets. Billing: `billing_unavailable` (503): payments are not set up, or the payment provider could not be reached; `already_subscribed` (409): a checkout for an account already on a plan, which changes plan in the customer portal instead. `invalid_signature` (400) answers only a webhook that is not the payment provider's. Admin console: `unknown_plan` (422): no plan has that slug; `no_subscription` (409): grandfathering an account with no live subscription; `already_grandfathered` (409): grandfathering one already pinned to a snapshot; `not_in_review` (409): reviewing a PTR line that is not in the review queue.",
             "examples": [
               "not_found"
             ]

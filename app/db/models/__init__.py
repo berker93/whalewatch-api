@@ -48,6 +48,7 @@ from app.db.models.congress_filing import (
     REPORT_TYPES,
     CongressFiling,
 )
+from app.db.models.congress_transaction import CongressTransaction
 from app.db.models.crawl_watermark import CrawlWatermark
 from app.db.models.email import (
     STATUS_RANKS,
@@ -228,6 +229,7 @@ __all__ = [
     "ChangeAction",
     "Channel",
     "CongressFiling",
+    "CongressTransaction",
     "ConsentRecord",
     "ConsentSource",
     "CrawlWatermark",

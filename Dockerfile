@@ -17,6 +17,12 @@ ENV UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1 \
     PATH=/opt/venv/bin:$PATH
 
+# Tesseract, which ingest-house-ptrs reads paper PTRs with (PTR_OCR). English
+# only: the forms are.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
 # Dependency layer, cached until pyproject.toml or uv.lock actually change.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen

@@ -12,6 +12,11 @@ index again updates a row only where the index now says something different —
 the Clerk correcting a name, or a date — so a re-run that finds nothing new
 writes nothing, ``updated_at`` included.
 
+Its PDF is read later, by ``ingest-house-ptrs``, into ``congress_transaction``
+rows (:mod:`app.db.models.congress_transaction`); the columns from
+``document_url`` down say how that went. A filing whose ``parser_version`` is
+null has not been read yet.
+
 Not linked to a member table: there is none yet, and the index names people
 as they filed (``Hon.``, a middle initial or not), not as a roster would.
 """
@@ -87,6 +92,22 @@ class CongressFiling(Base):
     source_key: Mapped[str] = mapped_column(Text)
     """The raw-store key of the index that first listed it."""
 
+    document_url: Mapped[str | None] = mapped_column(Text)
+    """Where the chamber serves the filing itself: the "view original" link."""
+    document_key: Mapped[str | None] = mapped_column(Text)
+    """The raw-store key of its PDF, once fetched."""
+    pages: Mapped[int | None] = mapped_column(SmallInteger)
+    extraction: Mapped[str | None] = mapped_column(Text)
+    """How its rows were read: ``text``, ``ocr``, or ``none`` (a scan, with no
+    OCR installed when it was read)."""
+    parser_version: Mapped[int | None] = mapped_column(SmallInteger)
+    """The :data:`~app.ingestion.congress.ptr.PARSER_VERSION` that read it;
+    null until read."""
+    parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    parse_error: Mapped[str | None] = mapped_column(Text)
+    """Why no row could be read from it — it then has a placeholder row — or
+    why it could not be read at all yet (no PDF at the Clerk's)."""
+
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -100,4 +121,8 @@ class CongressFiling(Base):
         CheckConstraint(CHAMBER_CHECK, name="chamber_is_known"),
         CheckConstraint(REPORT_TYPE_CHECK, name="report_type_is_known"),
         CheckConstraint("doc_id <> ''", name="doc_id_is_not_empty"),
+        CheckConstraint(
+            "extraction IS NULL OR extraction IN ('text', 'ocr', 'none')",
+            name="extraction_is_known",
+        ),
     )

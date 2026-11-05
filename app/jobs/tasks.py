@@ -13,6 +13,7 @@ task                       CLI verb                    job
 ``crawl_form4_daily``      ``crawl-form4 --catch-up``  app/jobs/form4.py
 ``ingest_form4``           ``ingest-form4``            app/jobs/form4.py
 ``ingest_house_index``     ``ingest-house-index``      app/jobs/congress.py
+``ingest_house_ptrs``      ``ingest-house-ptrs``       app/jobs/congress.py
 ``resolve_cusips``         ``resolve-cusips``          app/jobs/enrichment.py
 ``fetch_prices``           ``fetch-quotes``            app/jobs/enrichment.py
 ``recompute_positions``    ``recompute``               app/jobs/derived.py
@@ -214,6 +215,12 @@ def ingest_form4(
 def ingest_house_index(self: Task[Any, Any]) -> Summary:
     """``ingest-house-index --catch-up``: the House Clerk's indexes since the watermark."""
     return _run(self, congress.ingest_house_index_job, years=None, today=new_york_today())
+
+
+@shared_task(bind=True, queue=INGESTION_QUEUE, max_retries=MAX_RETRIES)
+def ingest_house_ptrs(self: Task[Any, Any], limit: int | None = None) -> Summary:
+    """``ingest-house-ptrs``: the PDFs of House filings not read yet."""
+    return _run(self, congress.ingest_house_ptrs_job, limit=limit)
 
 
 # --- enrichment --------------------------------------------------------------

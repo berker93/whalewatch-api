@@ -53,6 +53,7 @@ from app.api.rate_limit import (
 from app.api.routers import (
     account,
     admin,
+    admin_congress,
     alert_delivery,
     alert_rules,
     api_keys,
@@ -286,6 +287,7 @@ def create_app(settings: Settings) -> FastAPI:
         app.include_router(router.router, prefix="/v1", responses=RATE_LIMITED)
     # The admin console: outside /v1, which is the product's, and on its own sessions.
     app.include_router(admin.router, responses=RATE_LIMITED)
+    app.include_router(admin_congress.router, responses=RATE_LIMITED)
     # Paddle's and Postmark's, not a client's: outside /v1, the OpenAPI document
     # and the rate limit.
     app.include_router(billing.webhook_router)

@@ -52,6 +52,11 @@ ZIP each night and the rebuild's timestamps alone change its bytes: keyed on
 the ZIP, an unchanged index would be a new object every day. Built only by
 :func:`house_index_key`.
 
+``raw/house-clerk/ptr/{year}/{doc_id}.pdf`` — one House PTR's PDF, as served,
+under the index year it is listed in and its doc id: the Clerk's own path. An
+amendment is a filing of its own, under a doc id of its own, so the key never
+needs a version. Built only by :func:`house_ptr_key`.
+
 Two implementations, chosen by ``RAW_STORE_BACKEND``: :class:`LocalRawStore`
 under ``./data`` for development, and :class:`~app.storage.s3.S3RawStore` for
 any S3-compatible bucket, Cloudflare R2 included. Get one with
@@ -253,6 +258,19 @@ def house_index_key(year: int, sha256: str) -> str:
     if len(sha256) != 64 or not all(c in "0123456789abcdef" for c in sha256):
         raise ValueError(f"{sha256!r} is not a hex SHA-256")
     return validate_key(f"raw/house-clerk/index/{year}/{sha256}.zip")
+
+
+def house_ptr_key(year: int, doc_id: str) -> str:
+    """``raw/house-clerk/ptr/2026/20033725.pdf``, one PTR's PDF, as served.
+
+    :raises ValueError: If ``year`` is not four digits or ``doc_id`` is not the
+        letters, digits and dashes a House doc id is.
+    """
+    if not 1000 <= year <= 9999:
+        raise ValueError(f"{year} is not a four-digit year")
+    if not doc_id or not all(c.isascii() and (c.isalnum() or c == "-") for c in doc_id):
+        raise ValueError(f"{doc_id!r} is not a House doc id")
+    return validate_key(f"raw/house-clerk/ptr/{year}/{doc_id}.pdf")
 
 
 def validate_key(key: str) -> str:

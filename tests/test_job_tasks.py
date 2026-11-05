@@ -478,6 +478,7 @@ def test_edgar_and_network_work_is_on_ingestion_and_postgres_work_on_compute() -
         "crawl_form4_daily": INGESTION_QUEUE,
         "ingest_form4": INGESTION_QUEUE,
         "ingest_house_index": INGESTION_QUEUE,
+        "ingest_house_ptrs": INGESTION_QUEUE,
         "resolve_cusips": INGESTION_QUEUE,
         "fetch_prices": INGESTION_QUEUE,
         "recompute_positions": COMPUTE_QUEUE,

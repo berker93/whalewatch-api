@@ -52,6 +52,10 @@ Quantity = Annotated[Decimal, *_DECIMAL_STRING]
 #: :data:`~app.db.models.position_snapshot.WEIGHT_PCT`).
 Percent = Annotated[Decimal, *_DECIMAL_STRING]
 
+#: A score from ``0`` to ``1``, as a string, to three places: OCR's confidence
+#: in a PTR line it read (``congress_transaction.confidence``).
+Score = Annotated[Decimal, *_DECIMAL_STRING]
+
 #: A price per share, in dollars, to eight places (see
 #: :data:`~app.db.models.implied_price.PRICE`). Not ``Money``, which is whole
 #: dollars of a position: a price can be a fraction of a cent.

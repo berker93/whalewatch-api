@@ -57,6 +57,7 @@ class ErrorCode(StrEnum):
     UNKNOWN_PLAN = "unknown_plan"
     NO_SUBSCRIPTION = "no_subscription"
     ALREADY_GRANDFATHERED = "already_grandfathered"
+    NOT_IN_REVIEW = "not_in_review"
     #: Any other status. Nothing in this API raises one on purpose; it is here
     #: so that an exception from a dependency still answers in this shape.
     HTTP_ERROR = "http_error"
@@ -100,7 +101,8 @@ class ProblemError(BaseModel):
             "that is not the payment provider's. Admin console: `unknown_plan` (422): "
             "no plan has that slug; `no_subscription` (409): grandfathering an account "
             "with no live subscription; `already_grandfathered` (409): grandfathering "
-            "one already pinned to a snapshot."
+            "one already pinned to a snapshot; `not_in_review` (409): reviewing a PTR "
+            "line that is not in the review queue."
         ),
         examples=["not_found"],
     )

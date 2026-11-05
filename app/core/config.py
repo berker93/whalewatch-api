@@ -315,6 +315,14 @@ class Settings(BaseSettings):
     us_fetcher_access_key_id: str | None = None
     us_fetcher_secret_access_key: SecretStr | None = None
 
+    # --- PTR OCR ------------------------------------------------------------
+    # How ingest-house-ptrs reads a paper PTR, which is a scan with no text.
+    # "tesseract" runs TESSERACT_COMMAND, if it is installed (the image has
+    # it; brew install tesseract on a Mac); without it, or with "none", a scan
+    # gets a placeholder row, and the first run with OCR reads it again.
+    ptr_ocr: Literal["tesseract", "none"] = "tesseract"
+    tesseract_command: str = "tesseract"
+
     @field_validator("openfigi_api_key", mode="before")
     @classmethod
     def _blank_key_is_no_key(cls, value: object) -> object:

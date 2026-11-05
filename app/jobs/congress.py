@@ -1,14 +1,16 @@
-"""The Congress jobs: the House Clerk's yearly indexes into ``congress_filing``.
+"""The Congress jobs: the House Clerk's indexes and the PTRs they list.
 
-``ingest-house-index`` is this with argument parsing and a summary; the
-``ingest_house_index`` task is this in ``asyncio.run``, catching up. As with
-the Form 4 jobs (app/jobs/form4.py), nothing here prints.
+``ingest-house-index`` and ``ingest-house-ptrs`` are these with argument
+parsing and a summary; the ``ingest_house_index`` and ``ingest_house_ptrs``
+tasks are these in ``asyncio.run``. As with the Form 4 jobs
+(app/jobs/form4.py), nothing here prints.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from app.core.config import Settings
@@ -21,6 +23,16 @@ from app.ingestion.congress.filings import (
     ingest_house_index,
 )
 from app.ingestion.congress.house_clerk import HouseClerk
+from app.ingestion.congress.ptr_ocr import Ocr, Tesseract
+from app.ingestion.congress.ptrs import (
+    DEFAULT_CONCURRENCY,
+    Coverage,
+    Outcome,
+    PtrIngest,
+    ingest_house_ptrs,
+    pending_filings,
+    table_coverage,
+)
 from app.ingestion.remote.fetcher import open_fetcher
 from app.jobs.tracking import TrackedRun, tracked_task
 from app.storage.raw import open_raw_store
@@ -109,3 +121,111 @@ async def ingest_house_index_job(
 
 def _iso(day: date | None) -> str | None:
     return None if day is None else day.isoformat()
+
+
+# --- PTRs ------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class HousePtrRun:
+    """What one run did, and the table's coverage after it."""
+
+    ingest: PtrIngest
+    table: Coverage
+
+
+def _number(percent: Decimal | None) -> float | None:
+    """A percentage to a tenth, as ``metrics`` (jsonb) stores it."""
+    return None if percent is None else float(percent)
+
+
+def open_ocr(settings: Settings) -> Ocr | None:
+    """Tesseract, when ``PTR_OCR`` asks for it and it is installed."""
+    if settings.ptr_ocr == "none":
+        return None
+    engine = Tesseract.find(settings.tesseract_command)
+    if engine is None:
+        logger.warning("house_ptr.no_ocr", command=settings.tesseract_command)
+    return engine
+
+
+def _ptr_context(_: Settings, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "years": arguments.get("years"),
+        "doc_ids": arguments.get("doc_ids"),
+        "limit": arguments.get("limit"),
+        "reparse": arguments.get("reparse", False),
+    }
+
+
+@tracked_task("ingest-house-ptrs", context=_ptr_context)
+async def ingest_house_ptrs_job(
+    run: TrackedRun,
+    settings: Settings,
+    *,
+    years: list[int] | None = None,
+    doc_ids: list[str] | None = None,
+    limit: int | None = None,
+    reparse: bool = False,
+    concurrency: int = DEFAULT_CONCURRENCY,
+) -> HousePtrRun:
+    """Read the PDFs of House filings not yet read into ``congress_transaction``.
+
+    :param years: Only filings in these index years.
+    :param doc_ids: Only these filings.
+    :param limit: At most this many, newest filing first.
+    :param reparse: Every filing chosen, read or not — but never one a person
+        has reviewed a row of.
+    :raises FetcherUnavailable: No fetcher, or one that cannot be used, and a
+        PDF not archived yet.
+    """
+    ocr = open_ocr(settings)
+    engine = create_engine(settings)
+    sessions = create_session_factory(engine)
+    try:
+        async with sessions() as session:
+            filings = await pending_filings(
+                session,
+                ocr=ocr is not None,
+                years=years,
+                doc_ids=doc_ids,
+                reparse=reparse,
+                limit=limit,
+            )
+        ingest = PtrIngest(ocr=ocr is not None)
+        if filings:  # nothing to read needs no fetcher
+            async with open_fetcher(settings) as fetcher, open_raw_store(settings) as store:
+                clerk = HouseClerk(fetcher, store, user_agent=settings.sec_user_agent)
+                ingest = await ingest_house_ptrs(
+                    sessions, clerk, filings, ocr=ocr, concurrency=concurrency
+                )
+        async with sessions() as session:
+            table = await table_coverage(session)
+    finally:
+        await engine.dispose()
+
+    coverage = ingest.coverage
+    run.items_seen = coverage.seen
+    run.items_written = coverage.read + coverage.review_only + coverage.placeholders
+    run.errors.extend(
+        f"{read.filing.doc_id}: {read.error}"
+        for read in ingest.reads
+        if read.outcome is Outcome.FAILED
+    )
+    run.metrics |= {
+        "ocr": ingest.ocr,
+        "filings_seen": coverage.seen,
+        "filings_read": coverage.read,
+        "review_only": coverage.review_only,
+        "by_text": coverage.by_text,
+        "by_ocr": coverage.by_ocr,
+        "placeholders": coverage.placeholders,
+        "missing": coverage.missing,
+        "failed": coverage.failed,
+        "rows_parsed": coverage.rows_parsed,
+        "rows_needs_review": coverage.rows_needs_review,
+        "coverage_pct": _number(coverage.percent),
+        "fetched": sum(1 for read in ingest.reads if read.fetched),
+        "table_coverage_pct": _number(table.percent),
+    }
+    return HousePtrRun(ingest=ingest, table=table)

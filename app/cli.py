@@ -3,7 +3,7 @@ audit-amendments, check-data, recompute, detect-splits, backfill, runs, refresh-
 reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticker-alias,
 fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user,
 delete-user, restore-user, purge-accounts, billing, create-admin, disable-admin, snapshot-metrics,
-check-email-domain, fetcher-check, ingest-house-index, email-suppression.
+check-email-domain, fetcher-check, ingest-house-index, ingest-house-ptrs, email-suppression.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -45,6 +45,7 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli ingest-form4
     uv run python -m app.cli ingest-house-index --from-year 2012
     uv run python -m app.cli ingest-house-index --catch-up
+    uv run python -m app.cli ingest-house-ptrs --limit 200
     uv run python -m app.cli create-partitions --through 2028
     uv run python -m app.cli detect-clusters
     uv run python -m app.cli create-user --email ada@example.com --name "Ada Lovelace"
@@ -81,7 +82,8 @@ run's ``metrics``.
 The verbs that are also Celery tasks
 ------------------------------------
 ``discover-filings``, ``backfill``, ``crawl-form4``, ``ingest-form4``,
-``ingest-house-index``, ``resolve-cusips``, ``fetch-quotes``, ``recompute`` and
+``ingest-house-index``, ``ingest-house-ptrs``, ``resolve-cusips``, ``fetch-quotes``,
+``recompute`` and
 ``refresh-views`` are each a call to a ``@tracked_task`` job (app/jobs/), the
 same call its task makes (app/jobs/tasks.py), with the arguments parsed on the
 way in and the summary printed on the way out. The job holds its advisory lock for the run,
@@ -134,7 +136,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Final, NoReturn, TextIO
+from typing import Annotated, Any, Final, NoReturn, TextIO
 
 import httpx
 import structlog
@@ -200,6 +202,9 @@ from app.ingestion.backfill import (
 )
 from app.ingestion.congress.filings import HouseIngest, YearKind
 from app.ingestion.congress.house_clerk import FIRST_YEAR as HOUSE_FIRST_YEAR
+from app.ingestion.congress.ptrs import DEFAULT_CONCURRENCY as PTR_CONCURRENCY
+from app.ingestion.congress.ptrs import Coverage, FilingRead, PtrIngest
+from app.ingestion.congress.ptrs import Outcome as PtrOutcome
 from app.ingestion.congress.senate_efd import SenateEfd, SenateEfdError
 from app.ingestion.discovery import (
     FilerDiscovery,
@@ -298,7 +303,7 @@ from app.ingestion.verify_investors import CikCheck, stale_cutoff, verify_invest
 from app.jobs.accounts import purge_accounts, run_billing, snapshot_metrics
 from app.jobs.alerts import emit_alerts, send_alert_emails
 from app.jobs.cache import invalidate_cache
-from app.jobs.congress import ingest_house_index_job
+from app.jobs.congress import HousePtrRun, ingest_house_index_job, ingest_house_ptrs_job
 from app.jobs.derived import filer_id_of, recompute_positions, refresh_matviews
 from app.jobs.enrichment import fetch_prices, float_pct, resolve_cusips
 from app.jobs.errors import JobError
@@ -2211,6 +2216,116 @@ def _echo_house_ingest(ingest: HouseIngest) -> None:
         typer.echo(f"  watermark {before}, unchanged")
     else:
         typer.echo(f"  watermark {before} -> {ingest.watermark_after}")
+
+
+# --- ingest-house-ptrs -------------------------------------------------------
+
+#: Filings listed one by one in the summary before the rest are counted.
+_PTR_LINES: Final = 50
+
+
+@app.command("ingest-house-ptrs")
+def ingest_house_ptrs_command(
+    year: Annotated[
+        list[int] | None,
+        typer.Option("--year", metavar="YYYY", help="Only filings in this index year. Repeatable."),
+    ] = None,
+    doc_id: Annotated[
+        list[str] | None,
+        typer.Option("--doc-id", metavar="ID", help="Only this filing. Repeatable."),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", min=1, help="At most this many filings, newest first."),
+    ] = None,
+    reparse: Annotated[
+        bool,
+        typer.Option(
+            "--reparse",
+            help="Read every filing chosen again, not only those not read by this "
+            "parser. Never a filing a person has reviewed a row of.",
+        ),
+    ] = False,
+    concurrency: Annotated[
+        int, typer.Option("--concurrency", min=1, max=16, help="Filings read at once.")
+    ] = PTR_CONCURRENCY,
+) -> None:
+    """Read House PTR PDFs into congress_transaction, and report the coverage.
+
+    For each House filing in congress_filing not yet read by this parser: its
+    PDF from the archive, or from the Clerk through the US fetcher (archived
+    first); its rows from the text layer, or by OCR for a scan when Tesseract
+    is installed (PTR_OCR). A row not read in full is kept as needs_review,
+    for the admin review queue; a filing no row could be read from gets one
+    placeholder row, linking to the original.
+
+    Exits 1 if a filing failed (the others are still read), and if there is
+    no US fetcher for a PDF not archived yet.
+    """
+    try:
+        failed = asyncio.run(
+            _ingest_house_ptrs(
+                years=year or None,
+                doc_ids=doc_id or None,
+                limit=limit,
+                reparse=reparse,
+                concurrency=concurrency,
+            )
+        )
+    except FetcherError as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+    if failed:
+        raise typer.Exit(code=1)
+
+
+async def _ingest_house_ptrs(**arguments: Any) -> bool:
+    """The job, then its summary. Returns whether a filing failed."""
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    try:
+        ran = await ingest_house_ptrs_job(settings, **arguments)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return False
+    _echo_house_ptrs(ran.value)
+    return ran.value.ingest.failed
+
+
+def _echo_house_ptrs(ran: HousePtrRun) -> None:
+    ingest: PtrIngest = ran.ingest
+    ocr = "OCR on" if ingest.ocr else "OCR off: scans get placeholders"
+    typer.echo(f"ingest-house-ptrs  {len(ingest.reads):,} filings, {ocr}")
+    unclean = [read for read in ingest.reads if _unclean(read)]
+    for read in unclean[:_PTR_LINES]:
+        typer.echo(f"  {read.filing.doc_id:<10} {read.outcome.value:<12} {_ptr_detail(read)}")
+    if len(unclean) > _PTR_LINES:
+        typer.echo(f"  … and {len(unclean) - _PTR_LINES:,} more")
+    run = ingest.coverage
+    typer.echo(
+        f"  this run   {_covered(run)}, {run.review_only:,} only in review, "
+        f"{run.placeholders:,} placeholders, "
+        f"{run.missing:,} missing, {run.failed:,} failed; rows {run.rows_parsed:,} parsed, "
+        f"{run.rows_needs_review:,} needs review"
+    )
+    typer.echo(f"  all House  {_covered(ran.table)}")
+
+
+def _unclean(read: FilingRead) -> bool:
+    return read.outcome is not PtrOutcome.TEXT or read.needs_review > 0
+
+
+def _ptr_detail(read: FilingRead) -> str:
+    if read.outcome in (PtrOutcome.TEXT, PtrOutcome.OCR):
+        return f"{read.parsed:>4,} parsed  {read.needs_review:>4,} needs review"
+    if read.outcome is PtrOutcome.KEPT:
+        return "reviewed since it was chosen: left as it is"
+    return read.error or ""
+
+
+def _covered(coverage: Coverage) -> str:
+    percent = "-" if coverage.percent is None else f"{coverage.percent}%"
+    return f"{coverage.read:,}/{coverage.seen:,} filings read ({percent})"
 
 
 @app.command("email-suppression")

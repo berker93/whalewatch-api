@@ -29,6 +29,8 @@ dependencies = [
     # ElementTree implements only a subset of XPath that excludes local-name(),
     # which leaves hardcoding a URI that is known to vary as the alternative.
     "lxml>=5.3",
+    "numpy>=2.0",
+    "pdfplumber>=0.11",
     "pydantic-settings>=2.7",
     "pydantic[email]>=2.9",
     # data/investors.yaml, read by `seed-investors`. Runtime because the seed
@@ -74,6 +76,12 @@ ignore_missing_imports = true
 # Imported in one place (app/ingestion/enrichment/quotes.py) and used as Any.
 [[tool.mypy.overrides]]
 module = ["yfinance", "yfinance.*"]
+ignore_missing_imports = true
+
+# Renders scanned PTRs for OCR (app/ingestion/congress/ptr_ocr.py); a ctypes
+# binding with no py.typed marker.
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*"]
 ignore_missing_imports = true
 
 # Imported only by the deployed US fetcher (app/ingestion/remote/handler.py),

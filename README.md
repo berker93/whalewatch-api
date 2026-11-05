@@ -331,7 +331,9 @@ and `raw/senate-efd/search/{fetched_at}-{start}.json` — the search stamped wit
 when it ran, because it answers differently every day. The House Clerk's
 yearly disclosure ZIPs go under `raw/house-clerk/index/{year}/{sha256}.zip`,
 named by the checksum of the XML index inside: the Clerk rebuilds every ZIP
-nightly, so the ZIP's own bytes change when nothing in it has.
+nightly, so the ZIP's own bytes change when nothing in it has. Each PTR's PDF
+goes under `raw/house-clerk/ptr/{year}/{doc_id}.pdf`, the Clerk's own path, and
+is read from there on every later run.
 
 `RAW_STORE_BACKEND` picks the implementation ([app/storage](app/storage/)):
 
@@ -1239,6 +1241,51 @@ one year without moving it. A 404 for the current year is "not published
 yet", not a failure. Exit 1 if a year failed — the others are still read,
 and the watermark holds — or with no fetcher configured.
 
+### `ingest-house-ptrs [--year YYYY]... [--doc-id ID]... [--limit N] [--reparse] [--concurrency N]`
+
+Reads the PDF of each House PTR in `congress_filing` into `congress_transaction`,
+a row per line of its transaction grid: owner (`SP`, `JT`, `DC`), asset, ticker
+and type code where the filer gave them, P / S / S (partial) / E, the two dates,
+the amount band, the cap-gains box, and the details under the line (filing
+status, subholding, description, comments). The PDF comes from the archive if
+it is there, else from the Clerk through the US fetcher, archived before it is
+read ([app/ingestion/congress](app/ingestion/congress/)).
+
+- **E-filed PTRs** (doc ids `2…`, seven in eight) are read from their text layer
+  with pdfplumber, by the header's column positions rather than its table
+  finder, which the form's shaded rows confuse. Every format since 2013.
+- **Paper PTRs** (`8…`, `9…`) are scans. With Tesseract installed (`PTR_OCR`,
+  default `tesseract`; the image has it, `brew install tesseract` on a Mac),
+  the form's grid is found in the scan, its text columns OCR'd and its ticked
+  boxes measured; a line under 0.80 confidence, or with a field that does not
+  parse, is `needs_review`. Without it, a scan gets a placeholder, and the first
+  run with OCR reads it again unasked.
+- **A line not read in full** is kept as `needs_review`, never dropped, for the
+  admin review queue (`GET /admin/congress/review`, `POST .../review/{id}` to
+  accept, corrected, or reject).
+- **A filing no line can be read from** gets one `placeholder` row, and the
+  filing carries the member, the date and `document_url`: the feed can say
+  "filing not machine-readable — view original".
+
+```
+ingest-house-ptrs  48 filings, OCR on
+  9116212    ocr             1 parsed     1 needs review
+  8221334    placeholder  OCR found no form grid on any page
+  20035999   missing      the House Clerk has no PDF for 2026/20035999
+  this run   45/48 filings read (93.8%), 1 only in review, 1 placeholders, 1 missing, 0 failed; rows 610 parsed, 2 needs review
+  all House  4,812/5,530 filings read (87.0%)
+```
+
+Coverage is filings read — with a line parsed, so in a feed of trades — over
+filings seen, for the run and for every House PTR so far, and is in the run's
+`metrics` (`GET /admin/congress/coverage` has it too). "Only in review" are
+filings whose every line waits for a person. An exact figure where the form
+wants a band (`$710.52`) is kept as `amount_exact`. A filing is read again when the parser changes (`PARSER_VERSION`) or
+with `--reparse`, from the archive — but never once a person has reviewed one
+of its lines. A missing PDF (indexed, not up yet) is tried again next run.
+Exit 1 if a filing failed (the others are still read), or with no fetcher for
+a PDF not archived yet.
+
 ### `runs [--job NAME] [--limit N]`
 
 Lists the most recent job runs, newest first, from `ingestion_run`. Every verb
@@ -1356,6 +1403,7 @@ body inside `track_run`, and binds `job_name` and `run_id` on every line.
 | `crawl_form4_daily` | ingestion | `crawl-form4 --catch-up` | `crawl-form4` |
 | `ingest_form4` | ingestion | `ingest-form4` | `ingest-form4` |
 | `ingest_house_index` | ingestion | `ingest-house-index --catch-up` | `ingest-house-index` |
+| `ingest_house_ptrs` | ingestion | `ingest-house-ptrs` | `ingest-house-ptrs` |
 | `resolve_cusips` | ingestion | `resolve-cusips` | `resolve-cusips` |
 | `fetch_prices` | ingestion | `fetch-quotes` | `fetch-quotes` |
 | `recompute_positions` | compute | `recompute` | `recompute` |

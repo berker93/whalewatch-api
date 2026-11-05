@@ -86,6 +86,10 @@ class AdminActionKind(StrEnum):
     UNGRANDFATHERED = "ungrandfathered"
     ADMIN_CREATED = "admin_created"
     ADMIN_DISABLED = "admin_disabled"
+    PTR_ROW_ACCEPTED = "ptr_row_accepted"
+    """A PTR line in the review queue taken as a trade, corrected or not."""
+    PTR_ROW_REJECTED = "ptr_row_rejected"
+    """A PTR line in the review queue set aside as not a trade."""
 
 
 class ActionSource(StrEnum):
