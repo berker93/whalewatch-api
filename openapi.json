@@ -12118,7 +12118,7 @@
           "admin"
         ],
         "summary": "How much of each chamber's PTRs has been read",
-        "description": "Per chamber: filings tried, read by text or OCR, given a placeholder, or still\nmissing a PDF; lines parsed and in review. A filing no run has tried yet is not\ncounted. Then every filing by whether its filer is matched to a member, in the\nmember review queue, unmatched, or not linked yet.",
+        "description": "Per chamber: filings tried, read by text or OCR, given a placeholder, or still\nmissing a PDF; lines parsed and in review. A filing no run has tried yet is not\ncounted. Then every filing by whether its filer is matched to a member, in the\nmember review queue, unmatched, or not linked yet; and how much of the parsed\nlines resolved to a security, by line and by filing.",
         "operationId": "adminPtrCoverage",
         "responses": {
           "200": {
@@ -12377,6 +12377,379 @@
           },
           "409": {
             "description": "`not_in_review`: accept or reject with no candidates pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/congress/assets/review": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "PTR assets no run resolved to a security, or was not sure of",
+        "description": "By asset key — the code, ticker and name as filed — most lines first. Each\ncarries the best security a name search finds, taken or not, and its newest\nfiling's original. Keys a person has overridden are never here.",
+        "operationId": "adminAssetReviewQueue",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "unresolved",
+                "low_confidence"
+              ],
+              "type": "string",
+              "description": "`unresolved`: stocks, options and `unknown` lines with no security. `low_confidence`: lines resolved under 0.9 — a ticker whose name does not agree, a match to another listing, a loose name match.",
+              "default": "unresolved",
+              "title": "Status"
+            },
+            "description": "`unresolved`: stocks, options and `unknown` lines with no security. `low_confidence`: lines resolved under 0.9 — a ticker whose name does not agree, a match to another listing, a loose name match."
+          },
+          {
+            "name": "chamber",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "house",
+                    "senate"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One chamber's only.",
+              "title": "Chamber"
+            },
+            "description": "One chamber's only."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Assets per page.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Assets per page."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100000,
+              "minimum": 0,
+              "description": "How many to skip.",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "How many to skip."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAssetPage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` or `session_expired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/congress/assets/overrides": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Every person's override of a PTR asset",
+        "description": "Newest change first.",
+        "operationId": "adminAssetOverrides",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Overrides per page.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Overrides per page."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100000,
+              "minimum": 0,
+              "description": "How many to skip.",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "How many to skip."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAssetOverridePage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` or `session_expired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Say what every PTR line under an asset key is",
+        "description": "A stock (`equity`) or an option on one (`stock_option`) takes the security, by\n`cusip` or by today's `ticker`; any other class takes none, or it is a 422\n`validation_error`. Replaces the key's override if it had one. Every line under the\nkey is resolved again at once, those to come take it too, and no run changes it.\nLogged.",
+        "operationId": "adminSetAssetOverride",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminAssetOverrideRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAssetOverrideSet"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` or `session_expired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no line has the key, or no such security.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/congress/assets/overrides/{override_id}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Hand a PTR asset key back to the runs",
+        "description": "Its lines are resolved again at once, by a run's rules. Logged.",
+        "operationId": "adminRemoveAssetOverride",
+        "parameters": [
+          {
+            "name": "override_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "The override's id.",
+              "title": "Override Id"
+            },
+            "description": "The override's id."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "429": {
+            "description": "Too many requests from this address. Wait `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request from this address will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in to the console: `unauthenticated` or `session_expired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_found`: no such override.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13103,6 +13476,493 @@
         ],
         "title": "AdminApiKeys",
         "description": "The account's API keys."
+      },
+      "AdminAssetCandidate": {
+        "properties": {
+          "security": {
+            "$ref": "#/components/schemas/AdminSecurity",
+            "description": "Which."
+          },
+          "score": {
+            "type": "string",
+            "format": "decimal",
+            "title": "Score",
+            "description": "Name similarity, 0 to 1; a run takes 0.75 or more.",
+            "examples": [
+              "0.692"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "security",
+          "score"
+        ],
+        "title": "AdminAssetCandidate",
+        "description": "The best security a name search finds for an asset, taken or not."
+      },
+      "AdminAssetCoverage": {
+        "properties": {
+          "lines": {
+            "type": "integer",
+            "title": "Lines",
+            "description": "Parsed lines.",
+            "examples": [
+              4343
+            ]
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending",
+            "description": "Not resolved by any run yet.",
+            "examples": [
+              0
+            ]
+          },
+          "by_class": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Class",
+            "description": "Parsed lines by asset class.",
+            "examples": [
+              {
+                "equity": 3530,
+                "municipal_bond": 277,
+                "treasury": 166
+              }
+            ]
+          },
+          "resolvable": {
+            "type": "integer",
+            "title": "Resolvable",
+            "description": "Stocks, options and `unknown`: what should have a security.",
+            "examples": [
+              3586
+            ]
+          },
+          "resolved": {
+            "type": "integer",
+            "title": "Resolved",
+            "description": "Of those, with one.",
+            "examples": [
+              3528
+            ]
+          },
+          "by_method": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Method",
+            "description": "Resolved lines by how.",
+            "examples": [
+              {
+                "name": 498,
+                "ticker": 3030
+              }
+            ]
+          },
+          "low_confidence": {
+            "type": "integer",
+            "title": "Low Confidence",
+            "description": "Resolved under 0.9 confidence: in the asset queue's `low_confidence`.",
+            "examples": [
+              90
+            ]
+          },
+          "coverage_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Pct",
+            "description": "Resolvable lines resolved, in percent, to a tenth.",
+            "examples": [
+              "98.4"
+            ]
+          },
+          "filings": {
+            "type": "integer",
+            "title": "Filings",
+            "description": "Filings with a resolvable parsed line.",
+            "examples": [
+              293
+            ]
+          },
+          "filings_resolved": {
+            "type": "integer",
+            "title": "Filings Resolved",
+            "description": "Of those, with every one resolved.",
+            "examples": [
+              271
+            ]
+          },
+          "filings_partly": {
+            "type": "integer",
+            "title": "Filings Partly",
+            "description": "With some resolved, some not.",
+            "examples": [
+              18
+            ]
+          },
+          "filing_coverage_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filing Coverage Pct",
+            "description": "Filings with every resolvable line resolved, in percent.",
+            "examples": [
+              "92.5"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "lines",
+          "pending",
+          "by_class",
+          "resolvable",
+          "resolved",
+          "by_method",
+          "low_confidence",
+          "coverage_pct",
+          "filings",
+          "filings_resolved",
+          "filings_partly",
+          "filing_coverage_pct"
+        ],
+        "title": "AdminAssetCoverage",
+        "description": "How much of a chamber's parsed lines resolved: by line and by filing. A bond or\na fund has no security to find, so only stocks, options and `unknown` lines count."
+      },
+      "AdminAssetOverride": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "What removing it takes.",
+            "examples": [
+              12
+            ]
+          },
+          "asset_key": {
+            "type": "string",
+            "title": "Asset Key",
+            "description": "The key.",
+            "examples": [
+              "ST|NTDOF|nintendo co ltd ord"
+            ]
+          },
+          "asset_class": {
+            "type": "string",
+            "enum": [
+              "equity",
+              "stock_option",
+              "municipal_bond",
+              "treasury",
+              "agency_bond",
+              "corporate_bond",
+              "mutual_fund",
+              "crypto",
+              "real_estate",
+              "private",
+              "other",
+              "unknown"
+            ],
+            "title": "Asset Class",
+            "description": "The class it gives.",
+            "examples": [
+              "equity"
+            ]
+          },
+          "security": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdminSecurity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The security it gives, for a stock."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": "Why.",
+            "examples": [
+              null
+            ]
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By",
+            "description": "The admin who last set it; null from the CLI.",
+            "examples": [
+              1
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "When first set.",
+            "examples": [
+              "2026-11-05T21:14:03Z"
+            ]
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "When last set.",
+            "examples": [
+              "2026-11-05T21:14:03Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "asset_key",
+          "asset_class",
+          "security",
+          "note",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AdminAssetOverride",
+        "description": "A person's word on an asset key."
+      },
+      "AdminAssetOverridePage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminAssetOverride"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "The overrides on this page."
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "How many there are.",
+            "examples": [
+              12
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "The page size asked for.",
+            "examples": [
+              50
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "How many came before this page.",
+            "examples": [
+              0
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "AdminAssetOverridePage",
+        "description": "One page of overrides, newest change first."
+      },
+      "AdminAssetOverrideRequest": {
+        "properties": {
+          "asset_key": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Asset Key",
+            "description": "From the asset queue, or a line's.",
+            "examples": [
+              "ST|NTDOF|nintendo co ltd ord"
+            ]
+          },
+          "asset_class": {
+            "type": "string",
+            "enum": [
+              "equity",
+              "stock_option",
+              "municipal_bond",
+              "treasury",
+              "agency_bond",
+              "corporate_bond",
+              "mutual_fund",
+              "crypto",
+              "real_estate",
+              "private",
+              "other"
+            ],
+            "title": "Asset Class",
+            "description": "`equity` and `stock_option` take a security, every other class none.",
+            "examples": [
+              "equity"
+            ]
+          },
+          "cusip": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9A-Za-z]{9}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cusip",
+            "description": "The security, by CUSIP.",
+            "examples": [
+              "654445303"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 12
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Or by today's ticker.",
+            "examples": [
+              null
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": "Why, for the next person.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "asset_key",
+          "asset_class"
+        ],
+        "title": "AdminAssetOverrideRequest",
+        "description": "What every line under an asset key is."
+      },
+      "AdminAssetOverrideSet": {
+        "properties": {
+          "override": {
+            "$ref": "#/components/schemas/AdminAssetOverride",
+            "description": "As it now is."
+          },
+          "lines": {
+            "type": "integer",
+            "title": "Lines",
+            "description": "Lines under the key, resolved again.",
+            "examples": [
+              3
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "override",
+          "lines"
+        ],
+        "title": "AdminAssetOverrideSet",
+        "description": "An override, and the lines it resolved."
+      },
+      "AdminAssetPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminQueuedAsset"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "The assets on this page."
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "How many match, on every page.",
+            "examples": [
+              110
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "The page size asked for.",
+            "examples": [
+              50
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "How many matches came before this page.",
+            "examples": [
+              0
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "AdminAssetPage",
+        "description": "One page of the asset queue."
       },
       "AdminCount": {
         "properties": {
@@ -14255,6 +15115,10 @@
             "examples": [
               0
             ]
+          },
+          "assets": {
+            "$ref": "#/components/schemas/AdminAssetCoverage",
+            "description": "How much of its parsed lines resolved to a security."
           }
         },
         "type": "object",
@@ -14274,7 +15138,8 @@
           "members_matched",
           "members_in_review",
           "members_unmatched",
-          "members_unlinked"
+          "members_unlinked",
+          "assets"
         ],
         "title": "AdminPtrCoverage",
         "description": "How much of a chamber's PTRs has been read."
@@ -14887,6 +15752,83 @@
             "examples": [
               null
             ]
+          },
+          "asset_class": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "equity",
+                  "stock_option",
+                  "municipal_bond",
+                  "treasury",
+                  "agency_bond",
+                  "corporate_bond",
+                  "mutual_fund",
+                  "crypto",
+                  "real_estate",
+                  "private",
+                  "other",
+                  "unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Class",
+            "description": "What kind of asset: only `equity` is in a stock view. `stock_option` has its underlying's security; `unknown` is a scan's line nothing placed. Null until a run resolves it.",
+            "examples": [
+              "equity"
+            ]
+          },
+          "security": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdminSecurity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What it traded, when resolved to a security. The asset as filed stays in `asset_name` and `ticker` either way."
+          },
+          "resolution_method": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ticker",
+                  "former_ticker",
+                  "name",
+                  "manual"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Method",
+            "description": "How `security` was found: the filer's ticker, a ticker of another time, the issuer's name, or a person's override.",
+            "examples": [
+              "ticker"
+            ]
+          },
+          "resolution_confidence": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Confidence",
+            "description": "0 to 1, with `security`: 1 for the filer's ticker with the name agreeing.",
+            "examples": [
+              "1.000"
+            ]
           }
         },
         "type": "object",
@@ -14916,10 +15858,245 @@
           "problems",
           "raw_text",
           "reviewed_at",
-          "review_note"
+          "review_note",
+          "asset_class",
+          "security",
+          "resolution_method",
+          "resolution_confidence"
         ],
         "title": "AdminPtrRow",
         "description": "One line of a PTR, as read."
+      },
+      "AdminQueuedAsset": {
+        "properties": {
+          "asset_key": {
+            "type": "string",
+            "title": "Asset Key",
+            "description": "The code, ticker and folded name, as filed: what an override is for.",
+            "examples": [
+              "ST|NTDOF|nintendo co ltd ord"
+            ]
+          },
+          "asset_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Type",
+            "description": "The House's two-letter code.",
+            "examples": [
+              "ST"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "As filed.",
+            "examples": [
+              "NTDOF"
+            ]
+          },
+          "asset_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Name",
+            "description": "As filed, on the newest line.",
+            "examples": [
+              "NINTENDO CO LTD ORD"
+            ]
+          },
+          "asset_class": {
+            "type": "string",
+            "enum": [
+              "equity",
+              "stock_option",
+              "municipal_bond",
+              "treasury",
+              "agency_bond",
+              "corporate_bond",
+              "mutual_fund",
+              "crypto",
+              "real_estate",
+              "private",
+              "other",
+              "unknown"
+            ],
+            "title": "Asset Class",
+            "description": "What kind of asset: only `equity` is in a stock view. `stock_option` has its underlying's security; `unknown` is a scan's line nothing placed.",
+            "examples": [
+              "equity"
+            ]
+          },
+          "lines": {
+            "type": "integer",
+            "title": "Lines",
+            "description": "Lines under it.",
+            "examples": [
+              3
+            ]
+          },
+          "filings": {
+            "type": "integer",
+            "title": "Filings",
+            "description": "Filings they are in.",
+            "examples": [
+              2
+            ]
+          },
+          "last_traded": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Traded",
+            "description": "The newest trade.",
+            "examples": [
+              "2026-09-14"
+            ]
+          },
+          "document_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Url",
+            "description": "The newest filing's original.",
+            "examples": [
+              "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/9116212.pdf"
+            ]
+          },
+          "security": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdminSecurity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On `low_confidence`: the security its lines have."
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence",
+            "description": "On `low_confidence`: the lowest of theirs.",
+            "examples": [
+              null
+            ]
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdminAssetCandidate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The best security a name search finds; null if none comes close."
+          }
+        },
+        "type": "object",
+        "required": [
+          "asset_key",
+          "asset_type",
+          "ticker",
+          "asset_name",
+          "asset_class",
+          "lines",
+          "filings",
+          "last_traded",
+          "document_url",
+          "security",
+          "confidence",
+          "candidate"
+        ],
+        "title": "AdminQueuedAsset",
+        "description": "An asset as filed, and the lines that name it so."
+      },
+      "AdminSecurity": {
+        "properties": {
+          "cusip": {
+            "type": "string",
+            "title": "Cusip",
+            "description": "Its CUSIP.",
+            "examples": [
+              "594918104"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "Its current ticker, or last; null if it never had one.",
+            "examples": [
+              "MSFT"
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Its issuer, as we name it.",
+            "examples": [
+              "MICROSOFT CORP"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "cusip",
+          "ticker",
+          "name"
+        ],
+        "title": "AdminSecurity",
+        "description": "The security a PTR line traded: the row a 13F holding of it has."
       },
       "AdminSession": {
         "properties": {

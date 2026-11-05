@@ -402,6 +402,21 @@ async def test_coverage_counts_each_chambers_filings_and_lines(
         "members_in_review": 0,
         "members_unmatched": 0,
         "members_unlinked": 3,
+        # Inserted as a read leaves them: no run has resolved their assets yet.
+        "assets": {
+            "lines": 2,
+            "pending": 2,
+            "by_class": {},
+            "resolvable": 0,
+            "resolved": 0,
+            "by_method": {},
+            "low_confidence": 0,
+            "coverage_pct": None,
+            "filings": 0,
+            "filings_resolved": 0,
+            "filings_partly": 0,
+            "filing_coverage_pct": None,
+        },
     }
     assert (senate["chamber"], senate["filings_seen"], senate["coverage_pct"]) == (
         "senate",

@@ -7,7 +7,8 @@ to the original — and either:
 
 - **accepts** it, as read or with corrections: it becomes ``parsed``, and the
   feed has it. A line is only accepted complete: an asset, a type, a date, and
-  one of the form's amount bands.
+  one of the form's amount bands. Its asset is resolved again at once, as
+  corrected (:mod:`app.ingestion.congress.asset_resolution`).
 - **rejects** it: not a trade at all (OCR read a heading, or a stamp). It
   becomes ``rejected``, kept and out of the feed.
 
@@ -27,7 +28,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin import log
-from app.db.models import AdminActionKind, CongressFiling, CongressTransaction
+from app.db.models import AdminActionKind, CongressFiling, CongressTransaction, Security
+from app.ingestion.congress.asset_resolution import resolve_assets
 from app.ingestion.congress.ptr import AMOUNT_BANDS, OWNERS, RowStatus, TransactionType
 
 #: What a correction may change: the fields of the trade itself.
@@ -60,6 +62,8 @@ class QueueRow:
 
     row: CongressTransaction
     filing: CongressFiling
+    security: Security | None = None
+    """What it traded, once resolved to a security."""
 
 
 async def review_queue(
@@ -74,8 +78,10 @@ async def review_queue(
     where = [CongressTransaction.parse_status == status]
     if chamber is not None:
         where.append(CongressFiling.chamber == chamber)
-    joined = select(CongressTransaction, CongressFiling).join(
-        CongressFiling, CongressFiling.id == CongressTransaction.filing_id
+    joined = (
+        select(CongressTransaction, CongressFiling, Security)
+        .join(CongressFiling, CongressFiling.id == CongressTransaction.filing_id)
+        .outerjoin(Security, Security.id == CongressTransaction.security_id)
     )
     total = await session.scalar(
         select(func.count())
@@ -93,7 +99,7 @@ async def review_queue(
         .limit(limit)
         .offset(offset)
     )
-    return [QueueRow(row, filing) for row, filing in rows.tuples()], total or 0
+    return [QueueRow(row, filing, security) for row, filing, security in rows.tuples()], total or 0
 
 
 async def review(
@@ -159,8 +165,11 @@ async def review(
         },
     )
     await session.flush()
+    if decision == "accept":
+        await resolve_assets(session, transaction_ids=[row.id])
     await session.refresh(row)
-    return QueueRow(row, filing)
+    security = None if row.security_id is None else await session.get(Security, row.security_id)
+    return QueueRow(row, filing, security)
 
 
 def _check_complete(row: CongressTransaction) -> None:

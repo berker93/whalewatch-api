@@ -94,6 +94,15 @@ TRACKED: Final = {
     ),
     # No filed names, so nothing to match.
     "match-congress-members": ("match-congress-members", [], "success"),
+    # No PTR lines, so nothing to resolve, and no chamber has one to fall short.
+    "resolve-congress-assets": ("resolve-congress-assets", [], "success"),
+    "congress-asset-coverage": ("congress-asset-coverage", [], "success"),
+    # No such line, so no asset key to override.
+    "congress-asset-override": (
+        "congress-asset-override",
+        ["--line", "1", "--class", "other"],
+        "failed",
+    ),
     # Every year through 2027 exists since 0032, so nothing is created.
     "create-partitions": ("create-partitions", ["--through", "2027"], "success"),
     # No purchases, so no clusters: the table is emptied and nothing written.

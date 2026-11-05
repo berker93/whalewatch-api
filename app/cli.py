@@ -4,7 +4,8 @@ reconcile, import-13f-list, resolve-cusips, cusip-coverage, resolve-cusip, ticke
 fetch-quotes, crawl-form4, ingest-form4, create-partitions, detect-clusters, create-user,
 delete-user, restore-user, purge-accounts, billing, create-admin, disable-admin, snapshot-metrics,
 check-email-domain, fetcher-check, ingest-house-index, ingest-house-ptrs, ingest-senate-ptrs,
-seed-congress-members, match-congress-members, email-suppression.
+seed-congress-members, match-congress-members, resolve-congress-assets,
+congress-asset-coverage, congress-asset-override, email-suppression.
 
 The operational interface. Celery's beat schedule is how this pipeline runs when
 nobody is watching; this is how it runs when somebody is, and the two must not
@@ -51,6 +52,9 @@ the incident where throwaway scripts are least trustworthy.
     uv run python -m app.cli ingest-senate-ptrs --catch-up
     uv run python -m app.cli seed-congress-members
     uv run python -m app.cli match-congress-members
+    uv run python -m app.cli resolve-congress-assets
+    uv run python -m app.cli congress-asset-coverage
+    uv run python -m app.cli congress-asset-override --line 40213 --class equity --cusip 654445303
     uv run python -m app.cli create-partitions --through 2028
     uv run python -m app.cli detect-clusters
     uv run python -m app.cli create-user --email ada@example.com --name "Ada Lovelace"
@@ -88,7 +92,8 @@ The verbs that are also Celery tasks
 ------------------------------------
 ``discover-filings``, ``backfill``, ``crawl-form4``, ``ingest-form4``,
 ``ingest-house-index``, ``ingest-house-ptrs``, ``ingest-senate-ptrs``,
-``seed-congress-members``, ``match-congress-members``, ``resolve-cusips``, ``fetch-quotes``,
+``seed-congress-members``, ``match-congress-members``, ``resolve-congress-assets``,
+``resolve-cusips``, ``fetch-quotes``,
 ``recompute`` and
 ``refresh-views`` are each a call to a ``@tracked_task`` job (app/jobs/), the
 same call its task makes (app/jobs/tasks.py), with the arguments parsed on the
@@ -159,7 +164,9 @@ from app.accounts.paddle import PaddleClient, http_client
 from app.accounts.passwords import hash_password
 from app.accounts.rules import DEFAULT_TIME_ZONE
 from app.accounts.sessions import SessionStore, SessionStoreError
+from app.admin import congress_assets
 from app.admin.auth import AdminError, admin_store, create_admin, disable_admin
+from app.admin.congress import ReviewError
 from app.core.accession import normalise_accession
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
@@ -167,6 +174,8 @@ from app.core.periods import quarter_label
 from app.core.redis import create_redis
 from app.core.tickers import normalise_ticker
 from app.db.models.account import AppUser
+from app.db.models.congress_asset_override import CongressAssetOverride
+from app.db.models.congress_filing import CHAMBERS
 from app.db.models.email import SuppressionScope
 from app.db.models.filer import OverlapPolicy
 from app.db.models.filing import LOADED_STATUSES, Filing
@@ -206,6 +215,8 @@ from app.ingestion.backfill import (
     FilingResult,
     Outcome,
 )
+from app.ingestion.congress.asset_resolution import AssetCoverage, ResolutionPass, asset_coverage
+from app.ingestion.congress.assets import RESOLVABLE, AssetClass
 from app.ingestion.congress.filings import HouseIngest, YearKind
 from app.ingestion.congress.house_clerk import FIRST_YEAR as HOUSE_FIRST_YEAR
 from app.ingestion.congress.legislators import SINCE as LEGISLATORS_SINCE
@@ -322,6 +333,7 @@ from app.jobs.congress import (
     ingest_house_ptrs_job,
     ingest_senate_ptrs_job,
     match_congress_members_job,
+    resolve_congress_assets_job,
     seed_congress_members_job,
 )
 from app.jobs.derived import filer_id_of, recompute_positions, refresh_matviews
@@ -2340,6 +2352,7 @@ def _echo_house_ptrs(ran: HousePtrRun) -> None:
         f"{run.rows_needs_review:,} needs review"
     )
     typer.echo(f"  all House  {_covered(ran.table)}")
+    _echo_assets(ran.assets, ran.asset_coverage)
 
 
 def _unclean(read: FilingRead) -> bool:
@@ -2499,6 +2512,7 @@ def _echo_senate_ptrs(ran: SenatePtrRun) -> None:
     if ran.quiet_days is not None:
         typer.echo(f"  QUIET: no Senate PTR in {ran.quiet_days} days; ops told")
     _echo_members(ran.members)
+    _echo_assets(ran.assets, ran.asset_coverage)
     before = "none" if ingest.watermark_before is None else str(ingest.watermark_before)
     if ingest.watermark_after == ingest.watermark_before:
         typer.echo(f"  watermark {before}, unchanged")
@@ -2615,6 +2629,246 @@ def _echo_members(members: MemberPass) -> None:
         f"{matched.tally.review:,} to review, {matched.tally.unmatched:,} unmatched; "
         f"{matched.changed:,} changed"
     )
+
+
+# --- resolve-congress-assets, congress-asset-coverage, congress-asset-override ------
+
+#: The share of a chamber's stock lines resolved below which
+#: congress-asset-coverage exits 1. 2026's House lines were 98.4%.
+ASSET_THRESHOLD_PCT: Final = 95
+
+
+def _echo_assets(passed: ResolutionPass, coverage: AssetCoverage | None = None) -> None:
+    """What resolving did, and the chamber's coverage after: every PTR verb ends with it."""
+    methods = ", ".join(f"{count:,} by {method}" for method, count in passed.by_method.items())
+    excluded = sum(
+        count for kind, count in passed.by_class.items() if AssetClass(kind) not in RESOLVABLE
+    )
+    typer.echo(
+        f"  assets     {passed.lines:,} lines resolved: {passed.resolved:,} to a security "
+        f"({methods or 'none'}), {passed.unresolved:,} not, {excluded:,} not stocks"
+    )
+    if coverage is not None:
+        typer.echo(f"  coverage   {_asset_covered(coverage)}")
+
+
+def _asset_covered(coverage: AssetCoverage) -> str:
+    return (
+        f"{coverage.resolved:,}/{coverage.resolvable:,} stock lines "
+        f"({_pct_text(coverage.percent)}), {coverage.filings_resolved:,}/{coverage.filings:,} "
+        f"filings in full ({_pct_text(coverage.filing_percent)})"
+    )
+
+
+@app.command("resolve-congress-assets")
+def resolve_congress_assets_command(
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Every line, resolved or not: after a change to the resolver. A person's "
+            "override still wins.",
+        ),
+    ] = False,
+) -> None:
+    """Resolve each PTR line's asset to a class, and a stock's to its security.
+
+    What ingest-house-ptrs and ingest-senate-ptrs do after reading: every line
+    no run has resolved, and every stock's line with no security yet, which a
+    newly resolved CUSIP may now find. By the ticker the line gives or its name
+    has, then the issuer's name by trigram, against our own securities: the
+    security_id a 13F holding of the stock has. Bonds, funds, crypto, real
+    estate and the rest are classified and given none.
+    """
+    asyncio.run(_resolve_congress_assets(force=force))
+
+
+async def _resolve_congress_assets(*, force: bool) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    try:
+        ran = await resolve_congress_assets_job(settings, force=force)
+    except JobLocked as locked:
+        _echo_locked(locked)
+        return
+    typer.echo("resolve-congress-assets" + ("  --force" if force else ""))
+    _echo_assets(ran.value.passed)
+    for coverage in ran.value.coverage:
+        _line(coverage.chamber, _asset_covered(coverage))
+
+
+@app.command("congress-asset-coverage")
+def congress_asset_coverage_command(
+    threshold: Annotated[
+        float,
+        typer.Option(
+            "--threshold",
+            min=0,
+            max=100,
+            metavar="PCT",
+            help="Exit 1 if a chamber's stock lines resolved are below this.",
+        ),
+    ] = float(ASSET_THRESHOLD_PCT),
+) -> None:
+    """Report how much of each chamber's parsed PTR lines resolved to a security.
+
+    By line, the headline and the gate: stocks, options and lines nothing
+    placed, resolved over all of them. Bonds and funds have no security to find,
+    and are not counted. By filing: those with a stock line whose every one
+    resolved. Exits 1 if a chamber with lines is below --threshold (95% by
+    default). The assets behind the gap are in /admin/congress/assets/review.
+    """
+    passed = asyncio.run(_congress_asset_coverage(threshold=Decimal(str(threshold))))
+    if not passed:
+        raise typer.Exit(code=1)
+
+
+async def _congress_asset_coverage(*, threshold: Decimal) -> bool:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    async with track_run(settings, "congress-asset-coverage", threshold=float(threshold)) as run:
+        async with session_scope(settings) as session:
+            counted = [await asset_coverage(session, chamber) for chamber in CHAMBERS]
+        run.items_seen = sum(coverage.lines for coverage in counted)
+        failing = [
+            coverage.chamber
+            for coverage in counted
+            if coverage.percent is not None and coverage.percent < threshold
+        ]
+        run.metrics |= {
+            f"{coverage.chamber}_{name}": value
+            for coverage in counted
+            for name, value in (
+                ("coverage_pct", float_pct(coverage.percent)),
+                ("filing_coverage_pct", float_pct(coverage.filing_percent)),
+                ("low_confidence", coverage.low_confidence),
+            )
+        } | {"threshold_pct": float(threshold), "passes": not failing}
+    verdict = "passes" if not failing else f"BELOW for {', '.join(failing)}"
+    typer.echo(f"congress-asset-coverage  {verdict} the {float(threshold):g}% gate")
+    for coverage in counted:
+        if not coverage.lines:
+            _line(coverage.chamber, "no parsed lines")
+            continue
+        _line(coverage.chamber, _asset_covered(coverage))
+        methods = ", ".join(f"{count:,} {method}" for method, count in coverage.by_method.items())
+        _line("", f"by {methods or 'nothing'}; {coverage.low_confidence:,} under 0.9 confidence")
+        classes = ", ".join(f"{count:,} {kind}" for kind, count in coverage.by_class.items())
+        _line("", classes)
+        if coverage.pending:
+            _line("", f"{coverage.pending:,} not resolved yet: run resolve-congress-assets")
+    return not failing
+
+
+@app.command("congress-asset-override")
+def congress_asset_override_command(
+    line: Annotated[
+        int | None,
+        typer.Option("--line", min=1, help="The asset key of this PTR line (its id)."),
+    ] = None,
+    key: Annotated[
+        str | None,
+        typer.Option("--key", help="Or the asset key itself, from the admin asset queue."),
+    ] = None,
+    asset_class: Annotated[
+        str | None,
+        typer.Option(
+            "--class",
+            help="equity or stock_option, with --cusip or --ticker; or municipal_bond, "
+            "treasury, agency_bond, corporate_bond, mutual_fund, crypto, real_estate, "
+            "private, other.",
+        ),
+    ] = None,
+    cusip: Annotated[str | None, typer.Option("--cusip", help="The security.")] = None,
+    ticker: Annotated[
+        str | None, typer.Option("--ticker", help="Or the security by today's ticker.")
+    ] = None,
+    note: Annotated[str | None, typer.Option("--note", help="Why.")] = None,
+    remove: Annotated[
+        bool, typer.Option("--remove", help="Take the key's override away instead.")
+    ] = False,
+) -> None:
+    """Say what every PTR line under an asset key is: the manual override.
+
+    One of --line or --key names the asset as filed. A stock or an option takes
+    the security; every other class none. The key's lines, those to come
+    included, are resolved so at once, and no run changes them. --remove hands
+    them back to the runs. Logged in admin_action, as from the CLI.
+    """
+    try:
+        asyncio.run(
+            _congress_asset_override(
+                line=line,
+                key=key,
+                asset_class=asset_class,
+                cusip=cusip,
+                ticker=ticker,
+                note=note,
+                remove=remove,
+            )
+        )
+    except CommandError as failure:
+        typer.secho(f"error: {failure}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from failure
+
+
+async def _congress_asset_override(
+    *,
+    line: int | None,
+    key: str | None,
+    asset_class: str | None,
+    cusip: str | None,
+    ticker: str | None,
+    note: str | None,
+    remove: bool,
+) -> None:
+    settings = get_settings()
+    configure_logging(settings, stream=sys.stderr)
+    async with track_run(
+        settings, "congress-asset-override", line=line, key=key, remove=remove
+    ) as run:
+        if (line is None) == (key is None):
+            raise CommandError("give one of --line and --key")
+        if remove and (asset_class or cusip or ticker):
+            raise CommandError("--remove takes no --class, --cusip or --ticker")
+        if not remove and asset_class not in {kind.value for kind in AssetClass}:
+            raise CommandError(f"--class {asset_class!r} is not an asset class")
+        security: Security | None = None
+        async with session_scope(settings) as session:
+            try:
+                if line is not None:
+                    key = await congress_assets.asset_key_of(session, line)
+                assert key is not None
+                if remove:
+                    found = await session.scalar(
+                        select(CongressAssetOverride.id).where(
+                            CongressAssetOverride.asset_key == key
+                        )
+                    )
+                    if found is None:
+                        raise CommandError(f"no override for {key!r}")
+                    lines = await congress_assets.remove_override(session, found, admin_id=None)
+                else:
+                    made = await congress_assets.set_override(
+                        session,
+                        key,
+                        asset_class=AssetClass(asset_class or ""),
+                        cusip=cusip,
+                        ticker=ticker,
+                        note=note,
+                        admin_id=None,
+                    )
+                    lines, security = made.lines, made.security
+            except ReviewError as refused:
+                raise CommandError(refused.message) from refused
+        run.items_seen = run.items_written = lines
+    typer.echo(f"congress-asset-override  {key}")
+    if remove:
+        _line("removed", f"{lines:,} lines resolved by a run's rules again")
+        return
+    given = "" if security is None else f"  {security.cusip} {security.ticker or ''}"
+    _line("override", f"{asset_class}{given}".rstrip())
+    _line("lines", f"{lines:,} resolved so")
 
 
 @app.command("email-suppression")

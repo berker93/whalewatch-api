@@ -11,6 +11,36 @@ _URL = "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/9116212.pd
 
 Owner = Literal["SP", "JT", "DC"]
 TransactionKind = Literal["purchase", "sale", "partial_sale", "exchange"]
+AssetClassName = Literal[
+    "equity",
+    "stock_option",
+    "municipal_bond",
+    "treasury",
+    "agency_bond",
+    "corporate_bond",
+    "mutual_fund",
+    "crypto",
+    "real_estate",
+    "private",
+    "other",
+    "unknown",
+]
+ResolutionMethodName = Literal["ticker", "former_ticker", "name", "manual"]
+
+_ASSET_CLASS = (
+    "What kind of asset: only `equity` is in a stock view. `stock_option` has its "
+    "underlying's security; `unknown` is a scan's line nothing placed."
+)
+
+
+class AdminSecurity(BaseModel):
+    """The security a PTR line traded: the row a 13F holding of it has."""
+
+    cusip: str = Field(description="Its CUSIP.", examples=["594918104"])
+    ticker: str | None = Field(
+        description="Its current ticker, or last; null if it never had one.", examples=["MSFT"]
+    )
+    name: str | None = Field(description="Its issuer, as we name it.", examples=["MICROSOFT CORP"])
 
 
 class AdminPtrFiling(BaseModel):
@@ -91,6 +121,22 @@ class AdminPtrRow(BaseModel):
     )
     reviewed_at: datetime | None = Field(description="When a person settled it.", examples=[None])
     review_note: str | None = Field(description="What they said.", examples=[None])
+    asset_class: AssetClassName | None = Field(
+        description=f"{_ASSET_CLASS} Null until a run resolves it.", examples=["equity"]
+    )
+    security: AdminSecurity | None = Field(
+        description="What it traded, when resolved to a security. The asset as filed stays "
+        "in `asset_name` and `ticker` either way."
+    )
+    resolution_method: ResolutionMethodName | None = Field(
+        description="How `security` was found: the filer's ticker, a ticker of another "
+        "time, the issuer's name, or a person's override.",
+        examples=["ticker"],
+    )
+    resolution_confidence: Score | None = Field(
+        description="0 to 1, with `security`: 1 for the filer's ticker with the name agreeing.",
+        examples=["1.000"],
+    )
 
 
 class AdminPtrPage(BaseModel):
@@ -169,6 +215,39 @@ class AdminPtrReview(BaseModel):
     )
 
 
+class AdminAssetCoverage(BaseModel):
+    """How much of a chamber's parsed lines resolved: by line and by filing. A bond or
+    a fund has no security to find, so only stocks, options and `unknown` lines count."""
+
+    lines: int = Field(description="Parsed lines.", examples=[4343])
+    pending: int = Field(description="Not resolved by any run yet.", examples=[0])
+    by_class: dict[str, int] = Field(
+        description="Parsed lines by asset class.",
+        examples=[{"equity": 3530, "municipal_bond": 277, "treasury": 166}],
+    )
+    resolvable: int = Field(
+        description="Stocks, options and `unknown`: what should have a security.",
+        examples=[3586],
+    )
+    resolved: int = Field(description="Of those, with one.", examples=[3528])
+    by_method: dict[str, int] = Field(
+        description="Resolved lines by how.", examples=[{"ticker": 3030, "name": 498}]
+    )
+    low_confidence: int = Field(
+        description="Resolved under 0.9 confidence: in the asset queue's `low_confidence`.",
+        examples=[90],
+    )
+    coverage_pct: Percent | None = Field(
+        description="Resolvable lines resolved, in percent, to a tenth.", examples=["98.4"]
+    )
+    filings: int = Field(description="Filings with a resolvable parsed line.", examples=[293])
+    filings_resolved: int = Field(description="Of those, with every one resolved.", examples=[271])
+    filings_partly: int = Field(description="With some resolved, some not.", examples=[18])
+    filing_coverage_pct: Percent | None = Field(
+        description="Filings with every resolvable line resolved, in percent.", examples=["92.5"]
+    )
+
+
 class AdminPtrCoverage(BaseModel):
     """How much of a chamber's PTRs has been read."""
 
@@ -213,6 +292,9 @@ class AdminPtrCoverage(BaseModel):
     members_unlinked: int = Field(
         description="Filings not linked to a filer yet: before the registry was seeded.",
         examples=[0],
+    )
+    assets: AdminAssetCoverage = Field(
+        description="How much of its parsed lines resolved to a security."
     )
 
 
@@ -326,3 +408,125 @@ class AdminFiledNameDecision(BaseModel):
     note: str | None = Field(
         default=None, max_length=500, description="Why, for the next reviewer.", examples=[None]
     )
+
+
+# --- the asset queue --------------------------------------------------------------
+
+
+class AdminAssetCandidate(BaseModel):
+    """The best security a name search finds for an asset, taken or not."""
+
+    security: AdminSecurity = Field(description="Which.")
+    score: Score = Field(
+        description="Name similarity, 0 to 1; a run takes 0.75 or more.", examples=["0.692"]
+    )
+
+
+class AdminQueuedAsset(BaseModel):
+    """An asset as filed, and the lines that name it so."""
+
+    asset_key: str = Field(
+        description="The code, ticker and folded name, as filed: what an override is for.",
+        examples=["ST|NTDOF|nintendo co ltd ord"],
+    )
+    asset_type: str | None = Field(description="The House's two-letter code.", examples=["ST"])
+    ticker: str | None = Field(description="As filed.", examples=["NTDOF"])
+    asset_name: str | None = Field(
+        description="As filed, on the newest line.", examples=["NINTENDO CO LTD ORD"]
+    )
+    asset_class: AssetClassName = Field(description=_ASSET_CLASS, examples=["equity"])
+    lines: int = Field(description="Lines under it.", examples=[3])
+    filings: int = Field(description="Filings they are in.", examples=[2])
+    last_traded: date | None = Field(description="The newest trade.", examples=["2026-09-14"])
+    document_url: str | None = Field(description="The newest filing's original.", examples=[_URL])
+    security: AdminSecurity | None = Field(
+        description="On `low_confidence`: the security its lines have."
+    )
+    confidence: Score | None = Field(
+        description="On `low_confidence`: the lowest of theirs.", examples=[None]
+    )
+    candidate: AdminAssetCandidate | None = Field(
+        description="The best security a name search finds; null if none comes close."
+    )
+
+
+class AdminAssetPage(BaseModel):
+    """One page of the asset queue."""
+
+    items: list[AdminQueuedAsset] = Field(description="The assets on this page.")
+    total: int = Field(description="How many match, on every page.", examples=[110])
+    limit: int = Field(description="The page size asked for.", examples=[50])
+    offset: int = Field(description="How many matches came before this page.", examples=[0])
+
+
+class AdminAssetOverrideRequest(BaseModel):
+    """What every line under an asset key is."""
+
+    asset_key: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="From the asset queue, or a line's.",
+        examples=["ST|NTDOF|nintendo co ltd ord"],
+    )
+    asset_class: Literal[
+        "equity",
+        "stock_option",
+        "municipal_bond",
+        "treasury",
+        "agency_bond",
+        "corporate_bond",
+        "mutual_fund",
+        "crypto",
+        "real_estate",
+        "private",
+        "other",
+    ] = Field(
+        description="`equity` and `stock_option` take a security, every other class none.",
+        examples=["equity"],
+    )
+    cusip: str | None = Field(
+        default=None,
+        pattern=r"^[0-9A-Za-z]{9}$",
+        description="The security, by CUSIP.",
+        examples=["654445303"],
+    )
+    ticker: str | None = Field(
+        default=None,
+        max_length=12,
+        description="Or by today's ticker.",
+        examples=[None],
+    )
+    note: str | None = Field(
+        default=None, max_length=500, description="Why, for the next person.", examples=[None]
+    )
+
+
+class AdminAssetOverride(BaseModel):
+    """A person's word on an asset key."""
+
+    id: int = Field(description="What removing it takes.", examples=[12])
+    asset_key: str = Field(description="The key.", examples=["ST|NTDOF|nintendo co ltd ord"])
+    asset_class: AssetClassName = Field(description="The class it gives.", examples=["equity"])
+    security: AdminSecurity | None = Field(description="The security it gives, for a stock.")
+    note: str | None = Field(description="Why.", examples=[None])
+    created_by: int | None = Field(
+        description="The admin who last set it; null from the CLI.", examples=[1]
+    )
+    created_at: datetime = Field(description="When first set.", examples=["2026-11-05T21:14:03Z"])
+    updated_at: datetime = Field(description="When last set.", examples=["2026-11-05T21:14:03Z"])
+
+
+class AdminAssetOverrideSet(BaseModel):
+    """An override, and the lines it resolved."""
+
+    override: AdminAssetOverride = Field(description="As it now is.")
+    lines: int = Field(description="Lines under the key, resolved again.", examples=[3])
+
+
+class AdminAssetOverridePage(BaseModel):
+    """One page of overrides, newest change first."""
+
+    items: list[AdminAssetOverride] = Field(description="The overrides on this page.")
+    total: int = Field(description="How many there are.", examples=[12])
+    limit: int = Field(description="The page size asked for.", examples=[50])
+    offset: int = Field(description="How many came before this page.", examples=[0])

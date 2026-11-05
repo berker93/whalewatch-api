@@ -95,6 +95,10 @@ class AdminActionKind(StrEnum):
     member assigned."""
     MEMBER_REJECTED = "member_rejected"
     """A filed name's candidates all rejected: it is none of them."""
+    ASSET_OVERRIDDEN = "asset_overridden"
+    """A PTR asset key given a class, and a security, by hand."""
+    ASSET_OVERRIDE_REMOVED = "asset_override_removed"
+    """An asset key's override taken away: its lines are resolved by a run again."""
 
 
 class ActionSource(StrEnum):

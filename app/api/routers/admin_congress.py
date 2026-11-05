@@ -15,6 +15,12 @@
     with no candidate instead.
 ``POST /admin/congress/members/review/{id}``
     Accept a candidate, assign a member by Bioguide id, or reject the candidates.
+``GET /admin/congress/assets/review``
+    Assets no run resolved to a security, by asset key, with the best name match
+    (:mod:`app.admin.congress_assets`). ``status=low_confidence`` lists the
+    resolved ones a run was not sure of instead.
+``GET /admin/congress/assets/overrides``, ``PUT``, ``DELETE …/{id}``
+    A person's class and security for every line under an asset key.
 
 On the admin session, as the rest of ``/admin`` is (:mod:`app.api.routers.admin`).
 """
@@ -22,14 +28,21 @@ On the admin session, as the rest of ``/admin`` is (:mod:`app.api.routers.admin`
 from decimal import Decimal
 from typing import Annotated, Final, Literal
 
-from fastapi import APIRouter, Path, Query, Request, status
+from fastapi import APIRouter, Path, Query, Request, Response, status
 
-from app.admin import congress, congress_members
+from app.admin import congress, congress_assets, congress_members
 from app.api.admin_auth import AdminDep, request_id
 from app.api.auth import NoStoreDep
 from app.api.deps import SessionDep
 from app.api.errors import INVALID, ApiError, Responses, not_found
 from app.api.schemas.admin_congress import (
+    AdminAssetCandidate,
+    AdminAssetCoverage,
+    AdminAssetOverride,
+    AdminAssetOverridePage,
+    AdminAssetOverrideRequest,
+    AdminAssetOverrideSet,
+    AdminAssetPage,
     AdminFiledName,
     AdminFiledNameDecision,
     AdminFiledNamePage,
@@ -40,10 +53,16 @@ from app.api.schemas.admin_congress import (
     AdminPtrPage,
     AdminPtrReview,
     AdminPtrRow,
+    AdminQueuedAsset,
+    AdminSecurity,
 )
 from app.api.schemas.error import ErrorCode, Problem
+from app.db.models.congress_asset_override import CongressAssetOverride
 from app.db.models.congress_filing import CHAMBERS
 from app.db.models.congress_member import CongressMember
+from app.db.models.security import Security
+from app.ingestion.congress.asset_resolution import asset_coverage
+from app.ingestion.congress.assets import AssetClass
 from app.ingestion.congress.ptrs import table_coverage
 
 router = APIRouter(prefix="/admin/congress", tags=["admin"], dependencies=[NoStoreDep])
@@ -59,6 +78,12 @@ _STATUS_OF: Final = {"not_found": 404, "not_in_review": 409, "validation_error":
 LineId = Annotated[int, Path(ge=1, description="The line's id, from the queue.")]
 
 
+def _security(security: Security | None) -> AdminSecurity | None:
+    if security is None:
+        return None
+    return AdminSecurity(cusip=security.cusip, ticker=security.ticker, name=security.name)
+
+
 def _shown(found: congress.QueueRow) -> AdminPtrRow:
     filing = found.filing
     member = " ".join(
@@ -69,8 +94,9 @@ def _shown(found: congress.QueueRow) -> AdminPtrRow:
             **{
                 name: getattr(found.row, name)
                 for name in AdminPtrRow.model_fields
-                if name != "filing"
+                if name not in ("filing", "security")
             },
+            "security": _security(found.security),
             "filing": AdminPtrFiling(
                 id=filing.id,
                 chamber=filing.chamber,
@@ -183,11 +209,13 @@ async def coverage(_: AdminDep, session: SessionDep) -> list[AdminPtrCoverage]:
     """Per chamber: filings tried, read by text or OCR, given a placeholder, or still
     missing a PDF; lines parsed and in review. A filing no run has tried yet is not
     counted. Then every filing by whether its filer is matched to a member, in the
-    member review queue, unmatched, or not linked yet."""
+    member review queue, unmatched, or not linked yet; and how much of the parsed
+    lines resolved to a security, by line and by filing."""
     shown: list[AdminPtrCoverage] = []
     for chamber in CHAMBERS:
         counted = await table_coverage(session, chamber)
         members = await congress_members.member_coverage(session, chamber)
+        assets = await asset_coverage(session, chamber)
         shown.append(
             AdminPtrCoverage(
                 chamber=chamber,
@@ -206,6 +234,20 @@ async def coverage(_: AdminDep, session: SessionDep) -> list[AdminPtrCoverage]:
                 members_in_review=members.review,
                 members_unmatched=members.unmatched,
                 members_unlinked=members.unlinked,
+                assets=AdminAssetCoverage(
+                    lines=assets.lines,
+                    pending=assets.pending,
+                    by_class=assets.by_class,
+                    resolvable=assets.resolvable,
+                    resolved=assets.resolved,
+                    by_method=assets.by_method,
+                    low_confidence=assets.low_confidence,
+                    coverage_pct=assets.percent,
+                    filings=assets.filings,
+                    filings_resolved=assets.filings_resolved,
+                    filings_partly=assets.filings_partly,
+                    filing_coverage_pct=assets.filing_percent,
+                ),
             )
         )
     return shown
@@ -342,3 +384,171 @@ async def review_member(
         raise ApiError(_STATUS_OF[exc.code], ErrorCode(exc.code), exc.message) from None
     await session.commit()
     return _name(found)
+
+
+# --- the asset queue --------------------------------------------------------------
+
+OverrideId = Annotated[int, Path(ge=1, description="The override's id.")]
+
+
+def _queued(found: congress_assets.QueuedAsset) -> AdminQueuedAsset:
+    candidate = found.candidate
+    return AdminQueuedAsset(
+        asset_key=found.asset_key,
+        asset_type=found.asset_type,
+        ticker=found.ticker,
+        asset_name=found.asset_name,
+        asset_class=found.asset_class,
+        lines=found.lines,
+        filings=found.filings,
+        last_traded=found.last_traded,
+        document_url=found.document_url,
+        security=_security(found.security),
+        confidence=found.confidence,
+        candidate=None
+        if candidate is None
+        else AdminAssetCandidate(
+            security=AdminSecurity(
+                cusip=candidate.cusip, ticker=candidate.ticker, name=candidate.name
+            ),
+            score=_score(candidate.score) or Decimal(0),
+        ),
+    )
+
+
+def _override(override: CongressAssetOverride, security: Security | None) -> AdminAssetOverride:
+    return AdminAssetOverride(
+        id=override.id,
+        asset_key=override.asset_key,
+        asset_class=override.asset_class,
+        security=_security(security),
+        note=override.note,
+        created_by=override.created_by,
+        created_at=override.created_at,
+        updated_at=override.updated_at,
+    )
+
+
+@router.get(
+    "/assets/review",
+    operation_id="adminAssetReviewQueue",
+    response_model=AdminAssetPage,
+    summary="PTR assets no run resolved to a security, or was not sure of",
+    responses={**_UNAUTHORIZED, **INVALID},
+)
+async def asset_review_queue(
+    _: AdminDep,
+    session: SessionDep,
+    asset_status: Annotated[
+        Literal["unresolved", "low_confidence"],
+        Query(
+            alias="status",
+            description=(
+                "`unresolved`: stocks, options and `unknown` lines with no security. "
+                "`low_confidence`: lines resolved under 0.9 — a ticker whose name does not "
+                "agree, a match to another listing, a loose name match."
+            ),
+        ),
+    ] = "unresolved",
+    chamber: Annotated[
+        Literal["house", "senate"] | None, Query(description="One chamber's only.")
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=200, description="Assets per page.")] = 50,
+    offset: Annotated[int, Query(ge=0, le=100_000, description="How many to skip.")] = 0,
+) -> AdminAssetPage:
+    """By asset key — the code, ticker and name as filed — most lines first. Each
+    carries the best security a name search finds, taken or not, and its newest
+    filing's original. Keys a person has overridden are never here."""
+    assets, total = await congress_assets.asset_queue(
+        session, status=asset_status, chamber=chamber, limit=limit, offset=offset
+    )
+    return AdminAssetPage(
+        items=[_queued(asset) for asset in assets], total=total, limit=limit, offset=offset
+    )
+
+
+@router.get(
+    "/assets/overrides",
+    operation_id="adminAssetOverrides",
+    response_model=AdminAssetOverridePage,
+    summary="Every person's override of a PTR asset",
+    responses={**_UNAUTHORIZED, **INVALID},
+)
+async def asset_overrides(
+    _: AdminDep,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=200, description="Overrides per page.")] = 50,
+    offset: Annotated[int, Query(ge=0, le=100_000, description="How many to skip.")] = 0,
+) -> AdminAssetOverridePage:
+    """Newest change first."""
+    rows, total = await congress_assets.overrides(session, limit=limit, offset=offset)
+    return AdminAssetOverridePage(
+        items=[_override(override, security) for override, security in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.put(
+    "/assets/overrides",
+    operation_id="adminSetAssetOverride",
+    response_model=AdminAssetOverrideSet,
+    summary="Say what every PTR line under an asset key is",
+    responses={
+        **_UNAUTHORIZED,
+        **not_found("`not_found`: no line has the key, or no such security."),
+        **INVALID,
+    },
+)
+async def set_asset_override(
+    body: AdminAssetOverrideRequest,
+    request: Request,
+    admin: AdminDep,
+    session: SessionDep,
+) -> AdminAssetOverrideSet:
+    """A stock (`equity`) or an option on one (`stock_option`) takes the security, by
+    `cusip` or by today's `ticker`; any other class takes none, or it is a 422
+    `validation_error`. Replaces the key's override if it had one. Every line under the
+    key is resolved again at once, those to come take it too, and no run changes it.
+    Logged."""
+    try:
+        made = await congress_assets.set_override(
+            session,
+            body.asset_key,
+            asset_class=AssetClass(body.asset_class),
+            cusip=body.cusip,
+            ticker=body.ticker,
+            note=body.note,
+            admin_id=admin.admin.id,
+            request_id=request_id(request),
+        )
+    except congress.ReviewError as exc:
+        raise ApiError(_STATUS_OF[exc.code], ErrorCode(exc.code), exc.message) from None
+    shown = AdminAssetOverrideSet(
+        override=_override(made.override, made.security), lines=made.lines
+    )
+    await session.commit()
+    return shown
+
+
+@router.delete(
+    "/assets/overrides/{override_id}",
+    operation_id="adminRemoveAssetOverride",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Hand a PTR asset key back to the runs",
+    responses={**_UNAUTHORIZED, **not_found("`not_found`: no such override."), **INVALID},
+)
+async def remove_asset_override(
+    override_id: OverrideId, request: Request, admin: AdminDep, session: SessionDep
+) -> Response:
+    """Its lines are resolved again at once, by a run's rules. Logged."""
+    try:
+        await congress_assets.remove_override(
+            session, override_id, admin_id=admin.admin.id, request_id=request_id(request)
+        )
+    except congress.ReviewError as exc:
+        raise ApiError(_STATUS_OF[exc.code], ErrorCode(exc.code), exc.message) from None
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

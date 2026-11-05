@@ -1,13 +1,16 @@
 """The Congress jobs: the House Clerk's indexes and the PTRs they list, Senate
-eFD's, and the member registry the filers are matched to.
+eFD's, the member registry the filers are matched to, and the securities their
+lines traded.
 
 ``ingest-house-index``, ``ingest-house-ptrs``, ``ingest-senate-ptrs``,
-``seed-congress-members`` and ``match-congress-members`` are these with
-argument parsing and a summary; the tasks of the same names are these in
-``asyncio.run``. Both index jobs end by linking what they stored to filed
-names and matching the new names to members
-(:func:`~app.ingestion.congress.members.link_and_match`). As with the Form 4 jobs
-(app/jobs/form4.py), nothing here prints.
+``seed-congress-members``, ``match-congress-members`` and
+``resolve-congress-assets`` are these with argument parsing and a summary; the
+tasks of the same names are these in ``asyncio.run``. Both index jobs end by
+linking what they stored to filed names and matching the new names to members
+(:func:`~app.ingestion.congress.members.link_and_match`); both PTR jobs, by
+resolving the lines they read, and retrying those no run has resolved
+(:func:`~app.ingestion.congress.asset_resolution.resolve_assets`). As with the
+Form 4 jobs (app/jobs/form4.py), nothing here prints.
 """
 
 from __future__ import annotations
@@ -21,7 +24,14 @@ from typing import Any
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.db.models.congress_filing import CHAMBERS
 from app.db.session import create_engine, create_session_factory
+from app.ingestion.congress.asset_resolution import (
+    AssetCoverage,
+    ResolutionPass,
+    asset_coverage,
+    resolve_assets,
+)
 from app.ingestion.congress.filings import (
     HouseIngest,
     YearKind,
@@ -173,6 +183,19 @@ class HousePtrRun:
 
     ingest: PtrIngest
     table: Coverage
+    assets: ResolutionPass
+    """The lines read, and those no run had resolved, resolved."""
+    asset_coverage: AssetCoverage
+
+
+def asset_metrics(passed: ResolutionPass, coverage: AssetCoverage) -> dict[str, Any]:
+    """What resolving did, and the chamber's resolution after it, for ``metrics``."""
+    return {
+        "assets_resolved": passed.resolved,
+        "assets_unresolved": passed.unresolved,
+        "asset_coverage_pct": _number(coverage.percent),
+        "asset_filing_coverage_pct": _number(coverage.filing_percent),
+    }
 
 
 def _number(percent: Decimal | None) -> float | None:
@@ -240,8 +263,11 @@ async def ingest_house_ptrs_job(
                 ingest = await ingest_house_ptrs(
                     sessions, clerk, filings, ocr=ocr, concurrency=concurrency
                 )
+        async with sessions.begin() as session:
+            assets = await resolve_assets(session)
         async with sessions() as session:
             table = await table_coverage(session)
+            resolution = await asset_coverage(session, "house")
     finally:
         await engine.dispose()
 
@@ -268,8 +294,8 @@ async def ingest_house_ptrs_job(
         "coverage_pct": _number(coverage.percent),
         "fetched": sum(1 for read in ingest.reads if read.fetched),
         "table_coverage_pct": _number(table.percent),
-    }
-    return HousePtrRun(ingest=ingest, table=table)
+    } | asset_metrics(assets, resolution)
+    return HousePtrRun(ingest=ingest, table=table, assets=assets, asset_coverage=resolution)
 
 
 # --- Senate ----------------------------------------------------------------------
@@ -290,6 +316,8 @@ class SenatePtrRun:
     ingest: SenateIngest
     table: Coverage
     members: MemberPass
+    assets: ResolutionPass
+    asset_coverage: AssetCoverage
     quiet_days: int | None
     """Days since the newest Senate filing, when a catch-up found it past
     :data:`~app.ingestion.congress.senate_ptrs.QUIET_DAYS`."""
@@ -369,8 +397,11 @@ async def ingest_senate_ptrs_job(
                 raise
         async with sessions.begin() as session:
             members = await link_and_match(session)
+        async with sessions.begin() as session:
+            assets = await resolve_assets(session)
         async with sessions() as session:
             table = await table_coverage(session, "senate")
+            resolution = await asset_coverage(session, "senate")
             newest = await newest_filing(session)
     finally:
         await engine.dispose()
@@ -399,28 +430,38 @@ async def ingest_senate_ptrs_job(
     )
     run.items_seen = coverage.seen
     run.items_written = coverage.read + coverage.review_only + coverage.placeholders
-    run.metrics |= {
-        "window": None if window is None else f"{window[0]}..{window[1]}",
-        "search_pages": 0 if searched is None else len(searched.pages),
-        "listed": 0 if searched is None else len(searched.rows),
-        "inserted": 0 if searched is None else searched.stored.inserted,
-        "updated": 0 if searched is None else searched.stored.updated,
-        "filings_seen": coverage.seen,
-        "filings_read": coverage.read,
-        "review_only": coverage.review_only,
-        "placeholders": coverage.placeholders,
-        "failed": coverage.failed,
-        "rows_parsed": coverage.rows_parsed,
-        "rows_needs_review": coverage.rows_needs_review,
-        "fetched": sum(1 for read in ingest.reads if read.fetched),
-        "coverage_pct": _number(coverage.percent),
-        "table_coverage_pct": _number(table.percent),
-        "watermark_before": _iso(ingest.watermark_before),
-        "watermark_after": _iso(ingest.watermark_after),
-        "quiet_days": quiet_days,
-    } | member_metrics(members)
+    run.metrics |= (
+        {
+            "window": None if window is None else f"{window[0]}..{window[1]}",
+            "search_pages": 0 if searched is None else len(searched.pages),
+            "listed": 0 if searched is None else len(searched.rows),
+            "inserted": 0 if searched is None else searched.stored.inserted,
+            "updated": 0 if searched is None else searched.stored.updated,
+            "filings_seen": coverage.seen,
+            "filings_read": coverage.read,
+            "review_only": coverage.review_only,
+            "placeholders": coverage.placeholders,
+            "failed": coverage.failed,
+            "rows_parsed": coverage.rows_parsed,
+            "rows_needs_review": coverage.rows_needs_review,
+            "fetched": sum(1 for read in ingest.reads if read.fetched),
+            "coverage_pct": _number(coverage.percent),
+            "table_coverage_pct": _number(table.percent),
+            "watermark_before": _iso(ingest.watermark_before),
+            "watermark_after": _iso(ingest.watermark_after),
+            "quiet_days": quiet_days,
+        }
+        | member_metrics(members)
+        | asset_metrics(assets, resolution)
+    )
     return SenatePtrRun(
-        window=window, ingest=ingest, table=table, members=members, quiet_days=quiet_days
+        window=window,
+        ingest=ingest,
+        table=table,
+        members=members,
+        assets=assets,
+        asset_coverage=resolution,
+        quiet_days=quiet_days,
     )
 
 
@@ -511,3 +552,44 @@ async def match_congress_members_job(run: TrackedRun, settings: Settings) -> Mem
     run.items_written = members.matched.changed
     run.metrics |= {"names_changed": members.matched.changed} | member_metrics(members)
     return members
+
+
+# --- assets ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AssetRun:
+    """What a pass resolved, and each chamber's resolution after it."""
+
+    passed: ResolutionPass
+    coverage: tuple[AssetCoverage, ...]
+
+
+def _asset_context(_: Settings, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {"force": arguments.get("force", False)}
+
+
+@tracked_task("resolve-congress-assets", context=_asset_context)
+async def resolve_congress_assets_job(
+    run: TrackedRun, settings: Settings, *, force: bool = False
+) -> AssetRun:
+    """Resolve every PTR line no run has, and retry those of a stock with no
+    security: what each PTR job does after reading. With ``force``, every line:
+    after a resolver change, say. A person's override still wins."""
+    engine = create_engine(settings)
+    sessions = create_session_factory(engine)
+    try:
+        async with sessions.begin() as session:
+            passed = await resolve_assets(session, force=force)
+        async with sessions() as session:
+            coverage = tuple([await asset_coverage(session, chamber) for chamber in CHAMBERS])
+    finally:
+        await engine.dispose()
+    run.items_seen = passed.lines
+    run.items_written = passed.lines
+    run.metrics |= {
+        "by_class": dict(passed.by_class),
+        "by_method": dict(passed.by_method),
+        "unresolved": passed.unresolved,
+    } | {f"{counted.chamber}_coverage_pct": _number(counted.percent) for counted in coverage}
+    return AssetRun(passed=passed, coverage=coverage)

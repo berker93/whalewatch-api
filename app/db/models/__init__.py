@@ -41,6 +41,7 @@ from app.db.models.alert import (
     Route,
 )
 from app.db.models.base import NAMING_CONVENTION, Base
+from app.db.models.congress_asset_override import OVERRIDE_CLASSES, CongressAssetOverride
 from app.db.models.congress_filing import (
     CHAMBER_CHECK,
     CHAMBERS,
@@ -190,6 +191,7 @@ __all__ = [
     "OPEN_MARKET_CODES",
     "OUTCOME_CHECK",
     "OVERLAP_CHECK",
+    "OVERRIDE_CLASSES",
     "PARSE_STATUS_CHECK",
     "PAYLOAD_KEYS",
     "PENDING_STATUS_CHECK",
@@ -237,6 +239,7 @@ __all__ = [
     "CandidateStatus",
     "ChangeAction",
     "Channel",
+    "CongressAssetOverride",
     "CongressFiledName",
     "CongressFiling",
     "CongressMember",

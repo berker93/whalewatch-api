@@ -21,6 +21,13 @@ of a Senate report filed online, ``ingest-senate-ptrs``
 
 Reading a filing again replaces its rows, unless a person has reviewed one of
 them: then the filing is left as it is, and the run says so.
+
+What it traded, in our terms, is the columns from ``asset_class`` down, set by
+``resolve-congress-assets`` (:mod:`app.ingestion.congress.asset_resolution`)
+after each read: the class, and for a stock or an option on one the
+``security`` — the same row a 13F holding of it has. A line with no security
+keeps its ``asset_name`` and ``ticker`` as filed. Null ``resolved_at``: not
+resolved yet, as a line just read is.
 """
 
 from datetime import date, datetime
@@ -46,6 +53,7 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
+from app.ingestion.congress.assets import WITH_SECURITY, AssetClass, Method
 from app.ingestion.congress.ptr import OWNERS, Extraction, RowStatus, TransactionType
 
 
@@ -59,6 +67,12 @@ TRANSACTION_TYPE_CHECK: Final = _in(
     "transaction_type", tuple(kind.value for kind in TransactionType)
 )
 OWNER_CHECK: Final = _in("owner", OWNERS)
+ASSET_CLASS_CHECK: Final = _in("asset_class", tuple(kind.value for kind in AssetClass))
+RESOLUTION_METHOD_CHECK: Final = _in("resolution_method", tuple(method.value for method in Method))
+#: Only a stock, or an option on one, is a security.
+SECURITY_IS_A_STOCK: Final = "security_id IS NULL OR " + _in(
+    "asset_class", tuple(kind.value for kind in WITH_SECURITY)
+)
 
 #: What a ``parsed`` row must have: a trade in something, of some kind, on a
 #: day, in a band.
@@ -133,6 +147,24 @@ class CongressTransaction(Base):
     review_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    asset_class: Mapped[str | None] = mapped_column(Text)
+    """One :class:`~app.ingestion.congress.assets.AssetClass` value: what kind of
+    asset. Only ``equity`` is in a stock view."""
+    security_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("security.id", ondelete="RESTRICT")
+    )
+    """The stock traded, or an option's underlying; null when none was found,
+    or the asset is not a stock."""
+    resolution_method: Mapped[str | None] = mapped_column(Text)
+    """One :class:`~app.ingestion.congress.assets.Method` value: how
+    :attr:`security_id` was found, or ``manual`` for an override's class alone."""
+    resolution_confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
+    """0 to 1: how sure the match is. With :attr:`security_id`, never without."""
+    asset_key: Mapped[str | None] = mapped_column(Text)
+    """:func:`~app.ingestion.congress.assets.asset_key`: what an override
+    (``congress_asset_override``) is for, and the unresolved queue groups by."""
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     __table_args__ = (
         UniqueConstraint("filing_id", "line"),
         # The review queue: a short list, read by filing, newest first.
@@ -141,6 +173,15 @@ class CongressTransaction(Base):
             "filing_id",
             postgresql_where=sql_text("parse_status = 'needs_review'"),
         ),
+        # A stock's congressional trades, by day: what the crossover with 13F
+        # holdings reads.
+        Index(
+            "ix_congress_transaction_security",
+            "security_id",
+            "transaction_date",
+            postgresql_where=sql_text("security_id IS NOT NULL"),
+        ),
+        Index("ix_congress_transaction_asset_key", "asset_key"),
         CheckConstraint(PARSE_STATUS_CHECK, name="parse_status_is_known"),
         CheckConstraint(EXTRACTION_CHECK, name="extraction_is_known"),
         CheckConstraint(TRANSACTION_TYPE_CHECK, name="transaction_type_is_known"),
@@ -155,5 +196,26 @@ class CongressTransaction(Base):
         CheckConstraint("line >= 1", name="line_is_positive"),
         CheckConstraint(
             "(reviewed_at IS NULL) = (reviewed_by IS NULL)", name="review_names_its_admin"
+        ),
+        CheckConstraint("asset_class IS NULL OR " + ASSET_CLASS_CHECK, name="asset_class_is_known"),
+        CheckConstraint(
+            "resolution_method IS NULL OR " + RESOLUTION_METHOD_CHECK,
+            name="resolution_method_is_known",
+        ),
+        CheckConstraint(SECURITY_IS_A_STOCK, name="security_is_a_stock"),
+        CheckConstraint(
+            "security_id IS NULL OR resolution_method IS NOT NULL",
+            name="a_security_says_how",
+        ),
+        CheckConstraint(
+            "(resolution_confidence IS NULL) = (security_id IS NULL)",
+            name="confidence_is_the_securitys",
+        ),
+        CheckConstraint(
+            "resolution_confidence IS NULL OR resolution_confidence BETWEEN 0 AND 1",
+            name="confidence_is_a_fraction",
+        ),
+        CheckConstraint(
+            "(resolved_at IS NULL) = (asset_class IS NULL)", name="resolved_has_a_class"
         ),
     )

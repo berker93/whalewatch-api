@@ -1394,6 +1394,62 @@ What `seed-congress-members` does after seeding, without the download: links
 any filing not linked yet and matches every name a person has not, against the
 registry as it is. For after a change to the matcher.
 
+### `resolve-congress-assets [--force]`
+
+What each PTR line traded, in our terms: an `asset_class` and, for a stock or
+an option on one, the `security_id` a 13F holding of it has
+([app/ingestion/congress/asset_resolution.py](app/ingestion/congress/asset_resolution.py)).
+`ingest-house-ptrs` and `ingest-senate-ptrs` run it after reading; this verb
+runs it alone (`--force`: every line, after a resolver change). In order:
+
+- **An override** for the line's asset key — the code, ticker and folded name
+  as filed — in `congress_asset_override`. Nothing automatic changes it.
+- **The class**, from the House's two-letter code (a Senate row's words are
+  mapped to it), else from words in the name for a scan's code-less line
+  ([app/ingestion/congress/assets.py](app/ingestion/congress/assets.py)):
+  municipal bonds, Treasuries, agency and corporate bonds, mutual funds,
+  crypto, real estate, private holdings and "other" get no security and are
+  out of stock views. Only `equity` is in one; a `stock_option` carries its
+  underlying's security.
+- **The ticker** the line gives, or one in its name (`(NVDA)`, `(Ticker:
+  CCLFX)`, a scan's trailing `TSCO`), read as `/v1/stocks/{ticker}` reads one:
+  on the trade's day, current, CUSIP, then any other time. A filer's current
+  ticker is taken whatever the name says (`GE` for GE Aerospace) at 0.8 if the
+  names disagree; a former or scan-read ticker only if they agree.
+- **The issuer's name**, by `pg_trgm` against `security.name` and `filed_name`,
+  scored with share words and legal forms stripped on both sides; taken at
+  0.75. Ties go to the CUSIP listed on the trade's day, then the most held by
+  13F filers that year and the one before (the stock over its own option
+  CUSIP; Honeywell's new CUSIP after the change).
+
+Each line stores `resolution_method` (`ticker`, `former_ticker`, `name`,
+`manual`) and `resolution_confidence`. A line nothing resolves keeps its
+`asset_name` and `ticker` as filed: `equity` with no security, or `unknown` for
+a scan's line nothing placed. Unresolved lines are retried every run.
+
+```
+resolve-congress-assets  --force
+  assets     4,726 lines resolved: 3,655 to a security (3,050 by ticker, 605 by name), 157 not, 914 not stocks
+  house       3,528/3,586 stock lines (98.40%), 271/293 filings in full (92.50%)
+```
+
+### `congress-asset-coverage [--threshold PCT]`
+
+Each chamber's parsed lines: stocks, options and `unknown` resolved, by line
+(the gate: exit 1 below `--threshold`, 95 by default) and by filing (every
+stock line resolved), with the classes, the methods and how many are under 0.9
+confidence. `GET /admin/congress/coverage` has the same under `assets`.
+
+### `congress-asset-override (--line ID | --key KEY) --class C [--cusip X | --ticker T] [--note N] [--remove]`
+
+The manual override, as `resolve-cusip` is for a CUSIP: what every line under
+an asset key is, those to come included. `equity` and `stock_option` take a
+security; every other class none. The key's lines are resolved again at once;
+`--remove` hands them back to the runs. Logged in `admin_action`. The console
+has it too: `GET /admin/congress/assets/review` lists unresolved asset keys
+(`?status=low_confidence`: those resolved under 0.9) with the best name match,
+and `PUT`/`DELETE /admin/congress/assets/overrides` set and remove one.
+
 ### `runs [--job NAME] [--limit N]`
 
 Lists the most recent job runs, newest first, from `ingestion_run`. Every verb

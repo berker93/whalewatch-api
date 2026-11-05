@@ -134,6 +134,9 @@ def lookup_query(
         key can be one, and comparing a longer one with ``char(9)`` would
         either fail or, cast, compare its first nine characters.
     :param on: The date being viewed. Today when ``None``.
+    :returns: The security's ``id``, ``cusip``, ``ticker``, ``name`` and
+        ``delisted_by``, and ``via``: the tier it matched in, ``0`` to ``3``
+        in the order above.
     """
     alias = SecurityAlias
     day: Any = on if on is not None else func.current_date()
@@ -164,7 +167,14 @@ def lookup_query(
     matches = union_all(*candidates).subquery("matches")
 
     return (
-        select(Security.id, Security.cusip, Security.ticker, Security.name, Security.delisted_by)
+        select(
+            Security.id,
+            Security.cusip,
+            Security.ticker,
+            Security.name,
+            Security.delisted_by,
+            matches.c.via,
+        )
         .join(matches, matches.c.security_id == Security.id)
         .order_by(
             matches.c.via,
