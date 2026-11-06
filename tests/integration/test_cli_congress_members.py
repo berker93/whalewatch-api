@@ -20,6 +20,7 @@ from sqlalchemy import Executable, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 from typer.testing import CliRunner
 
+from app.api.cache import KEY_PREFIX
 from app.cli import app
 from app.core.config import Settings
 from app.db.models import (
@@ -28,10 +29,12 @@ from app.db.models import (
     CongressMember,
     CongressMemberCandidate,
     CongressMemberTerm,
+    IngestionRun,
 )
 from app.ingestion.congress.house_clerk import index_url
 from app.ingestion.remote.fetcher import FetchRequest, FetchResponse
 from app.ingestion.remote.handler import CookieRecord
+from tests.fake_redis import FakeRedis
 from tests.house_index_fixtures import house_zip, member
 
 FIXTURES: Final = Path(__file__).parents[1] / "fixtures" / "congress_legislators"
@@ -355,3 +358,25 @@ def test_match_congress_members_rematches_after_a_registry_change(
     assert result.exit_code == 0, result.output
     assert _names(migrated_engine)["zebulon quartermaine"] == ("matched", "exact", "B001236", 1)
     assert "1 changed" in result.output
+
+
+def test_a_congress_run_drops_only_the_congress_endpoints_cached_answers(
+    runner: CliRunner, migrated_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A member matched changes who the feed says traded; nothing else serves it."""
+    redis = FakeRedis()
+    redis.values = {
+        f"{KEY_PREFIX}congress.list_congress_transactions:0f0f": "{}",
+        f"{KEY_PREFIX}investors.list_investors:0f0f": "{}",
+    }
+    monkeypatch.setattr("app.jobs.cache.create_redis", lambda settings: redis)
+
+    result = runner.invoke(app, ["match-congress-members"])
+
+    assert result.exit_code == 0, result.output
+    assert list(redis.values) == [f"{KEY_PREFIX}investors.list_investors:0f0f"]
+    [(metrics,)] = _fetch(
+        migrated_engine,
+        select(IngestionRun.metrics).where(IngestionRun.job_name == "match-congress-members"),
+    )
+    assert metrics["cache_invalidated"] == 1

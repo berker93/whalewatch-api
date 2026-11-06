@@ -12,8 +12,12 @@ from app.core.redis import create_redis
 logger = get_logger(__name__)
 
 
-async def invalidate_cache(settings: Settings) -> int | None:
+async def invalidate_cache(settings: Settings, endpoint: str = "") -> int | None:
     """Drop every response the API has cached. How many, or None if Redis could not be reached.
+
+    With ``endpoint``, only those of the endpoints whose names start with it
+    (:func:`~app.api.cache.invalidate`): ``congress.``, for a job whose data no
+    other router serves.
 
     After a commit, never before: a request between the two would cache the
     old answer again. A Redis that cannot be reached does not fail the run,
@@ -23,7 +27,7 @@ async def invalidate_cache(settings: Settings) -> int | None:
     """
     redis = create_redis(settings)
     try:
-        deleted = await invalidate(redis)
+        deleted = await invalidate(redis, endpoint)
     except RedisError as exc:
         # The message, not the traceback: a refused connection's says no more,
         # and its lines would not carry the run's id.

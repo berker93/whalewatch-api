@@ -112,6 +112,7 @@ class Lifetime(StrEnum):
     SEARCH = "search"
     METADATA = "metadata"
     INSIDERS = "insiders"
+    CONGRESS = "congress"
 
 
 #: Seconds each is kept, in Redis and by a client.
@@ -121,6 +122,7 @@ TTL: Final = {
     Lifetime.SEARCH: 60,
     Lifetime.METADATA: 5 * 60,
     Lifetime.INSIDERS: 5 * 60,
+    Lifetime.CONGRESS: 5 * 60,
 }
 
 #: How long past its ``max-age`` a client may serve a closed period's answer

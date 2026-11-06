@@ -2067,6 +2067,56 @@ curl "localhost:8000/v1/search?q=microsft&limit=10"
   [`app/api/routers/search.py`](app/api/routers/search.py), and the plans
   are in [docs/query-performance.md](docs/query-performance.md).
 
+### `GET /v1/congress/transactions`, `/v1/congress/members/{bioguide}` and `/v1/stocks/{ticker}/congress`
+
+Members of Congress's trades, one row per line of their PTRs, latest disclosed
+first. The feed; one member's page; and a stock's Congress section, its shares
+and options on it, beside its 13F holders. Read live from
+`congress_transaction`, cached five minutes, and dropped from the cache by
+every Congress job and every console decision on a line, a name or an asset
+([app/api/routers/congress.py](app/api/routers/congress.py)).
+
+```bash
+curl "localhost:8000/v1/congress/transactions?party=democrat&type=purchase&min_amount=50001"
+curl "localhost:8000/v1/congress/transactions?late=true&sort=lag"
+curl "localhost:8000/v1/congress/members/P000197"
+curl "localhost:8000/v1/stocks/NVDA/congress?from=2026-01-01"
+```
+
+- **Two lags per row, and the statute's deadline.** `notification_lag_days`
+  is the notification date less the trade's, as the AC asks: how long before
+  the member was told. `disclosure_lag_days` is the filing date less the
+  trade's: how long before the public could know. `disclosure_deadline` is
+  30 days after notification and never more than 45 after the trade (the
+  STOCK Act's wording), and `days_late`/`late` is the filing date past it.
+  Lags are null where they would not be what they claim: a notification
+  dated before the trade, a trade dated after its filing, an amending line.
+- **Which lines.** `parsed` lines only: one in review is not a trade yet. A
+  House line filed `deleted` is left out. A Senate report a later amendment
+  restates is left out once the amendment has a line, or every trade would
+  appear twice. A filer not known to be a member is in, `member` null,
+  `member_match` saying why; a `party` filter leaves them out. `party` is the
+  member's in the term they served on the trade day.
+- **Amounts are bands, totals are ranges.** `meta.summary` adds every chosen
+  line (not only the page) per kind of trade, low ends and high ends; an open
+  band makes the high end null and counts in `open_ended`. A figure written
+  instead of a band is on both sides, rounded outwards. No midpoints.
+- **Coverage.** `meta.congress_coverage` per chamber: filings listed, read,
+  unreadable (a scan, a Senate paper filing, or every line in review),
+  pending, lines in review, filings by filers not yet matched, and the share
+  of stock lines resolved to a security. A member's page scopes it to their
+  filings, and lists the ones with no line in the rows in
+  `meta.unread_filings`, with the link to each original.
+- **Filters**: `member` (Bioguide ids), `chamber`, `party`, `ticker`, `type`
+  (`sale` includes partial sales), `asset_class`, `from`/`to` (trade day),
+  `disclosed_from`/`disclosed_to` (filing day), `min_amount` (the band's
+  lower end, so `50001` is $50,001 - $100,000 and up), `late`. Sorts:
+  `disclosed`, `traded`, `amount`, `lag`.
+- On dev (2026's House PTRs): 4,342 lines from 432 filings, 547 of 4,322
+  with a known lag filed late, median 25 days. A page answers in about 20ms,
+  the summary in 60ms. The two longest OCR-read lags (~700 days) look like a
+  misread year; text-read ones match their PDFs.
+
 ## Data sources and limitations
 
 Write these down once so you are not re-deriving them from a 13F XML at midnight.

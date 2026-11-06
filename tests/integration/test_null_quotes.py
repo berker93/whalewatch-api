@@ -21,7 +21,16 @@ from app.accounts.unsubscribe import ListKind, MailingList, token_for
 from app.admin.auth import admin_store
 from app.api.deps import get_redis
 from app.core.config import Settings
-from app.db.models import Filer, FilerCik, Filing, Holding, SavedFilter, Security, SecurityQuote
+from app.db.models import (
+    CongressMember,
+    Filer,
+    FilerCik,
+    Filing,
+    Holding,
+    SavedFilter,
+    Security,
+    SecurityQuote,
+)
 from app.derived.recompute import recompute
 from app.derived.scope import EVERYTHING
 from app.derived.views import refresh_views
@@ -40,6 +49,7 @@ PARAMETERS: Final = {
     "slug": "whale",
     "preset": "big-bets",
     "ticker": "NVDA",
+    "bioguide": "P000197",
     "q": "nvidia",
     # The screener's: the only period that is required.
     "period": "2024Q2",
@@ -131,6 +141,21 @@ async def test_every_endpoint_answers_200(
         insert(SavedFilter)
         .values(user_id=user_id, name="Everything", params={"filters": {}})
         .returning(SavedFilter.id)
+    )
+    # A member, so their page answers: with no filings, an empty one.
+    await db_session.execute(
+        insert(CongressMember).values(
+            bioguide_id="P000197",
+            full_name="Nancy Pelosi",
+            first_name="Nancy",
+            last_name="Pelosi",
+            chamber="house",
+            state="CA",
+            district=11,
+            party="Democrat",
+            current=True,
+            source_key="raw/congress-legislators/legislators-current/x.json",
+        )
     )
     calls = _gets(app, user_id=user_id, token=token, filter_id=filter_id)
 

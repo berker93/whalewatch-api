@@ -2747,6 +2747,1126 @@
         }
       }
     },
+    "/v1/congress/transactions": {
+      "get": {
+        "tags": [
+          "congress"
+        ],
+        "summary": "Members of Congress's trades, as their PTRs disclose them",
+        "description": "PTR lines, latest disclosed first, one row per line as filed, each with how\nlong after the trade it was disclosed and whether that was late. Amounts are\nthe form's bands. `meta.summary` adds up every chosen line, in ranges;\n`meta.congress_coverage` says how much of each chamber's filings the rows can\ninclude.",
+        "operationId": "listCongressTransactions",
+        "parameters": [
+          {
+            "name": "member",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "P000197"
+                ]
+              ],
+              "title": "Member"
+            },
+            "description": "Only these members, by Bioguide id, comma-separated or repeated. A filer not known to be a member yet is under none."
+          },
+          {
+            "name": "chamber",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Chamber"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only filings to this chamber: `house` or `senate`.",
+              "title": "Chamber"
+            },
+            "description": "Only filings to this chamber: `house` or `senate`."
+          },
+          {
+            "name": "party",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "democrat"
+                ]
+              ],
+              "title": "Party"
+            },
+            "description": "Only members of these parties on the trade day: `democrat`, `republican`, `independent`. Comma-separated or repeated. Leaves out filers not known to be a member."
+          },
+          {
+            "name": "ticker",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its lines and options on it; a line whose asset no lookup found is under no stock.",
+              "title": "Ticker"
+            },
+            "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its lines and options on it; a line whose asset no lookup found is under no stock."
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "purchase"
+                ]
+              ],
+              "title": "Type"
+            },
+            "description": "Only these kinds of trade: `purchase`, `sale`, `partial_sale`, `exchange`. `sale` includes partial sales; `partial_sale` is those alone."
+          },
+          {
+            "name": "asset_class",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "equity"
+                ]
+              ],
+              "title": "Asset Class"
+            },
+            "description": "Only these kinds of asset: `equity`, `stock_option`, `municipal_bond`, `treasury`, `mutual_fund`, `crypto`… A line not resolved yet is under none."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first trade day to include, `2026-06-01`.",
+              "title": "From"
+            },
+            "description": "The first trade day to include, `2026-06-01`."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last trade day to include, `2026-06-30`.",
+              "title": "To"
+            },
+            "description": "The last trade day to include, `2026-06-30`."
+          },
+          {
+            "name": "disclosed_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first filing day to include. Unlike `from`, which is the trade's: this week's disclosures of last quarter's trades are in.",
+              "title": "Disclosed From"
+            },
+            "description": "The first filing day to include. Unlike `from`, which is the trade's: this week's disclosures of last quarter's trades are in."
+          },
+          {
+            "name": "disclosed_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last filing day to include, `2026-06-30`.",
+              "title": "Disclosed To"
+            },
+            "description": "The last filing day to include, `2026-06-30`."
+          },
+          {
+            "name": "min_amount",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only lines worth at least this many dollars for certain: whose band's lower end (or figure) is at least it. `50001` is the $50,001 - $100,000 band and every one above.",
+              "title": "Min Amount"
+            },
+            "description": "Only lines worth at least this many dollars for certain: whose band's lower end (or figure) is at least it. `50001` is the $50,001 - $100,000 band and every one above."
+          },
+          {
+            "name": "late",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`true`: only lines filed after the STOCK Act deadline; `false`: only those filed in time. Either leaves out a line whose lag is not known.",
+              "title": "Late"
+            },
+            "description": "`true`: only lines filed after the STOCK Act deadline; `false`: only those filed in time. Either leaves out a line whose lag is not known."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CongressSort",
+              "description": "`disclosed`, the filing day (the default); `traded`, the trade day; `amount`, the band's lower end; `lag`, `disclosure_lag_days`, with the lines whose lag is not known last.",
+              "default": "disclosed"
+            },
+            "description": "`disclosed`, the filing day (the default); `traded`, the trade day; `amount`, the band's lower end; `lag`, `disclosure_lag_days`, with the lines whose lag is not known last."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Latest, largest or longest first by default.",
+              "default": "desc"
+            },
+            "description": "Latest, largest or longest first by default."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CongressTradeEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/congress/members/{bioguide}": {
+      "get": {
+        "tags": [
+          "congress"
+        ],
+        "summary": "One member of Congress's disclosed trades",
+        "description": "The member's PTR lines, filtered as `/v1/congress/transactions` is, with who\nthey are (`meta.member`), every line of theirs added up in ranges\n(`meta.summary`), and their filings none of whose lines could be read\n(`meta.unread_filings`), with the link to each original.",
+        "operationId": "getCongressMember",
+        "parameters": [
+          {
+            "name": "bioguide",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 7,
+              "maxLength": 7,
+              "description": "The member's Bioguide id, any case.",
+              "examples": [
+                "P000197"
+              ],
+              "title": "Bioguide"
+            },
+            "description": "The member's Bioguide id, any case."
+          },
+          {
+            "name": "ticker",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its lines and options on it; a line whose asset no lookup found is under no stock.",
+              "title": "Ticker"
+            },
+            "description": "One stock: a ticker, a former ticker, or a CUSIP, as `/v1/stocks/{ticker}` reads it. Its lines and options on it; a line whose asset no lookup found is under no stock."
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "purchase"
+                ]
+              ],
+              "title": "Type"
+            },
+            "description": "Only these kinds of trade: `purchase`, `sale`, `partial_sale`, `exchange`. `sale` includes partial sales; `partial_sale` is those alone."
+          },
+          {
+            "name": "asset_class",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "equity"
+                ]
+              ],
+              "title": "Asset Class"
+            },
+            "description": "Only these kinds of asset: `equity`, `stock_option`, `municipal_bond`, `treasury`, `mutual_fund`, `crypto`… A line not resolved yet is under none."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first trade day to include, `2026-06-01`.",
+              "title": "From"
+            },
+            "description": "The first trade day to include, `2026-06-01`."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last trade day to include, `2026-06-30`.",
+              "title": "To"
+            },
+            "description": "The last trade day to include, `2026-06-30`."
+          },
+          {
+            "name": "disclosed_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first filing day to include. Unlike `from`, which is the trade's: this week's disclosures of last quarter's trades are in.",
+              "title": "Disclosed From"
+            },
+            "description": "The first filing day to include. Unlike `from`, which is the trade's: this week's disclosures of last quarter's trades are in."
+          },
+          {
+            "name": "disclosed_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last filing day to include, `2026-06-30`.",
+              "title": "Disclosed To"
+            },
+            "description": "The last filing day to include, `2026-06-30`."
+          },
+          {
+            "name": "min_amount",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only lines worth at least this many dollars for certain: whose band's lower end (or figure) is at least it. `50001` is the $50,001 - $100,000 band and every one above.",
+              "title": "Min Amount"
+            },
+            "description": "Only lines worth at least this many dollars for certain: whose band's lower end (or figure) is at least it. `50001` is the $50,001 - $100,000 band and every one above."
+          },
+          {
+            "name": "late",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`true`: only lines filed after the STOCK Act deadline; `false`: only those filed in time. Either leaves out a line whose lag is not known.",
+              "title": "Late"
+            },
+            "description": "`true`: only lines filed after the STOCK Act deadline; `false`: only those filed in time. Either leaves out a line whose lag is not known."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CongressSort",
+              "description": "`disclosed`, the filing day (the default); `traded`, the trade day; `amount`, the band's lower end; `lag`, `disclosure_lag_days`, with the lines whose lag is not known last.",
+              "default": "disclosed"
+            },
+            "description": "`disclosed`, the filing day (the default); `traded`, the trade day; `amount`, the band's lower end; `lag`, `disclosure_lag_days`, with the lines whose lag is not known last."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Latest, largest or longest first by default.",
+              "default": "desc"
+            },
+            "description": "Latest, largest or longest first by default."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CongressMemberEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No member of Congress since 2008 has that Bioguide id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stocks/{ticker}/congress": {
+      "get": {
+        "tags": [
+          "congress"
+        ],
+        "summary": "One stock's trades by members of Congress, and options on it",
+        "description": "The PTR lines resolved to the stock — its shares, and options on it, which\n`asset_class` tells apart — filtered as `/v1/congress/transactions` is, with\nevery one added up in ranges. A line whose asset no lookup found is not\nhere: `meta.congress_coverage` says how many of the chamber's are.",
+        "operationId": "getStockCongress",
+        "parameters": [
+          {
+            "name": "ticker",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter.",
+              "examples": [
+                "AAPL",
+                "037833100"
+              ],
+              "title": "Ticker"
+            },
+            "description": "A ticker, a former ticker or other spelling we hold as an alias, or a CUSIP. Case does not matter."
+          },
+          {
+            "name": "member",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "P000197"
+                ]
+              ],
+              "title": "Member"
+            },
+            "description": "Only these members, by Bioguide id, comma-separated or repeated. A filer not known to be a member yet is under none."
+          },
+          {
+            "name": "chamber",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Chamber"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only filings to this chamber: `house` or `senate`.",
+              "title": "Chamber"
+            },
+            "description": "Only filings to this chamber: `house` or `senate`."
+          },
+          {
+            "name": "party",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "democrat"
+                ]
+              ],
+              "title": "Party"
+            },
+            "description": "Only members of these parties on the trade day: `democrat`, `republican`, `independent`. Comma-separated or repeated. Leaves out filers not known to be a member."
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "purchase"
+                ]
+              ],
+              "title": "Type"
+            },
+            "description": "Only these kinds of trade: `purchase`, `sale`, `partial_sale`, `exchange`. `sale` includes partial sales; `partial_sale` is those alone."
+          },
+          {
+            "name": "asset_class",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "examples": [
+                [
+                  "equity"
+                ]
+              ],
+              "title": "Asset Class"
+            },
+            "description": "Only these kinds of asset: `equity`, `stock_option`, `municipal_bond`, `treasury`, `mutual_fund`, `crypto`… A line not resolved yet is under none."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first trade day to include, `2026-06-01`.",
+              "title": "From"
+            },
+            "description": "The first trade day to include, `2026-06-01`."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last trade day to include, `2026-06-30`.",
+              "title": "To"
+            },
+            "description": "The last trade day to include, `2026-06-30`."
+          },
+          {
+            "name": "disclosed_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first filing day to include. Unlike `from`, which is the trade's: this week's disclosures of last quarter's trades are in.",
+              "title": "Disclosed From"
+            },
+            "description": "The first filing day to include. Unlike `from`, which is the trade's: this week's disclosures of last quarter's trades are in."
+          },
+          {
+            "name": "disclosed_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last filing day to include, `2026-06-30`.",
+              "title": "Disclosed To"
+            },
+            "description": "The last filing day to include, `2026-06-30`."
+          },
+          {
+            "name": "min_amount",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only lines worth at least this many dollars for certain: whose band's lower end (or figure) is at least it. `50001` is the $50,001 - $100,000 band and every one above.",
+              "title": "Min Amount"
+            },
+            "description": "Only lines worth at least this many dollars for certain: whose band's lower end (or figure) is at least it. `50001` is the $50,001 - $100,000 band and every one above."
+          },
+          {
+            "name": "late",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`true`: only lines filed after the STOCK Act deadline; `false`: only those filed in time. Either leaves out a line whose lag is not known.",
+              "title": "Late"
+            },
+            "description": "`true`: only lines filed after the STOCK Act deadline; `false`: only those filed in time. Either leaves out a line whose lag is not known."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CongressSort",
+              "description": "`disclosed`, the filing day (the default); `traded`, the trade day; `amount`, the band's lower end; `lag`, `disclosure_lag_days`, with the lines whose lag is not known last.",
+              "default": "disclosed"
+            },
+            "description": "`disclosed`, the filing day (the default); `traded`, the trade day; `amount`, the band's lower end; `lag`, `disclosure_lag_days`, with the lines whose lag is not known last."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "description": "Latest, largest or longest first by default.",
+              "default": "desc"
+            },
+            "description": "Latest, largest or longest first by default."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Rows per page. Above 200 is refused, not cut down.",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Rows per page. Above 200 is refused, not cut down."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging.",
+              "title": "Cursor"
+            },
+            "description": "`page.next_cursor` from the previous page. Omit for the first page. Keep the other parameters the same while paging."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CongressTradeEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`: too many requests from this address; wait `Retry-After` seconds. `quota_exceeded`: the API key's month of calls is spent; `X-RateLimit-Reset` says when it resets.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until a request will be answered.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Limit": {
+                "description": "With an API key: the month's quota of calls.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "description": "With an API key: the calls left this month.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "description": "With an API key: when the month's quota resets, in Unix seconds.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotaProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`invalid_api_key`: the `Authorization` header is not `Bearer <API key>`, or names a key that is unknown or revoked. Without the header the request is answered as for someone signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`plan_limit`: a period or day before the caller's plan's window, or a save over its limit. `detail` names the limit and the cheapest plan that lifts it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanLimitProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nothing by that ticker, alias or CUSIP. Suggests what may have been meant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockNotFound"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`cursor` is malformed, or came from a different listing or sort order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A parameter is missing or malformed. `detail.errors` says which.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/market/top-holdings": {
       "get": {
         "tags": [
@@ -17237,6 +18357,25 @@
         "title": "AppliedFilter",
         "description": "A filter the rows passed, and the value it was given."
       },
+      "AssetClass": {
+        "type": "string",
+        "enum": [
+          "equity",
+          "stock_option",
+          "municipal_bond",
+          "treasury",
+          "agency_bond",
+          "corporate_bond",
+          "mutual_fund",
+          "crypto",
+          "real_estate",
+          "private",
+          "other",
+          "unknown"
+        ],
+        "title": "AssetClass",
+        "description": "A line's ``asset_class``. Text with a ``CHECK``, by the rule in\n:mod:`app.db.models.enums`."
+      },
       "Basis": {
         "type": "string",
         "enum": [
@@ -17378,6 +18517,15 @@
         ],
         "title": "BillingSubscription",
         "description": "The account's subscription as Paddle's last word on it left it."
+      },
+      "Chamber": {
+        "type": "string",
+        "enum": [
+          "house",
+          "senate"
+        ],
+        "title": "Chamber",
+        "description": "Which chamber a filing was made to."
       },
       "ChangeAction": {
         "type": "string",
@@ -17832,6 +18980,1387 @@
         ],
         "title": "CompositionNodeEnvelope",
         "description": "One investor's portfolio in one period, as treemap blocks, largest first."
+      },
+      "CongressCoverage": {
+        "properties": {
+          "chamber": {
+            "$ref": "#/components/schemas/Chamber",
+            "description": "The chamber counted.",
+            "examples": [
+              "house"
+            ]
+          },
+          "filings": {
+            "type": "integer",
+            "title": "Filings",
+            "description": "PTRs the chamber's index lists, of those loaded.",
+            "examples": [
+              453
+            ]
+          },
+          "filings_read": {
+            "type": "integer",
+            "title": "Filings Read",
+            "description": "With at least one line in the feed.",
+            "examples": [
+              402
+            ]
+          },
+          "filings_unreadable": {
+            "type": "integer",
+            "title": "Filings Unreadable",
+            "description": "Read, with no line in the feed: none could be read (a scan, a Senate paper filing), or all are waiting for a person. Their `document_url` is the only way to see them.",
+            "examples": [
+              48
+            ]
+          },
+          "filings_pending": {
+            "type": "integer",
+            "title": "Filings Pending",
+            "description": "Not read yet, or their PDF was missing when tried.",
+            "examples": [
+              3
+            ]
+          },
+          "lines_in_review": {
+            "type": "integer",
+            "title": "Lines In Review",
+            "description": "Lines read but not surely enough, left out until a person checks them.",
+            "examples": [
+              383
+            ]
+          },
+          "filings_unmatched_filer": {
+            "type": "integer",
+            "title": "Filings Unmatched Filer",
+            "description": "Filings whose filer is not known to be a member yet: in the feed, with `member` null.",
+            "examples": [
+              29
+            ]
+          },
+          "assets_resolved_pct": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assets Resolved Pct",
+            "description": "Of the lines in the feed that should name a stock (stocks, options, and assets of no known kind), the percentage resolved to one. Null with none.",
+            "examples": [
+              "98.4"
+            ]
+          },
+          "first_filing_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Filing Date",
+            "description": "The earliest filing loaded.",
+            "examples": [
+              "2026-01-03"
+            ]
+          },
+          "latest_filing_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing Date",
+            "description": "The latest filing loaded.",
+            "examples": [
+              "2026-11-03"
+            ]
+          },
+          "last_read_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Read At",
+            "description": "When a filing was last read. Null when none has been.",
+            "examples": [
+              "2026-11-04T06:12:40Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "chamber",
+          "filings",
+          "filings_read",
+          "filings_unreadable",
+          "filings_pending",
+          "lines_in_review",
+          "filings_unmatched_filer"
+        ],
+        "title": "CongressCoverage",
+        "description": "How much of a chamber's PTRs the rows can include.\n\nA trade is in the feed only once its filing has been read, and only when it\nwas read surely enough. What is not — scans no line could be read from,\nlines a person is still checking — is counted here, so that an absence in\nthe rows is not taken for an absence of trading."
+      },
+      "CongressFeedMeta": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the data belongs to. Null only for a collection that is not about a period, such as a list of filers.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "quarters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarters",
+            "description": "For figures over more than one quarter, such as a year's flows, every quarter they cover, oldest first, ending with `period`. Null for one quarter.",
+            "examples": [
+              [
+                "2025Q3",
+                "2025Q4",
+                "2026Q1",
+                "2026Q2"
+              ]
+            ]
+          },
+          "latest_filing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing At",
+            "description": "When the most recently filed of this period's published filings reached EDGAR. Null when nothing for the period has been published.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `period` is."
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats",
+            "description": "Why the rows may be wrong although every rule for reading the filings was followed: an amendment left out because its cover page does not say whether it restates or adds to the period, additions counting with no original loaded, two originals filed for one period, or an amendment number missing from those loaded. One sentence each, for a person to read. Empty when nothing is known to be wrong, and on endpoints that do not check.",
+            "examples": [
+              [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is left out: if it restates or adds to the period, the period is wrong"
+              ]
+            ]
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At",
+            "description": "For a response read from the materialised aggregates, when they were last refreshed: the rows are as of then, and a filing published since is not in them yet. Null for a response read live, and when the refresh is unrecorded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At",
+            "description": "When this response was built.",
+            "examples": [
+              "2026-10-03T09:41:27Z"
+            ]
+          },
+          "summary": {
+            "$ref": "#/components/schemas/CongressSummary",
+            "description": "Every line the filters choose, in ranges."
+          },
+          "congress_coverage": {
+            "items": {
+              "$ref": "#/components/schemas/CongressCoverage"
+            },
+            "type": "array",
+            "title": "Congress Coverage",
+            "description": "Per chamber — both, or the one `chamber` names — how much of its PTRs have been read into the rows. A chamber with `filings` 0 has not been loaded at all."
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "summary",
+          "congress_coverage"
+        ],
+        "title": "CongressFeedMeta",
+        "description": "``meta``, with every chosen line added up, and what the rows could include."
+      },
+      "CongressMember": {
+        "properties": {
+          "bioguide_id": {
+            "type": "string",
+            "title": "Bioguide Id",
+            "description": "The Bioguide's id.",
+            "examples": [
+              "P000197"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "As the Bioguide gives it.",
+            "examples": [
+              "Nancy Pelosi"
+            ]
+          },
+          "first_name": {
+            "type": "string",
+            "title": "First Name",
+            "description": "As the Bioguide gives it.",
+            "examples": [
+              "Nancy"
+            ]
+          },
+          "last_name": {
+            "type": "string",
+            "title": "Last Name",
+            "description": "As the Bioguide gives it.",
+            "examples": [
+              "Pelosi"
+            ]
+          },
+          "chamber": {
+            "$ref": "#/components/schemas/Chamber",
+            "description": "Their latest term's.",
+            "examples": [
+              "house"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "description": "Their latest term's.",
+            "examples": [
+              "CA"
+            ]
+          },
+          "district": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "District",
+            "description": "Their latest term's.",
+            "examples": [
+              11
+            ]
+          },
+          "party": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party",
+            "description": "Their latest term's.",
+            "examples": [
+              "Democrat"
+            ]
+          },
+          "in_office": {
+            "type": "boolean",
+            "title": "In Office",
+            "description": "In the Bioguide's current legislators, as it last said.",
+            "examples": [
+              true
+            ]
+          },
+          "terms": {
+            "items": {
+              "$ref": "#/components/schemas/CongressTerm"
+            },
+            "type": "array",
+            "title": "Terms",
+            "description": "Every term since 2008's, latest first."
+          }
+        },
+        "type": "object",
+        "required": [
+          "bioguide_id",
+          "name",
+          "first_name",
+          "last_name",
+          "chamber",
+          "state",
+          "in_office",
+          "terms"
+        ],
+        "title": "CongressMember",
+        "description": "A member, from the Bioguide."
+      },
+      "CongressMemberEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/CongressTrade"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/CongressMemberMeta",
+            "description": "Who the member is, their lines added up, and what of theirs is missing."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "CongressMemberEnvelope"
+      },
+      "CongressMemberMeta": {
+        "properties": {
+          "period": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period",
+            "description": "The quarter the data belongs to. Null only for a collection that is not about a period, such as a list of filers.",
+            "examples": [
+              "2026Q2"
+            ]
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End",
+            "description": "The quarter end `period` names: the day the holdings describe.",
+            "examples": [
+              "2026-06-30"
+            ]
+          },
+          "quarters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarters",
+            "description": "For figures over more than one quarter, such as a year's flows, every quarter they cover, oldest first, ending with `period`. Null for one quarter.",
+            "examples": [
+              [
+                "2025Q3",
+                "2025Q4",
+                "2026Q1",
+                "2026Q2"
+              ]
+            ]
+          },
+          "latest_filing_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Filing At",
+            "description": "When the most recently filed of this period's published filings reached EDGAR. Null when nothing for the period has been published.",
+            "examples": [
+              "2026-08-14T21:58:03Z"
+            ]
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `period` is."
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caveats",
+            "description": "Why the rows may be wrong although every rule for reading the filings was followed: an amendment left out because its cover page does not say whether it restates or adds to the period, additions counting with no original loaded, two originals filed for one period, or an amendment number missing from those loaded. One sentence each, for a person to read. Empty when nothing is known to be wrong, and on endpoints that do not check.",
+            "examples": [
+              [
+                "0000909661-21-000003 is a 13F-HR/A with no amendmentType, so it is left out: if it restates or adds to the period, the period is wrong"
+              ]
+            ]
+          },
+          "refreshed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refreshed At",
+            "description": "For a response read from the materialised aggregates, when they were last refreshed: the rows are as of then, and a filing published since is not in them yet. Null for a response read live, and when the refresh is unrecorded.",
+            "examples": [
+              "2026-10-01T06:00:12Z"
+            ]
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At",
+            "description": "When this response was built.",
+            "examples": [
+              "2026-10-03T09:41:27Z"
+            ]
+          },
+          "summary": {
+            "$ref": "#/components/schemas/CongressSummary",
+            "description": "Every line the filters choose, in ranges."
+          },
+          "congress_coverage": {
+            "items": {
+              "$ref": "#/components/schemas/CongressCoverage"
+            },
+            "type": "array",
+            "title": "Congress Coverage",
+            "description": "Per chamber — both, or the one `chamber` names — how much of its PTRs have been read into the rows. A chamber with `filings` 0 has not been loaded at all."
+          },
+          "member": {
+            "$ref": "#/components/schemas/CongressMember",
+            "description": "The member whose lines the rows are."
+          },
+          "unread_filings": {
+            "items": {
+              "$ref": "#/components/schemas/UnreadFiling"
+            },
+            "type": "array",
+            "title": "Unread Filings",
+            "description": "Their filings with no line in the rows, latest first: the filing is there, what it says is not, and a reader should be told."
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "summary",
+          "congress_coverage",
+          "member",
+          "unread_filings"
+        ],
+        "title": "CongressMemberMeta",
+        "description": "``meta`` of a member's page: who they are, and what of theirs the rows leave out."
+      },
+      "CongressMemberRef": {
+        "properties": {
+          "bioguide_id": {
+            "type": "string",
+            "title": "Bioguide Id",
+            "description": "The Bioguide's id: what `/v1/congress/members/{bioguide}` takes.",
+            "examples": [
+              "P000197"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "As the Bioguide gives it.",
+            "examples": [
+              "Nancy Pelosi"
+            ]
+          },
+          "party": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party",
+            "description": "Their party in the term they were serving on the trade day, or their latest if none was: `Democrat`, `Republican`, `Independent`.",
+            "examples": [
+              "Democrat"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "description": "That term's state, a USPS code.",
+            "examples": [
+              "CA"
+            ]
+          },
+          "district": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "District",
+            "description": "That term's House district, `0` at large. Null for a senator.",
+            "examples": [
+              11
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "bioguide_id",
+          "name",
+          "state"
+        ],
+        "title": "CongressMemberRef",
+        "description": "The member a filing is by, as of the trade."
+      },
+      "CongressSort": {
+        "type": "string",
+        "enum": [
+          "disclosed",
+          "traded",
+          "amount",
+          "lag"
+        ],
+        "title": "CongressSort",
+        "description": "What the rows are ordered by."
+      },
+      "CongressSummary": {
+        "properties": {
+          "transactions": {
+            "type": "integer",
+            "title": "Transactions",
+            "description": "Lines, on every page.",
+            "examples": [
+              48
+            ]
+          },
+          "filings": {
+            "type": "integer",
+            "title": "Filings",
+            "description": "Filings they are in.",
+            "examples": [
+              9
+            ]
+          },
+          "members": {
+            "type": "integer",
+            "title": "Members",
+            "description": "Distinct members who filed them.",
+            "examples": [
+              4
+            ]
+          },
+          "unmatched_filers": {
+            "type": "integer",
+            "title": "Unmatched Filers",
+            "description": "Distinct names on them not known to be a member yet.",
+            "examples": [
+              0
+            ]
+          },
+          "by_type": {
+            "items": {
+              "$ref": "#/components/schemas/TypeRange"
+            },
+            "type": "array",
+            "title": "By Type",
+            "description": "Purchases, then sales (partial ones included), then exchanges: each one listed only when there is one."
+          },
+          "first_transaction_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Transaction Date",
+            "description": "The earliest trade day. Null with no line.",
+            "examples": [
+              "2024-01-08"
+            ]
+          },
+          "last_transaction_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Transaction Date",
+            "description": "The latest trade day. Null with no line.",
+            "examples": [
+              "2026-06-20"
+            ]
+          },
+          "late": {
+            "type": "integer",
+            "title": "Late",
+            "description": "Lines filed after their deadline (`late`).",
+            "examples": [
+              7
+            ]
+          },
+          "lag_known": {
+            "type": "integer",
+            "title": "Lag Known",
+            "description": "Lines with a `disclosure_lag_days`: what `late` and the lags below are of.",
+            "examples": [
+              46
+            ]
+          },
+          "median_disclosure_lag_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Disclosure Lag Days",
+            "description": "The middle line's `disclosure_lag_days`, a real line's (the lower of two middles), never an average. Null when no lag is known.",
+            "examples": [
+              29
+            ]
+          },
+          "max_disclosure_lag_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Disclosure Lag Days",
+            "description": "The longest `disclosure_lag_days`. Null when no lag is known.",
+            "examples": [
+              214
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "transactions",
+          "filings",
+          "members",
+          "unmatched_filers",
+          "by_type",
+          "late",
+          "lag_known"
+        ],
+        "title": "CongressSummary",
+        "description": "Every line the filters choose, not only this page's, added up.\n\nIn ranges: a band's low and high ends are what the filing says; the middle\nof one is not, and nothing here is."
+      },
+      "CongressTerm": {
+        "properties": {
+          "chamber": {
+            "$ref": "#/components/schemas/Chamber",
+            "description": "The chamber they sat in.",
+            "examples": [
+              "house"
+            ]
+          },
+          "start_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Start Date",
+            "description": "The day the term began.",
+            "examples": [
+              "2025-01-03"
+            ]
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date",
+            "title": "End Date",
+            "description": "As the Bioguide has it: the Congress's end, for a term still running.",
+            "examples": [
+              "2027-01-03"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "description": "The state they sat for, a USPS code.",
+            "examples": [
+              "CA"
+            ]
+          },
+          "district": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "District",
+            "description": "Their House district, `0` at large. Null for a senator.",
+            "examples": [
+              11
+            ]
+          },
+          "party": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Party",
+            "description": "Their party in the term, as the Bioguide spells it.",
+            "examples": [
+              "Democrat"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "chamber",
+          "start_date",
+          "end_date",
+          "state"
+        ],
+        "title": "CongressTerm",
+        "description": "One term a member served."
+      },
+      "CongressTrade": {
+        "properties": {
+          "chamber": {
+            "$ref": "#/components/schemas/Chamber",
+            "description": "Where it was filed.",
+            "examples": [
+              "house"
+            ]
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id",
+            "description": "The chamber's id for the filing: the House's `DocID`, a Senate report's UUID. With `line`, what identifies the row.",
+            "examples": [
+              "20033725"
+            ]
+          },
+          "line": {
+            "type": "integer",
+            "title": "Line",
+            "description": "Where the line is in the filing, from 1.",
+            "examples": [
+              3
+            ]
+          },
+          "filing_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Filing Date",
+            "description": "When the chamber received the filing: the day the trade was disclosed. `disclosure_lag_days` counts to it.",
+            "examples": [
+              "2026-08-14"
+            ]
+          },
+          "document_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Url",
+            "description": "The filing as the chamber serves it: the original, to check a row against.",
+            "examples": [
+              "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20033725.pdf"
+            ]
+          },
+          "member": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CongressMemberRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who filed it. Null when the name on the filing is not known to be a member yet, which `member_match` says why: the row is shown, flagged, under `filer_name`."
+          },
+          "member_match": {
+            "$ref": "#/components/schemas/MemberMatch",
+            "description": "Whether `filer_name` is known to be `member`.",
+            "examples": [
+              "matched"
+            ]
+          },
+          "filer_name": {
+            "type": "string",
+            "title": "Filer Name",
+            "description": "The name as the chamber's index has it, honorific and all.",
+            "examples": [
+              "Hon. Nancy Pelosi"
+            ]
+          },
+          "owner": {
+            "$ref": "#/components/schemas/Owner",
+            "description": "Whose account: the member's own (`self`), their spouse's, a joint one, or a dependent child's. Members report all four.",
+            "examples": [
+              "spouse"
+            ]
+          },
+          "asset_name": {
+            "type": "string",
+            "title": "Asset Name",
+            "description": "What was traded, as filed.",
+            "examples": [
+              "NVIDIA Corporation - Common Stock"
+            ]
+          },
+          "asset_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Type",
+            "description": "The House's two-letter asset code as filed: `ST` stock, `OP` option, `GS` government security… A Senate row's words are mapped to it.",
+            "examples": [
+              "ST"
+            ]
+          },
+          "asset_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Class",
+            "description": "What kind of asset, in our terms: `equity`, `stock_option`, `municipal_bond`, `treasury`, `agency_bond`, `corporate_bond`, `mutual_fund`, `crypto`, `real_estate`, `private`, `other`, `unknown`. Null until the line is resolved.",
+            "examples": [
+              "equity"
+            ]
+          },
+          "filed_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filed Ticker",
+            "description": "The ticker the filer wrote, unchecked. Null on a scan.",
+            "examples": [
+              "NVDA"
+            ]
+          },
+          "cusip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cusip",
+            "description": "The stock the line was resolved to, or an option's underlying: the same security a 13F holding of it is. Null for a bond, a fund, or a stock no lookup found.",
+            "examples": [
+              "67066G104"
+            ]
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker",
+            "description": "That security's ticker on `transaction_date`.",
+            "examples": [
+              "NVDA"
+            ]
+          },
+          "current_ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Ticker",
+            "description": "The ticker it trades under now, or the last it had if it is no longer listed. Differs from `ticker` after a rename (META beside FB), and is what to link `/v1/stocks/{ticker}` by.",
+            "examples": [
+              "NVDA"
+            ]
+          },
+          "delisted_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delisted By",
+            "description": "Set when it is no longer listed: the first quarter end by which it had left the SEC's 13(f) list, so a bound rather than the day. Null while listed, and for a security no list has had (an OTC ADR, a bond), whose listing is unknown.",
+            "examples": [
+              null
+            ]
+          },
+          "asset_confidence": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Confidence",
+            "description": "0 to 1: how sure the match to `cusip` is. 1 when the filer's ticker and name agree; under 0.9 is a guess a person has not checked.",
+            "examples": [
+              "1.000"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/TradeType",
+            "description": "`purchase`, `sale`, `partial_sale` (some of the holding), or `exchange`.",
+            "examples": [
+              "purchase"
+            ]
+          },
+          "transaction_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Transaction Date",
+            "description": "The day of the trade.",
+            "examples": [
+              "2026-06-20"
+            ]
+          },
+          "notification_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Date",
+            "description": "The day the member was told of the trade: later than it for an account someone else manages. Null when the filing gives none.",
+            "examples": [
+              "2026-06-25"
+            ]
+          },
+          "amount_low": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Low",
+            "description": "The band's lower end, in dollars, as the form gives it. Null when the filer wrote a figure instead (`amount_exact`).",
+            "examples": [
+              1000001
+            ]
+          },
+          "amount_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount High",
+            "description": "The band's upper end. Null with `amount_low` for an open band: \"over $50,000,000\".",
+            "examples": [
+              5000000
+            ]
+          },
+          "amount_exact": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Exact",
+            "description": "A figure the filer wrote instead of a band. Never with one.",
+            "examples": [
+              null
+            ]
+          },
+          "notification_lag_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Lag Days",
+            "description": "`notification_date` - `transaction_date`, in days. Null when there is no notification date, or one before the trade, which is a filer's error.",
+            "examples": [
+              5
+            ]
+          },
+          "disclosure_lag_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclosure Lag Days",
+            "description": "`filing_date` - `transaction_date`, in days: how long after the trade the public could know of it. Null on an amended or a Senate amendment's line, whose filing is not the first to disclose it, and when the trade is dated after the filing, which is a filer's error.",
+            "examples": [
+              71
+            ]
+          },
+          "disclosure_deadline": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclosure Deadline",
+            "description": "When the STOCK Act had it due: 30 days after `notification_date`, and never more than 45 after `transaction_date`. Null exactly when `disclosure_lag_days` is.",
+            "examples": [
+              "2026-07-25"
+            ]
+          },
+          "days_late": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Late",
+            "description": "Days `filing_date` is past `disclosure_deadline`; `0` when it was filed in time. Null exactly when `disclosure_lag_days` is. Counted from the day the chamber received it, which can be days before it was published.",
+            "examples": [
+              26
+            ]
+          },
+          "late": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late",
+            "description": "Filed after `disclosure_deadline`. Null exactly when `days_late` is.",
+            "examples": [
+              true
+            ]
+          },
+          "filing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filing Status",
+            "description": "A House e-filed line's own status: `new`, or `amended` when it corrects a line of an earlier filing. Null on a scan, and on the Senate's.",
+            "examples": [
+              "new"
+            ]
+          },
+          "amendment": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amendment",
+            "description": "On a Senate amendment's line, which amendment: `1` for \"(Amendment 1)\". An amendment restates the whole report, and the report it replaces is left out.",
+            "examples": [
+              null
+            ]
+          },
+          "cap_gains_over_200": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cap Gains Over 200",
+            "description": "The House form's box: capital gains over $200 on a sale.",
+            "examples": [
+              false
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description",
+            "description": "What the filer wrote under the asset: an option's strike and expiry.",
+            "examples": [
+              "Purchased 50 call options with a strike price of $80 and an expiration date of 1/16/2026."
+            ]
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment",
+            "description": "The filer's comment, as filed.",
+            "examples": [
+              "Spouse's managed account; no direct involvement."
+            ]
+          },
+          "extraction": {
+            "type": "string",
+            "title": "Extraction",
+            "description": "How the line was read: `text` from the PDF's text, `html` from a Senate report filed online — both exact — or `ocr` from a scan.",
+            "examples": [
+              "text"
+            ]
+          },
+          "read_confidence": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "decimal"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Confidence",
+            "description": "0 to 1, for a line read by OCR or accepted from review: how sure the reading is. Null when read exactly.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "chamber",
+          "doc_id",
+          "line",
+          "filing_date",
+          "member_match",
+          "filer_name",
+          "owner",
+          "asset_name",
+          "type",
+          "transaction_date",
+          "extraction"
+        ],
+        "title": "CongressTrade",
+        "description": "One line of one PTR: what a member, their spouse or child traded, on one day."
+      },
+      "CongressTradeEnvelope": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/CongressTrade"
+            },
+            "type": "array",
+            "title": "Data",
+            "description": "The rows, in the order the endpoint documents."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/CongressFeedMeta",
+            "description": "What the rows describe: every chosen line added up, and coverage."
+          },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Page"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How to get the next page. Null when the endpoint is not paged."
+          }
+        },
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "CongressTradeEnvelope"
       },
       "Coverage": {
         "properties": {
@@ -23500,6 +26029,17 @@
         "title": "MeUser",
         "description": "The signed-in account."
       },
+      "MemberMatch": {
+        "type": "string",
+        "enum": [
+          "matched",
+          "review",
+          "unmatched",
+          "unlinked"
+        ],
+        "title": "MemberMatch",
+        "description": "Whether the name on the filing is known to be a member."
+      },
       "Meta": {
         "properties": {
           "period": {
@@ -24297,6 +26837,17 @@
         ],
         "title": "OverrideSet",
         "description": "The override given."
+      },
+      "Owner": {
+        "type": "string",
+        "enum": [
+          "self",
+          "spouse",
+          "joint",
+          "dependent_child"
+        ],
+        "title": "Owner",
+        "description": "Whose account the trade was in, as the form's owner column says."
       },
       "OwnershipPoint": {
         "properties": {
@@ -29303,6 +31854,17 @@
         "title": "TopHolding",
         "description": "The largest position, by dollars, in the filer's latest period.\n\nNamed as well as tickered. No CUSIP is resolved to a ticker until\nenrichment runs, and a ticker is null for good for some, so a ticker\nalone would leave this unreadable on most rows."
       },
+      "TradeType": {
+        "type": "string",
+        "enum": [
+          "purchase",
+          "sale",
+          "partial_sale",
+          "exchange"
+        ],
+        "title": "TradeType",
+        "description": "What kind of trade a line is, as the form's type column says."
+      },
       "TransactionCode": {
         "properties": {
           "code": {
@@ -29336,6 +31898,65 @@
         "title": "TransactionCode",
         "description": "A transaction code, and what it means."
       },
+      "TypeRange": {
+        "properties": {
+          "transactions": {
+            "type": "integer",
+            "title": "Transactions",
+            "description": "Lines added up.",
+            "examples": [
+              12
+            ]
+          },
+          "amount_low": {
+            "type": "integer",
+            "title": "Amount Low",
+            "description": "The least they can have been worth, in dollars: every band's lower end.",
+            "examples": [
+              1265006
+            ]
+          },
+          "amount_high": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount High",
+            "description": "The most: every band's upper end. Null when one of them is open (\"over $50,000,000\"), so there is no most.",
+            "examples": [
+              5500000
+            ]
+          },
+          "open_ended": {
+            "type": "integer",
+            "title": "Open Ended",
+            "description": "Lines in an open band, which make `amount_high` null: each worth more than its lower end by an unknown amount.",
+            "examples": [
+              0
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/TradeType",
+            "description": "`sale` counts partial sales too: both are selling.",
+            "examples": [
+              "purchase"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "transactions",
+          "amount_low",
+          "open_ended",
+          "type"
+        ],
+        "title": "TypeRange",
+        "description": "One kind of trade's lines, added up."
+      },
       "Ungrandfathered": {
         "properties": {
           "snapshot": {
@@ -29353,6 +31974,75 @@
         ],
         "title": "Ungrandfathered",
         "description": "The terms the subscription no longer keeps."
+      },
+      "UnreadFiling": {
+        "properties": {
+          "chamber": {
+            "$ref": "#/components/schemas/Chamber",
+            "description": "Where it was filed.",
+            "examples": [
+              "senate"
+            ]
+          },
+          "doc_id": {
+            "type": "string",
+            "title": "Doc Id",
+            "description": "The chamber's id for the filing.",
+            "examples": [
+              "f2b5c0b4-6a8e-4c1f-9d7e-2b0e7c0f9a11"
+            ]
+          },
+          "filing_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Filing Date",
+            "description": "When the chamber received it.",
+            "examples": [
+              "2026-03-02"
+            ]
+          },
+          "document_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Url",
+            "description": "The original: the only way to see what it says.",
+            "examples": [
+              "https://efdsearch.senate.gov/search/view/paper/f2b5c0b4-…/"
+            ]
+          },
+          "reason": {
+            "$ref": "#/components/schemas/UnreadReason",
+            "description": "`unreadable`: no line could be read; `in_review`: a person is checking them; `pending`: not read yet.",
+            "examples": [
+              "unreadable"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "chamber",
+          "doc_id",
+          "filing_date",
+          "reason"
+        ],
+        "title": "UnreadFiling",
+        "description": "A member's filing none of whose lines are in the rows."
+      },
+      "UnreadReason": {
+        "type": "string",
+        "enum": [
+          "unreadable",
+          "in_review",
+          "pending"
+        ],
+        "title": "UnreadReason",
+        "description": "Why none of a filing's lines are in the rows."
       },
       "UpcomingFiling": {
         "properties": {

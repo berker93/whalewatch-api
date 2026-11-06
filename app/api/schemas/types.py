@@ -53,7 +53,8 @@ Quantity = Annotated[Decimal, *_DECIMAL_STRING]
 Percent = Annotated[Decimal, *_DECIMAL_STRING]
 
 #: A score from ``0`` to ``1``, as a string, to three places: OCR's confidence
-#: in a PTR line it read (``congress_transaction.confidence``).
+#: in a PTR line it read (``congress_transaction.confidence``), or a match's
+#: (``resolution_confidence``).
 Score = Annotated[Decimal, *_DECIMAL_STRING]
 
 #: A price per share, in dollars, to eight places (see

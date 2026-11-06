@@ -161,7 +161,10 @@ def _truncate(engine: AsyncEngine) -> None:
         engine,
         text(
             "TRUNCATE ingestion_run, matview_refresh, pending_filing, position_snapshot, "
-            "holding, filing, security, filer_cik, filer, sec_13f_security, metric_day "
+            "holding, filing, security, filer_cik, filer, sec_13f_security, metric_day, "
+            # seed-congress-members commits the registry; CASCADE takes the
+            # terms and filed names with it.
+            "congress_member "
             "RESTART IDENTITY CASCADE"
         ),
         *(text(f"REFRESH MATERIALIZED VIEW {view.name}") for view in MATERIALISED_VIEWS),

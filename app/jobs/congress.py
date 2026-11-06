@@ -9,8 +9,9 @@ tasks of the same names are these in ``asyncio.run``. Both index jobs end by
 linking what they stored to filed names and matching the new names to members
 (:func:`~app.ingestion.congress.members.link_and_match`); both PTR jobs, by
 resolving the lines they read, and retrying those no run has resolved
-(:func:`~app.ingestion.congress.asset_resolution.resolve_assets`). As with the
-Form 4 jobs (app/jobs/form4.py), nothing here prints.
+(:func:`~app.ingestion.congress.asset_resolution.resolve_assets`). Each drops
+the Congress endpoints' cached answers when it is done. As with the Form 4 jobs
+(app/jobs/form4.py), nothing here prints.
 """
 
 from __future__ import annotations
@@ -68,11 +69,17 @@ from app.ingestion.congress.senate_ptrs import (
     newest_filing,
 )
 from app.ingestion.remote.fetcher import open_fetcher
+from app.jobs.cache import invalidate_cache
 from app.jobs.tracking import TrackedRun, tracked_task
 from app.ops.alerts import alert_ops
 from app.storage.raw import RawStore, open_raw_store
 
 logger = get_logger(__name__)
+
+#: What the Congress endpoints' cached answers are named under
+#: (:mod:`app.api.routers.congress`): what every job here drops once it has
+#: committed, since nothing else serves its tables.
+CONGRESS_CACHE = "congress."
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +162,7 @@ async def ingest_house_index_job(
         "watermark_before": _iso(ingest.watermark_before),
         "watermark_after": _iso(ingest.watermark_after),
     } | member_metrics(members)
+    run.metrics["cache_invalidated"] = await invalidate_cache(settings, CONGRESS_CACHE)
     return HouseIndexRun(years=years, ingest=ingest, members=members)
 
 
@@ -295,6 +303,7 @@ async def ingest_house_ptrs_job(
         "fetched": sum(1 for read in ingest.reads if read.fetched),
         "table_coverage_pct": _number(table.percent),
     } | asset_metrics(assets, resolution)
+    run.metrics["cache_invalidated"] = await invalidate_cache(settings, CONGRESS_CACHE)
     return HousePtrRun(ingest=ingest, table=table, assets=assets, asset_coverage=resolution)
 
 
@@ -454,6 +463,7 @@ async def ingest_senate_ptrs_job(
         | member_metrics(members)
         | asset_metrics(assets, resolution)
     )
+    run.metrics["cache_invalidated"] = await invalidate_cache(settings, CONGRESS_CACHE)
     return SenatePtrRun(
         window=window,
         ingest=ingest,
@@ -525,6 +535,7 @@ async def seed_congress_members_job(
         "raw_keys": [copy.key for copy in copies],
         "names_changed": members.matched.changed,
     } | member_metrics(members)
+    run.metrics["cache_invalidated"] = await invalidate_cache(settings, CONGRESS_CACHE)
     return SeedRun(dataset=dataset, stored=stored, members=members)
 
 
@@ -551,6 +562,7 @@ async def match_congress_members_job(run: TrackedRun, settings: Settings) -> Mem
     run.items_seen = members.matched.names
     run.items_written = members.matched.changed
     run.metrics |= {"names_changed": members.matched.changed} | member_metrics(members)
+    run.metrics["cache_invalidated"] = await invalidate_cache(settings, CONGRESS_CACHE)
     return members
 
 
@@ -592,4 +604,5 @@ async def resolve_congress_assets_job(
         "by_method": dict(passed.by_method),
         "unresolved": passed.unresolved,
     } | {f"{counted.chamber}_coverage_pct": _number(counted.percent) for counted in coverage}
+    run.metrics["cache_invalidated"] = await invalidate_cache(settings, CONGRESS_CACHE)
     return AssetRun(passed=passed, coverage=coverage)

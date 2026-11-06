@@ -530,6 +530,11 @@ def test_every_read_of_filing_data_is_gated() -> None:
         "/v1/me/alert-delivery",
         # Which list an unsubscribe link leaves: a label, no filing data.
         "/v1/email/unsubscribe",
+        # Congress's PTRs: no plan limits them yet, so every tier is answered
+        # alike. A window like the insiders' would make these gated.
+        "/v1/congress/transactions",
+        "/v1/congress/members/{bioguide}",
+        "/v1/stocks/{ticker}/congress",
     }
     reads = {
         path: route

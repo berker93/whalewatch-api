@@ -29,11 +29,14 @@ from decimal import Decimal
 from typing import Annotated, Final, Literal
 
 from fastapi import APIRouter, Path, Query, Request, Response, status
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 from app.admin import congress, congress_assets, congress_members
 from app.api.admin_auth import AdminDep, request_id
 from app.api.auth import NoStoreDep
-from app.api.deps import SessionDep
+from app.api.cache import invalidate
+from app.api.deps import RedisDep, SessionDep
 from app.api.errors import INVALID, ApiError, Responses, not_found
 from app.api.schemas.admin_congress import (
     AdminAssetCandidate,
@@ -57,6 +60,7 @@ from app.api.schemas.admin_congress import (
     AdminSecurity,
 )
 from app.api.schemas.error import ErrorCode, Problem
+from app.core.logging import get_logger
 from app.db.models.congress_asset_override import CongressAssetOverride
 from app.db.models.congress_filing import CHAMBERS
 from app.db.models.congress_member import CongressMember
@@ -64,6 +68,8 @@ from app.db.models.security import Security
 from app.ingestion.congress.asset_resolution import asset_coverage
 from app.ingestion.congress.assets import AssetClass
 from app.ingestion.congress.ptrs import table_coverage
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/admin/congress", tags=["admin"], dependencies=[NoStoreDep])
 
@@ -73,9 +79,22 @@ _UNAUTHORIZED: Final[Responses] = {
         "description": "Not signed in to the console: `unauthenticated` or `session_expired`.",
     }
 }
+
 _STATUS_OF: Final = {"not_found": 404, "not_in_review": 409, "validation_error": 422}
 
 LineId = Annotated[int, Path(ge=1, description="The line's id, from the queue.")]
+
+
+async def _drop_feed(redis: Redis) -> None:
+    """Drop the Congress endpoints' cached answers, after a decision is committed.
+
+    A Redis that cannot be reached does not fail the decision, which is made:
+    the feed shows it once what was cached expires, in minutes.
+    """
+    try:
+        await invalidate(redis, "congress.")
+    except RedisError as exc:
+        logger.error("cache.invalidate_failed", error=str(exc))
 
 
 def _security(security: Security | None) -> AdminSecurity | None:
@@ -171,6 +190,7 @@ async def review_line(
     request: Request,
     admin: AdminDep,
     session: SessionDep,
+    redis: RedisDep,
 ) -> AdminPtrRow:
     """`accept` makes it `parsed`, with `corrections` applied first; it must then have
     an asset, a type, a transaction date and one of the form's amount bands, or it is
@@ -195,6 +215,7 @@ async def review_line(
     except congress.ReviewError as exc:
         raise ApiError(_STATUS_OF[exc.code], ErrorCode(exc.code), exc.message) from None
     await session.commit()
+    await _drop_feed(redis)
     return _shown(found)
 
 
@@ -363,6 +384,7 @@ async def review_member(
     request: Request,
     admin: AdminDep,
     session: SessionDep,
+    redis: RedisDep,
 ) -> AdminFiledName:
     """`accept` or `assign` match the name to a member for good: no run changes a
     person's match, and it covers every filing under the name, those to come
@@ -383,6 +405,7 @@ async def review_member(
     except congress.ReviewError as exc:
         raise ApiError(_STATUS_OF[exc.code], ErrorCode(exc.code), exc.message) from None
     await session.commit()
+    await _drop_feed(redis)
     return _name(found)
 
 
@@ -506,6 +529,7 @@ async def set_asset_override(
     request: Request,
     admin: AdminDep,
     session: SessionDep,
+    redis: RedisDep,
 ) -> AdminAssetOverrideSet:
     """A stock (`equity`) or an option on one (`stock_option`) takes the security, by
     `cusip` or by today's `ticker`; any other class takes none, or it is a 422
@@ -529,6 +553,7 @@ async def set_asset_override(
         override=_override(made.override, made.security), lines=made.lines
     )
     await session.commit()
+    await _drop_feed(redis)
     return shown
 
 
@@ -541,7 +566,11 @@ async def set_asset_override(
     responses={**_UNAUTHORIZED, **not_found("`not_found`: no such override."), **INVALID},
 )
 async def remove_asset_override(
-    override_id: OverrideId, request: Request, admin: AdminDep, session: SessionDep
+    override_id: OverrideId,
+    request: Request,
+    admin: AdminDep,
+    session: SessionDep,
+    redis: RedisDep,
 ) -> Response:
     """Its lines are resolved again at once, by a run's rules. Logged."""
     try:
@@ -551,4 +580,5 @@ async def remove_asset_override(
     except congress.ReviewError as exc:
         raise ApiError(_STATUS_OF[exc.code], ErrorCode(exc.code), exc.message) from None
     await session.commit()
+    await _drop_feed(redis)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

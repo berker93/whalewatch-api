@@ -296,6 +296,8 @@ def test_a_run_reads_each_pdf_into_rows_and_reports_its_coverage(
         "assets_unresolved": 11,
         "asset_coverage_pct": 0.0,
         "asset_filing_coverage_pct": 0.0,
+        # Nothing listens on settings.redis_url: the run succeeds all the same.
+        "cache_invalidated": None,
     }
     assert (
         "this run   2/5 filings read (40.0%), 0 only in review, 1 placeholders, 1 missing, "
